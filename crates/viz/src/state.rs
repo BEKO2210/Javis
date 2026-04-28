@@ -15,6 +15,10 @@ use snn_core::{
 };
 use tokio::sync::{mpsc::Sender, Mutex};
 
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
 use crate::events::{DecodedWord, Event, LlmReply};
 use llm::LlmClient;
 
@@ -291,6 +295,23 @@ struct Inner {
     trained_sentences: Vec<String>,
 }
 
+/// On-disk wire format for an Javis snapshot. Matches `Inner` exactly
+/// so the round-trip is just `serde_json::{from,to}_writer`. Schema is
+/// versioned so a future format change can fail loudly rather than
+/// silently reading stale data.
+#[derive(Serialize, Deserialize)]
+struct Snapshot {
+    /// Bumped any time the schema becomes incompatible.
+    version: u32,
+    brain: Brain,
+    dict: EngramDictionary,
+    encoder: TextEncoder,
+    known_words: HashSet<String>,
+    trained_sentences: Vec<String>,
+}
+
+const SNAPSHOT_VERSION: u32 = 1;
+
 impl AppState {
     pub fn new() -> Self {
         let inner = Inner {
@@ -532,6 +553,50 @@ impl AppState {
         (g.trained_sentences.len(), g.known_words.len())
     }
 
+    /// Serialise the entire learnt state to a JSON file. Transient
+    /// buffers (membrane potentials, traces, scheduled spike events,
+    /// the global clock) are not written — they reset to zero on load
+    /// and rebuild within milliseconds of simulation.
+    pub async fn save_to_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        let g = self.inner.lock().await;
+        let snap = Snapshot {
+            version: SNAPSHOT_VERSION,
+            brain: clone_brain(&g.brain),
+            dict: g.dict.clone(),
+            encoder: g.encoder.clone(),
+            known_words: g.known_words.clone(),
+            trained_sentences: g.trained_sentences.clone(),
+        };
+        let bytes = serde_json::to_vec(&snap).map_err(io_err)?;
+        tokio::fs::write(path, bytes).await
+    }
+
+    /// Replace the in-memory state with a snapshot read from disk.
+    /// Transient buffers are re-initialised so the brain is immediately
+    /// runnable.
+    pub async fn load_from_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        let bytes = tokio::fs::read(path).await?;
+        let mut snap: Snapshot = serde_json::from_slice(&bytes).map_err(io_err)?;
+        if snap.version != SNAPSHOT_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "snapshot version {} unsupported (expected {})",
+                    snap.version, SNAPSHOT_VERSION
+                ),
+            ));
+        }
+        snap.brain.ensure_transient_state();
+
+        let mut g = self.inner.lock().await;
+        g.brain = snap.brain;
+        g.dict = snap.dict;
+        g.encoder = snap.encoder;
+        g.known_words = snap.known_words;
+        g.trained_sentences = snap.trained_sentences;
+        Ok(())
+    }
+
     /// Send the question to the LLM twice in parallel — once with the
     /// full RAG payload as context, once with the compact Javis payload.
     /// Streams the answers back as a single `Asked` event so the UI can
@@ -591,6 +656,17 @@ impl Default for AppState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Brain isn't `Copy`, but we need a snapshot-friendly clone — `Clone`
+/// is now derived on Brain/Region/Network so this is a real clone, not
+/// a serde round-trip.
+fn clone_brain(brain: &Brain) -> Brain {
+    brain.clone()
+}
+
+fn io_err<E: std::fmt::Display>(e: E) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
 }
 
 fn short(s: &str) -> String {

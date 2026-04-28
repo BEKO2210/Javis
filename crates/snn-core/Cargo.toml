@@ -9,3 +9,7 @@ description = "Spiking neural network core for Javis — brain-inspired knowledg
 path = "src/lib.rs"
 
 [dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

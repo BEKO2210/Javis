@@ -16,7 +16,7 @@
 use crate::neuron::NeuronKind;
 use crate::region::Region;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct InterEdge {
     pub src_region: u32,
     pub src_neuron: u32,
@@ -26,7 +26,7 @@ pub struct InterEdge {
     pub delay_ms: f32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct PendingEvent {
     pub arrive_at: f32,
     pub dst_region: u32,
@@ -34,14 +34,22 @@ pub struct PendingEvent {
     pub weight: f32,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Brain {
     pub regions: Vec<Region>,
     pub inter_edges: Vec<InterEdge>,
     /// `outgoing[region][neuron]` → indices into `inter_edges`.
     pub outgoing: Vec<Vec<Vec<u32>>>,
+    /// Scheduled inter-region spike events — transient, rebuilt as
+    /// neurons fire after a snapshot load.
+    #[serde(skip, default)]
     pub pending: Vec<PendingEvent>,
+    /// Simulation clock — transient.
+    #[serde(skip, default)]
     pub time: f32,
     pub dt: f32,
+    /// Cumulative event counter — transient.
+    #[serde(skip, default)]
     pub events_delivered: u64,
 }
 
@@ -73,6 +81,25 @@ impl Brain {
         let needed = self.regions[region].num_neurons();
         if self.outgoing[region].len() < needed {
             self.outgoing[region].resize_with(needed, Vec::new);
+        }
+    }
+
+    /// Refresh every region's transient buffers (`i_syn`, traces) to
+    /// match the current neuron count. Called after loading a snapshot;
+    /// safe to call any time.
+    pub fn ensure_transient_state(&mut self) {
+        for region in &mut self.regions {
+            region.network.ensure_transient_state();
+        }
+        // Outgoing per-neuron adjacency is part of topology, but if a
+        // region was loaded with a stale shape we resize defensively.
+        for (ri, region) in self.regions.iter_mut().enumerate() {
+            let needed = region.num_neurons();
+            if self.outgoing.len() <= ri {
+                self.outgoing.push(vec![Vec::new(); needed]);
+            } else if self.outgoing[ri].len() < needed {
+                self.outgoing[ri].resize_with(needed, Vec::new);
+            }
         }
     }
 

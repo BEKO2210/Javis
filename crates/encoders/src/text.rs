@@ -14,7 +14,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::sdr::Sdr;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TextEncoder {
     pub n: u32,
     pub k: u32,

@@ -293,7 +293,7 @@ fn vocabulary(corpus: &[&str], enc: &TextEncoder) -> Vec<String> {
 /// above the relevance threshold, sorted by score descending.
 pub type DecodedWords = Vec<(String, f32)>;
 
-/// Train R2 on the corpus, fingerprint every vocabulary word as an
+/// Train R2 on `corpus`, fingerprint every vocabulary word as an
 /// engram in the dictionary, then recall with `query` and decode.
 pub fn run_javis_pipeline(corpus: &[&str], query: &str) -> DecodedWords {
     let enc = TextEncoder::with_stopwords(ENC_N, ENC_K, STOPWORDS.iter().copied());
@@ -388,11 +388,16 @@ impl BenchmarkResult {
 }
 
 pub fn run_benchmark(query: &str) -> BenchmarkResult {
-    let corpus = corpus();
-    let rag_payload = naive_rag_lookup(&corpus, query).unwrap_or_default();
+    run_benchmark_on(&corpus(), query)
+}
+
+/// Same as [`run_benchmark`] but lets the caller supply any corpus —
+/// used by the Wikipedia-scale test in `eval/tests/wiki_benchmark.rs`.
+pub fn run_benchmark_on(corpus: &[&str], query: &str) -> BenchmarkResult {
+    let rag_payload = naive_rag_lookup(corpus, query).unwrap_or_default();
     let rag_tokens = count_tokens(&rag_payload);
 
-    let javis_words = run_javis_pipeline(&corpus, query);
+    let javis_words = run_javis_pipeline(corpus, query);
     let javis_payload = javis_words
         .iter()
         .map(|(w, _)| w.as_str())

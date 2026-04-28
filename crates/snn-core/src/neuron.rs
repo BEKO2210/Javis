@@ -6,13 +6,13 @@
 //! its outgoing synapses act on post-synaptic membranes — synaptic
 //! weights themselves stay non-negative.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NeuronKind {
     Excitatory,
     Inhibitory,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct LifParams {
     pub v_rest: f32,
     pub v_reset: f32,
@@ -35,18 +35,30 @@ impl Default for LifParams {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct LifNeuron {
     pub params: LifParams,
     pub kind: NeuronKind,
+    /// Membrane potential. Transient — not persisted across snapshots.
+    #[serde(skip, default = "f32_zero")]
     pub v: f32,
+    /// Refractory clock. Transient.
+    #[serde(skip, default = "f32_neg_inf")]
     pub refractory_until: f32,
+    /// Last spike time. Transient.
+    #[serde(skip, default = "f32_neg_inf")]
     pub last_spike: f32,
     /// Exponentially-decaying spike counter used by homeostatic synaptic
-    /// scaling. Each spike adds 1.0; each step decays by
-    /// `exp(-dt / tau_homeo)`. The equilibrium value of the trace under
-    /// a steady firing rate `r` (Hz) is approximately `r · tau_homeo / 1000`.
+    /// scaling. Transient (rebuilds within a few simulated seconds).
+    #[serde(skip, default = "f32_zero")]
     pub activity_trace: f32,
+}
+
+fn f32_zero() -> f32 {
+    0.0
+}
+fn f32_neg_inf() -> f32 {
+    f32::NEG_INFINITY
 }
 
 impl LifNeuron {

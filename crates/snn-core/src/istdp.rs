@@ -23,7 +23,7 @@
 //! is applied by `Network::step` from the pre-neuron's `NeuronKind`,
 //! so the learning rule needs no sign book-keeping.
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct IStdpParams {
     /// Baseline LTP per I-pre-spike — what gets added when the post
     /// neuron is silent in the recent window.

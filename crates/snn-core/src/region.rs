@@ -7,6 +7,7 @@
 
 use crate::network::Network;
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Region {
     pub name: String,
     pub network: Network,
