@@ -95,6 +95,22 @@ impl Brain {
         }
     }
 
+    /// Turn homeostatic synaptic scaling off in every region. Symmetric
+    /// to `disable_stdp_all` — both forms of plasticity have to be
+    /// frozen for a clean recall measurement.
+    pub fn disable_homeostasis_all(&mut self) {
+        for region in &mut self.regions {
+            region.network.disable_homeostasis();
+        }
+    }
+
+    /// Turn inhibitory STDP off in every region.
+    pub fn disable_istdp_all(&mut self) {
+        for region in &mut self.regions {
+            region.network.disable_istdp();
+        }
+    }
+
     pub fn connect(
         &mut self,
         src_region: usize,

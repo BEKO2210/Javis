@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Javis · Live Brain</title>
+    <style>
+      :root {
+        --bg: #04060c;
+        --panel: rgba(14, 18, 28, 0.92);
+        --border: rgba(255, 255, 255, 0.08);
+        --text: #e6e8ee;
+        --muted: #8a93a6;
+        --accent: #7aa2ff;
+        --r1: #62d6ff;
+        --r2e: #ffd166;
+        --r2i: #ff5c8a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
+          system-ui, sans-serif;
+        overflow: hidden;
+      }
+      header {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 380px;
+        padding: 14px 20px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        z-index: 10;
+        background: linear-gradient(
+          to bottom,
+          rgba(4, 6, 12, 0.94),
+          rgba(4, 6, 12, 0)
+        );
+      }
+      header h1 {
+        margin: 0;
+        font-size: 16px;
+        letter-spacing: 0.02em;
+      }
+      .row-forms {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      form {
+        display: flex;
+        gap: 6px;
+      }
+      form label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+        align-self: center;
+      }
+      input[type="text"],
+      button {
+        background: rgba(20, 26, 38, 0.92);
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 6px 10px;
+        border-radius: 6px;
+        font: inherit;
+      }
+      input.train {
+        width: 360px;
+      }
+      input.recall {
+        width: 140px;
+      }
+      button {
+        cursor: pointer;
+        font-weight: 500;
+      }
+      button:hover {
+        background: rgba(40, 50, 70, 0.92);
+      }
+      button.primary {
+        background: rgba(122, 162, 255, 0.18);
+        border-color: rgba(122, 162, 255, 0.45);
+        color: var(--accent);
+      }
+      button.primary:hover {
+        background: rgba(122, 162, 255, 0.3);
+      }
+      button.danger {
+        color: var(--r2i);
+      }
+      main {
+        display: grid;
+        grid-template-columns: 1fr 380px;
+        height: 100vh;
+      }
+      #stage {
+        position: relative;
+        overflow: hidden;
+        background: radial-gradient(
+          ellipse at center,
+          #0a1426 0%,
+          var(--bg) 70%
+        );
+      }
+      #brain3d {
+        width: 100%;
+        height: 100%;
+      }
+      #brain3d canvas {
+        display: block;
+      }
+      #legend {
+        position: absolute;
+        bottom: 14px;
+        left: 14px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 12px;
+        color: var(--muted);
+        backdrop-filter: blur(10px);
+      }
+      #legend .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 3px 0;
+      }
+      #legend .swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        box-shadow: 0 0 6px currentColor;
+      }
+      #hint {
+        position: absolute;
+        bottom: 14px;
+        right: 14px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 11px;
+        color: var(--muted);
+        backdrop-filter: blur(10px);
+      }
+      aside {
+        background: var(--panel);
+        border-left: 1px solid var(--border);
+        padding: 16px;
+        overflow-y: auto;
+        backdrop-filter: blur(10px);
+      }
+      aside h2 {
+        margin: 0 0 8px 0;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      aside section {
+        margin-bottom: 18px;
+      }
+      .phase-line {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .stat {
+        display: flex;
+        justify-content: space-between;
+        padding: 3px 0;
+      }
+      .stat .v {
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+      }
+      .pill {
+        display: inline-block;
+        background: rgba(255, 209, 102, 0.12);
+        border: 1px solid rgba(255, 209, 102, 0.35);
+        color: var(--r2e);
+        border-radius: 999px;
+        padding: 2px 9px;
+        font-size: 12px;
+        margin: 2px 4px 2px 0;
+      }
+      .payload {
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--text);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .reduction {
+        font-size: 32px;
+        font-weight: 700;
+        color: var(--r2e);
+        font-variant-numeric: tabular-nums;
+        line-height: 1;
+        text-shadow: 0 0 18px rgba(255, 209, 102, 0.35);
+      }
+      .llm-block {
+        margin-top: 10px;
+      }
+      .llm-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      #log {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: var(--muted);
+        max-height: 160px;
+        overflow-y: auto;
+        background: rgba(0, 0, 0, 0.25);
+        border-radius: 6px;
+        padding: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Javis · Live Brain</h1>
+      <div class="row-forms">
+        <form id="train-form">
+          <label>train</label>
+          <input
+            id="train-text"
+            class="train"
+            type="text"
+            placeholder="teach the brain a sentence…"
+            autocomplete="off"
+          />
+          <button type="submit">Learn</button>
+        </form>
+        <form id="recall-form">
+          <label>recall</label>
+          <input
+            id="recall-text"
+            class="recall"
+            type="text"
+            value="rust"
+            autocomplete="off"
+          />
+          <button type="submit" class="primary">Ask</button>
+        </form>
+        <button id="reset" class="danger" type="button">reset brain</button>
+      </div>
+    </header>
+    <main>
+      <div id="stage">
+        <div id="brain3d"></div>
+        <div id="legend">
+          <div class="row">
+            <span class="swatch" style="background: var(--r1); color: var(--r1)"></span>R1 input cortex
+          </div>
+          <div class="row">
+            <span class="swatch" style="background: var(--r2e); color: var(--r2e)"></span>R2 excitatory
+          </div>
+          <div class="row">
+            <span class="swatch" style="background: var(--r2i); color: var(--r2i)"></span>R2 inhibitory
+          </div>
+        </div>
+        <div id="hint">drag · scroll · right-click pan</div>
+      </div>
+      <aside>
+        <section>
+          <h2>Phase</h2>
+          <div id="phase" class="phase-line">idle — connect by training or asking</div>
+        </section>
+        <section>
+          <h2>Live stats</h2>
+          <div class="stat"><span>Sim time</span><span class="v" id="sim-t">0 ms</span></div>
+          <div class="stat"><span>Spikes / s in R1</span><span class="v" id="rate-r1">—</span></div>
+          <div class="stat"><span>Spikes / s in R2</span><span class="v" id="rate-r2">—</span></div>
+        </section>
+        <section>
+          <h2>Decoded concepts</h2>
+          <div id="decoded">—</div>
+        </section>
+        <section>
+          <h2>Token saving</h2>
+          <div class="reduction" id="reduction">—</div>
+          <div class="stat"><span>RAG payload</span><span class="v" id="rag-tok">—</span></div>
+          <div class="stat"><span>Javis payload</span><span class="v" id="javis-tok">—</span></div>
+        </section>
+        <section>
+          <h2>RAG would send</h2>
+          <div class="payload" id="rag-text">—</div>
+        </section>
+        <section>
+          <h2>Javis sends</h2>
+          <div class="payload" id="javis-text">—</div>
+        </section>
+        <section>
+          <h2>Ask the LLM</h2>
+          <button id="send-llm" type="button" class="primary" disabled>
+            send both to Claude
+          </button>
+          <div id="llm-pair" hidden>
+            <div class="llm-block">
+              <div class="llm-label">RAG → Claude</div>
+              <div class="payload" id="rag-answer">—</div>
+              <div class="stat"><span>tokens</span><span class="v" id="rag-llm-tok">—</span></div>
+            </div>
+            <div class="llm-block">
+              <div class="llm-label">Javis → Claude</div>
+              <div class="payload" id="javis-answer">—</div>
+              <div class="stat"><span>tokens</span><span class="v" id="javis-llm-tok">—</span></div>
+            </div>
+            <div class="stat" style="margin-top: 8px;">
+              <span>real API call?</span><span class="v" id="llm-real">—</span>
+            </div>
+          </div>
+        </section>
+        <section>
+          <h2>Event log</h2>
+          <div id="log"></div>
+        </section>
+      </aside>
+    </main>
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"></script>
+    <script src="/main.js"></script>
+  </body>
+</html>

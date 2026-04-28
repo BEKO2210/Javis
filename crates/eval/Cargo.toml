@@ -1,0 +1,13 @@
+[package]
+name = "eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "End-to-end evaluation harness for Javis. Token-efficiency benchmarks against naive RAG."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+snn-core = { path = "../snn-core" }
+encoders = { path = "../encoders" }

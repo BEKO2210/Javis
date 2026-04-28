@@ -13,6 +13,7 @@
 //! magnitudes, clamped by STDP into `[w_min, w_max]`.
 
 use crate::homeostasis::HomeostasisParams;
+use crate::istdp::IStdpParams;
 use crate::neuron::{LifNeuron, NeuronKind};
 use crate::stdp::StdpParams;
 use crate::synapse::Synapse;
@@ -28,6 +29,7 @@ pub struct Network {
     pub time: f32,
     pub dt: f32,
     pub stdp: Option<StdpParams>,
+    pub istdp: Option<IStdpParams>,
     pub homeostasis: Option<HomeostasisParams>,
     pub step_counter: u64,
     /// Cumulative count of synaptic deliveries since construction.
@@ -48,6 +50,7 @@ impl Network {
             time: 0.0,
             dt,
             stdp: None,
+            istdp: None,
             homeostasis: None,
             step_counter: 0,
             synapse_events: 0,
@@ -89,6 +92,14 @@ impl Network {
         self.homeostasis = None;
     }
 
+    pub fn enable_istdp(&mut self, params: IStdpParams) {
+        self.istdp = Some(params);
+    }
+
+    pub fn disable_istdp(&mut self) {
+        self.istdp = None;
+    }
+
     /// Reset transient state (membrane potentials, synaptic currents,
     /// STDP traces, homeostatic activity traces, refractory clocks,
     /// time, step counter, event counter). Synapse weights and network
@@ -121,13 +132,23 @@ impl Network {
             *x *= decay_psc;
         }
 
-        // 2) Decay STDP traces.
+        // 2) Decay plasticity traces. `pre_trace` is only used by E-side
+        //    STDP. `post_trace` is shared between STDP (E-side) and
+        //    iSTDP (I→E side) — both interpret it as "this post-neuron
+        //    has fired recently". When both are active we decay with
+        //    the STDP `tau_minus` for compatibility.
         if let Some(p) = self.stdp {
             let dp = (-dt / p.tau_plus).exp();
             let dm = (-dt / p.tau_minus).exp();
             for x in self.pre_trace.iter_mut() {
                 *x *= dp;
             }
+            for x in self.post_trace.iter_mut() {
+                *x *= dm;
+            }
+        } else if let Some(ip) = self.istdp {
+            // iSTDP only — decay just the post-trace using its own tau.
+            let dm = (-dt / ip.tau_minus).exp();
             for x in self.post_trace.iter_mut() {
                 *x *= dm;
             }
@@ -150,25 +171,34 @@ impl Network {
             }
         }
 
-        // 4) Deliver synaptic effects + STDP updates for spikes this step.
+        // 4) Deliver synaptic effects + plasticity updates for spikes this step.
         let stdp = self.stdp;
+        let istdp = self.istdp;
+        let any_post_trace = stdp.is_some() || istdp.is_some();
         let homeo_active = self.homeostasis.is_some();
         for &src in &fired {
             if stdp.is_some() {
                 self.pre_trace[src] += 1.0;
+            }
+            if any_post_trace {
                 self.post_trace[src] += 1.0;
             }
             if homeo_active {
                 self.neurons[src].activity_trace += 1.0;
             }
-            let sign: f32 = match self.neurons[src].kind {
+            let src_kind = self.neurons[src].kind;
+            let sign: f32 = match src_kind {
                 NeuronKind::Excitatory => 1.0,
                 NeuronKind::Inhibitory => -1.0,
             };
 
-            // Outgoing edges from `src`: deliver PSC, optional LTD update.
-            // Iterate by index so we keep `self.synapses` mutable while the
-            // adjacency vector itself is not touched.
+            // Outgoing edges from `src`: deliver PSC, optional plasticity.
+            //
+            // - E-pre + STDP: classical LTD using post_trace[post].
+            // - I-pre + iSTDP: anti-Hebbian update on I→E edges using
+            //   `dw = a_plus - a_minus * post_trace[post]`. Pre-only
+            //   firing (silent E) drives LTP; co-activity (E recently
+            //   fired) drives LTD. Magnitudes stay non-negative.
             let n_out = self.outgoing[src].len();
             for i in 0..n_out {
                 let eid = self.outgoing[src][i] as usize;
@@ -176,19 +206,38 @@ impl Network {
                 let w = self.synapses[eid].weight;
                 self.i_syn[post] += sign * w;
                 self.synapse_events += 1;
-                if let Some(p) = stdp {
-                    let new_w = (w - p.a_minus * self.post_trace[post])
-                        .clamp(p.w_min, p.w_max);
-                    self.synapses[eid].weight = new_w;
+                match src_kind {
+                    NeuronKind::Excitatory => {
+                        if let Some(p) = stdp {
+                            let new_w = (w - p.a_minus * self.post_trace[post])
+                                .clamp(p.w_min, p.w_max);
+                            self.synapses[eid].weight = new_w;
+                        }
+                    }
+                    NeuronKind::Inhibitory => {
+                        if let Some(ip) = istdp {
+                            if self.neurons[post].kind == NeuronKind::Excitatory {
+                                let dw = ip.a_plus - ip.a_minus * self.post_trace[post];
+                                let new_w = (w + dw).clamp(ip.w_min, ip.w_max);
+                                self.synapses[eid].weight = new_w;
+                            }
+                        }
+                    }
                 }
             }
 
-            // Incoming edges to `src`: optional LTP update on each.
+            // Incoming edges to `src`: classical STDP LTP (E-side).
+            // iSTDP does not need an incoming-side update — the rule on
+            // the I-pre-spike side already covers both LTP (silent E)
+            // and LTD (recently-fired E) cases.
             if let Some(p) = stdp {
                 let n_in = self.incoming[src].len();
                 for i in 0..n_in {
                     let eid = self.incoming[src][i] as usize;
                     let pre = self.synapses[eid].pre;
+                    if self.neurons[pre].kind != NeuronKind::Excitatory {
+                        continue;
+                    }
                     let w = self.synapses[eid].weight;
                     let new_w = (w + p.a_plus * self.pre_trace[pre])
                         .clamp(p.w_min, p.w_max);
@@ -233,7 +282,12 @@ impl Network {
             // incoming weights uniformly, destroying their relative
             // pattern. Clamping the factor to be non-negative keeps the
             // scaling well-defined even in extreme regimes.
-            let factor = (1.0 + h.eta_scale * (h.a_target - trace)).max(0.0);
+            let factor_raw = 1.0 + h.eta_scale * (h.a_target - trace);
+            let factor = if h.scale_only_down {
+                factor_raw.clamp(0.0, 1.0)
+            } else {
+                factor_raw.max(0.0)
+            };
             // Skip if no-op — saves the inner loop entirely.
             if factor == 1.0 {
                 continue;
