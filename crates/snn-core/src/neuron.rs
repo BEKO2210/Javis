@@ -42,6 +42,11 @@ pub struct LifNeuron {
     pub v: f32,
     pub refractory_until: f32,
     pub last_spike: f32,
+    /// Exponentially-decaying spike counter used by homeostatic synaptic
+    /// scaling. Each spike adds 1.0; each step decays by
+    /// `exp(-dt / tau_homeo)`. The equilibrium value of the trace under
+    /// a steady firing rate `r` (Hz) is approximately `r · tau_homeo / 1000`.
+    pub activity_trace: f32,
 }
 
 impl LifNeuron {
@@ -62,6 +67,7 @@ impl LifNeuron {
             v: params.v_rest,
             refractory_until: f32::NEG_INFINITY,
             last_spike: f32::NEG_INFINITY,
+            activity_trace: 0.0,
             kind,
             params,
         }
