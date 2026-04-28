@@ -56,6 +56,35 @@ impl EngramDictionary {
         self.entries.insert(word.to_string(), indices);
     }
 
+    /// Return the `k` engrams with the highest containment score
+    /// against `active_r2_indices`, sorted descending. Useful when the
+    /// right cut-off varies per query — top-k removes the threshold
+    /// guesswork. Empty engrams are skipped. Ties are broken
+    /// alphabetically so the result is deterministic.
+    pub fn decode_top(&self, active_r2_indices: &[u32], k: usize) -> Vec<(String, f32)> {
+        let mut active = active_r2_indices.to_vec();
+        active.sort_unstable();
+        active.dedup();
+
+        let mut scored: Vec<(String, f32)> = self
+            .entries
+            .iter()
+            .filter(|(_, stored)| !stored.is_empty())
+            .map(|(word, stored)| {
+                let overlap = sorted_overlap(stored, &active);
+                let ratio = overlap as f32 / stored.len() as f32;
+                (word.clone(), ratio)
+            })
+            .collect();
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        scored.truncate(k);
+        scored
+    }
+
     /// Score every stored engram against `active_r2_indices` and return
     /// the words whose containment ratio (|active ∩ stored| / |stored|)
     /// meets `min_overlap_ratio`, sorted from highest score to lowest.
@@ -173,6 +202,39 @@ mod tests {
         let out = d.decode(&[1, 1, 1, 2, 2, 3, 3, 3], 0.5);
         assert_eq!(out.len(), 1);
         assert!((out[0].1 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decode_top_returns_k_best_results() {
+        let mut d = EngramDictionary::new();
+        d.learn_concept("strong", &[1, 2, 3, 4]);              // 4/4 = 1.00
+        d.learn_concept("medium", &[1, 2, 3, 99]);             // 3/4 = 0.75
+        d.learn_concept("weak", &[1, 2, 3, 4, 5, 6, 7, 8]);    // 4/8 = 0.50
+
+        let active = vec![1, 2, 3, 4];
+        let top1 = d.decode_top(&active, 1);
+        assert_eq!(top1.len(), 1);
+        assert_eq!(top1[0].0, "strong");
+
+        let top2 = d.decode_top(&active, 2);
+        assert_eq!(top2.len(), 2);
+        assert_eq!(top2[0].0, "strong");
+        assert_eq!(top2[1].0, "medium");
+
+        let top10 = d.decode_top(&active, 10);
+        assert_eq!(top10.len(), 3); // capped by dictionary size
+        assert!(top10[0].1 >= top10[1].1 && top10[1].1 >= top10[2].1);
+    }
+
+    #[test]
+    fn decode_top_breaks_ties_alphabetically() {
+        let mut d = EngramDictionary::new();
+        d.learn_concept("zebra", &[1, 2, 3]);
+        d.learn_concept("alpha", &[1, 2, 3]);
+
+        let top = d.decode_top(&[1, 2, 3], 2);
+        assert_eq!(top[0].0, "alpha");
+        assert_eq!(top[1].0, "zebra");
     }
 
     #[test]

@@ -89,8 +89,6 @@ const RECALL_MS: f32 = 30.0;
 /// associated concepts (~10 words × 20 fingerprint bits = 200), so
 /// the partial query cue completes the rest of its paragraph.
 const KWTA_K: usize = 220;
-/// Containment-score threshold for the dictionary readout.
-const DECODE_THRESHOLD: f32 = 0.50;
 
 fn r2_stdp() -> StdpParams {
     let mut s = StdpParams::default();
@@ -293,9 +291,46 @@ fn vocabulary(corpus: &[&str], enc: &TextEncoder) -> Vec<String> {
 /// above the relevance threshold, sorted by score descending.
 pub type DecodedWords = Vec<(String, f32)>;
 
+/// Default decode threshold — kept high so the standard token-efficiency
+/// benchmark stays sparse. Lower values surface intra-topic associative
+/// recall (see `wiki_benchmark::associative_recall_*` tests).
+pub const DEFAULT_DECODE_THRESHOLD: f32 = 0.50;
+
 /// Train R2 on `corpus`, fingerprint every vocabulary word as an
-/// engram in the dictionary, then recall with `query` and decode.
+/// engram in the dictionary, then recall with `query` and decode at
+/// the default threshold.
 pub fn run_javis_pipeline(corpus: &[&str], query: &str) -> DecodedWords {
+    run_javis_pipeline_with_threshold(corpus, query, DEFAULT_DECODE_THRESHOLD)
+}
+
+/// Like [`run_javis_pipeline`] but returns the top-`k` engrams instead
+/// of everything above a threshold. Robust when the right cut-off
+/// varies per query — the top-k cap removes the threshold guesswork.
+pub fn run_javis_pipeline_top_k(
+    corpus: &[&str],
+    query: &str,
+    k: usize,
+) -> DecodedWords {
+    let (recall_indices, dict) = run_javis_recall_inner(corpus, query);
+    dict.decode_top(&recall_indices, k)
+}
+
+/// Same pipeline, parametrised decode threshold. Lower thresholds
+/// admit weaker engram matches — useful for associative recall, but
+/// risks leaking cross-topic content.
+pub fn run_javis_pipeline_with_threshold(
+    corpus: &[&str],
+    query: &str,
+    threshold: f32,
+) -> DecodedWords {
+    let (recall_indices, dict) = run_javis_recall_inner(corpus, query);
+    dict.decode(&recall_indices, threshold)
+}
+
+/// Phases 1–3 of the pipeline: train R2 on the corpus, fingerprint
+/// every vocabulary word as an engram, run the query and return the
+/// kWTA-filtered recall pattern alongside the trained dictionary.
+fn run_javis_recall_inner(corpus: &[&str], query: &str) -> (Vec<u32>, EngramDictionary) {
     let enc = TextEncoder::with_stopwords(ENC_N, ENC_K, STOPWORDS.iter().copied());
     let vocab = vocabulary(corpus, &enc);
 
@@ -338,18 +373,12 @@ pub fn run_javis_pipeline(corpus: &[&str], query: &str) -> DecodedWords {
     // -------- Phase 3: query recall --------
     let query_sdr = enc.encode(query);
     if query_sdr.indices.is_empty() {
-        return Vec::new();
+        return (Vec::new(), dict);
     }
     brain.reset_state();
     let counts = run_with_cue_counts(&mut brain, &query_sdr.indices, RECALL_MS);
     let recall_indices = top_k_indices(&counts, KWTA_K);
-
-    // -------- Phase 4: decode --------
-    // The asymmetric containment score is `|recall ∩ stored| / |stored|`,
-    // i.e. "how much of this concept's engram is in the recall pattern".
-    // The threshold trades off precision (high → only the strongest
-    // associates) vs. recall (low → more co-paragraph concepts).
-    dict.decode(&recall_indices, DECODE_THRESHOLD)
+    (recall_indices, dict)
 }
 
 // ----------------------------------------------------------------------
