@@ -233,7 +233,12 @@ impl Network {
             // incoming weights uniformly, destroying their relative
             // pattern. Clamping the factor to be non-negative keeps the
             // scaling well-defined even in extreme regimes.
-            let factor = (1.0 + h.eta_scale * (h.a_target - trace)).max(0.0);
+            let factor_raw = 1.0 + h.eta_scale * (h.a_target - trace);
+            let factor = if h.scale_only_down {
+                factor_raw.clamp(0.0, 1.0)
+            } else {
+                factor_raw.max(0.0)
+            };
             // Skip if no-op — saves the inner loop entirely.
             if factor == 1.0 {
                 continue;

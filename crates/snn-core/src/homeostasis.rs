@@ -31,6 +31,13 @@ pub struct HomeostasisParams {
     /// Run the scaling pass every N steps. Larger N is cheaper; the
     /// trace itself is updated every step regardless.
     pub apply_every: u32,
+    /// If true, weights can only ever shrink (factor capped at 1.0).
+    /// Useful when STDP already does the potentiation and homeostasis
+    /// only needs to stop runaway. Avoids the unstable weight-pumping
+    /// regime where low-activity neurons get their weights amplified
+    /// by `factor > 1`, which can spread activity through recurrent
+    /// loops and trigger network-wide hyperactivity.
+    pub scale_only_down: bool,
 }
 
 impl Default for HomeostasisParams {
@@ -40,6 +47,7 @@ impl Default for HomeostasisParams {
             a_target: 5.0,
             tau_homeo_ms: 2000.0,
             apply_every: 100,
+            scale_only_down: false,
         }
     }
 }
