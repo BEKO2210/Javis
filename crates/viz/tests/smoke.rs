@@ -102,6 +102,63 @@ async fn ask_returns_both_answers_in_mock_mode() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_round_trip_preserves_recall() {
+    // 1) Train on a sentence, recall it, capture the candidate set.
+    let state_a = Arc::new(viz::AppState::new_with_mock_llm());
+    state_a
+        .run_train(
+            "Lava is liquid molten rock from a volcano.".into(),
+            None,
+        )
+        .await;
+    let (s_before, w_before) = state_a.stats().await;
+    assert!(s_before == 1 && w_before > 0);
+
+    // 2) Save to a temp file.
+    let tmp_dir = std::env::temp_dir();
+    let path = tmp_dir.join(format!(
+        "javis-snapshot-{}.json",
+        std::process::id()
+    ));
+    state_a.save_to_file(&path).await.unwrap();
+    assert!(path.exists());
+
+    // 3) Build a fresh, empty AppState and load the snapshot.
+    let state_b = Arc::new(viz::AppState::new_with_mock_llm());
+    let (s_empty, w_empty) = state_b.stats().await;
+    assert_eq!((s_empty, w_empty), (0, 0));
+    state_b.load_from_file(&path).await.unwrap();
+    let (s_after, w_after) = state_b.stats().await;
+    assert_eq!((s_after, w_after), (s_before, w_before));
+
+    // 4) Recall a word from the trained sentence on the *loaded* brain
+    //    and confirm it surfaces in the candidate list.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = viz::server::router_no_static(state_b);
+    let server = tokio::task::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let url = format!("ws://{addr}/ws?action=recall&query=lava");
+    let decoded = walk_until_done(&url).await;
+    let d = decoded.expect("no decoded after snapshot load");
+    let candidates = d.get("candidates").and_then(|v| v.as_array()).unwrap();
+    let words: Vec<String> = candidates
+        .iter()
+        .filter_map(|c| c.get("word").and_then(|w| w.as_str()).map(str::to_string))
+        .collect();
+    assert!(
+        words.iter().any(|w| w == "lava"),
+        "loaded brain lost the trained word: {words:?}",
+    );
+
+    server.abort();
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reset_clears_dictionary() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

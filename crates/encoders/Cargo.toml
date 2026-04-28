@@ -10,3 +10,4 @@ path = "src/lib.rs"
 
 [dependencies]
 snn-core = { path = "../snn-core" }
+serde = { workspace = true }

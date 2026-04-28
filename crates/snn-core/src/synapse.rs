@@ -3,7 +3,7 @@
 //! When the pre-synaptic neuron fires, `weight` is added to the
 //! post-synaptic neuron's `i_syn`, which then decays with `tau_syn`.
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Synapse {
     pub pre: usize,
     pub post: usize,

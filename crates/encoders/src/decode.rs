@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct EngramDictionary {
     entries: HashMap<String, Vec<u32>>,
 }

@@ -18,22 +18,35 @@ use crate::neuron::{LifNeuron, NeuronKind};
 use crate::stdp::StdpParams;
 use crate::synapse::Synapse;
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Network {
     pub neurons: Vec<LifNeuron>,
     pub synapses: Vec<Synapse>,
     pub outgoing: Vec<Vec<u32>>,
     pub incoming: Vec<Vec<u32>>,
+    /// Synaptic current channel — transient, rebuilt on first step
+    /// after a snapshot load.
+    #[serde(skip, default)]
     pub i_syn: Vec<f32>,
+    /// STDP pre-trace per neuron — transient.
+    #[serde(skip, default)]
     pub pre_trace: Vec<f32>,
+    /// STDP post-trace per neuron — transient.
+    #[serde(skip, default)]
     pub post_trace: Vec<f32>,
+    /// Simulation clock — transient.
+    #[serde(skip, default)]
     pub time: f32,
     pub dt: f32,
     pub stdp: Option<StdpParams>,
     pub istdp: Option<IStdpParams>,
     pub homeostasis: Option<HomeostasisParams>,
+    /// Step counter — transient.
+    #[serde(skip, default)]
     pub step_counter: u64,
-    /// Cumulative count of synaptic deliveries since construction.
-    /// Useful for benchmarking real work done.
+    /// Cumulative count of synaptic deliveries since construction —
+    /// transient.
+    #[serde(skip, default)]
     pub synapse_events: u64,
 }
 
@@ -74,6 +87,22 @@ impl Network {
         self.outgoing[pre].push(id as u32);
         self.incoming[post].push(id as u32);
         id
+    }
+
+    /// Ensure the transient buffers (`i_syn`, `pre_trace`, `post_trace`)
+    /// have the right length for the current neuron count. Called after
+    /// loading a snapshot, where `#[serde(skip)]` left them empty.
+    pub fn ensure_transient_state(&mut self) {
+        let n = self.neurons.len();
+        if self.i_syn.len() != n {
+            self.i_syn = vec![0.0; n];
+        }
+        if self.pre_trace.len() != n {
+            self.pre_trace = vec![0.0; n];
+        }
+        if self.post_trace.len() != n {
+            self.post_trace = vec![0.0; n];
+        }
     }
 
     pub fn enable_stdp(&mut self, params: StdpParams) {

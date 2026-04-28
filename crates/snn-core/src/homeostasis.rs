@@ -18,7 +18,7 @@
 //! Default `eta_scale = 0.0` — homeostasis is off unless explicitly
 //! enabled, so older baseline tests behave exactly as before.
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct HomeostasisParams {
     /// Learning rate of the multiplicative scaling. `0.0` disables.
     pub eta_scale: f32,

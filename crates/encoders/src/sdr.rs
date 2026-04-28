@@ -1,7 +1,7 @@
 //! Sparse Distributed Representation: a sorted, unique list of active
 //! bit indices in an address space of size `n`.
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Sdr {
     pub n: u32,
     pub indices: Vec<u32>,

@@ -5,7 +5,7 @@
 //! grow proportionally to the pre-trace of their source. On a pre-synaptic
 //! spike, weights shrink proportionally to the post-trace of their target.
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct StdpParams {
     pub a_plus: f32,
     pub a_minus: f32,
