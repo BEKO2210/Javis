@@ -1,0 +1,12 @@
+[package]
+name = "encoders"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Text → SDR encoders for Javis. Deterministic, dependency-free hashing."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+snn-core = { path = "../snn-core" }
