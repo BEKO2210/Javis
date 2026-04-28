@@ -280,3 +280,267 @@ fn decoder_retrieves_completed_pattern() {
         );
     }
 }
+
+// ----------------------------------------------------------------------
+// Multi-concept coexistence test
+// ----------------------------------------------------------------------
+//
+// Selectivity solution — kWTA on the recall window
+// -------------------------------------------------
+// Plain spike-set readouts swamp the dictionary in the multi-concept
+// regime: after sequential STDP training the recurrent network keeps
+// every learnt assembly mutually reachable, so reading "every neuron
+// that fired at least once during recall" returns ~70 % of R2 and
+// matches every fingerprint by sheer cardinality.
+//
+// Recent SNN-engram papers (Caligiore et al., PLOS Comp Bio 2024;
+// Nature Neuroscience 2024 on selective engrams) point out the same
+// thing in biology and propose **inhibitory selectivity at recall**:
+// only the most strongly activated neurons "win" and represent the
+// retrieved concept; the rest are suppressed by lateral / heterosynaptic
+// inhibition. We approximate that here with a simple k-Winners-Take-All
+// post-filter: rank R2-E neurons by how many times they fired during
+// the recall window and keep only the top `MULTI_KWTA` — biologically
+// the equivalent of "after the inhibitory interneurons settle, only
+// the dominant assembly survives."
+
+const MULTI_TRAINING_MS: f32 = 150.0;
+const MULTI_RECALL_MS: f32 = 100.0;
+const MULTI_KWTA: usize = 200;
+
+fn r2_homeostasis_multi() -> HomeostasisParams {
+    HomeostasisParams {
+        eta_scale: 0.002,
+        a_target: 2.0,
+        tau_homeo_ms: 30.0,
+        apply_every: 8,
+        scale_only_down: true,
+    }
+}
+
+fn r2_stdp_multi() -> StdpParams {
+    r2_stdp()
+}
+
+fn score_for(candidates: &[(String, f32)], word: &str) -> f32 {
+    candidates
+        .iter()
+        .find(|(w, _)| w == word)
+        .map(|(_, s)| *s)
+        .unwrap_or(0.0)
+}
+
+/// Run a cue and record spike *counts* per excitatory R2 neuron over
+/// the entire recall window. Returns the per-neuron spike count vector
+/// (length = number of excitatory neurons in R2, indexed by neuron id).
+fn run_with_cue_counts(brain: &mut Brain, cue_indices: &[u32], duration_ms: f32) -> Vec<u32> {
+    let r2_e = r2_excitatory_indices(brain);
+    let r2_size = brain.regions[1].num_neurons();
+    let mut counts = vec![0u32; r2_size];
+
+    let mut ext1 = vec![0.0_f32; R1_N];
+    for &idx in cue_indices {
+        if (idx as usize) < R1_N {
+            ext1[idx as usize] = DRIVE_NA;
+        }
+    }
+    let ext2 = vec![0.0_f32; R2_N];
+    let externals = vec![ext1, ext2];
+
+    let total_steps = (duration_ms / DT) as usize;
+    for _ in 0..total_steps {
+        let spikes = brain.step(&externals);
+        for &id in &spikes[1] {
+            if r2_e.contains(&id) {
+                counts[id] += 1;
+            }
+        }
+    }
+    counts
+}
+
+/// kWTA filter: pick the indices of the `k` highest-count neurons.
+/// Ties broken by lower neuron index. Sorted ascending.
+fn top_k_indices(counts: &[u32], k: usize) -> Vec<u32> {
+    let mut paired: Vec<(u32, usize)> = counts
+        .iter()
+        .enumerate()
+        .filter(|(_, &c)| c > 0)
+        .map(|(i, &c)| (c, i))
+        .collect();
+    // Sort descending by count, then ascending by index.
+    paired.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    paired.truncate(k);
+    let mut idx: Vec<u32> = paired.into_iter().map(|(_, i)| i as u32).collect();
+    idx.sort_unstable();
+    idx
+}
+
+fn run_recall(
+    brain: &mut Brain,
+    cue_indices: &[u32],
+    dict: &EngramDictionary,
+) -> (Vec<(String, f32)>, usize) {
+    brain.reset_state();
+    let counts = run_with_cue_counts(brain, cue_indices, MULTI_RECALL_MS);
+    let kwta = top_k_indices(&counts, MULTI_KWTA);
+    (dict.decode(&kwta, 0.0), kwta.len())
+}
+
+#[test]
+fn multiple_overlapping_concepts_coexist() {
+    let stops = ["the", "is", "on", "a", "der", "die", "und"];
+    let enc = TextEncoder::with_stopwords(ENC_N, ENC_K, stops);
+
+    let cue_hello = enc.encode("hello");
+    let cue_rust = enc.encode("rust");
+    let cue_world = enc.encode("world");
+    let cue_hello_rust = enc.encode("hello rust");
+    let cue_hello_world = enc.encode("hello world");
+
+    let mut brain = Brain::new(DT);
+    brain.add_region(build_input_region());
+    brain.add_region(build_memory_region(31415));
+    wire_forward(&mut brain, 27182);
+
+    // We deliberately do NOT fingerprint here. The dictionary will be
+    // populated *after* training, from the engram pattern that each
+    // concept-cue actually evokes through its STDP-shaped recurrent
+    // structure. That is what we'll later try to recognise during
+    // pattern completion, so that's the representation the dictionary
+    // should hold.
+
+    // Phase 2 — sequential associative training with both forms of
+    // plasticity active. `reset_state` clears the transient state
+    // between sentences but leaves synapse weights, so the second
+    // training builds on (rather than replaces) the first.
+    brain.regions[1].network.enable_stdp(r2_stdp_multi());
+    brain.regions[1].network.enable_homeostasis(r2_homeostasis_multi());
+
+    // Three interleaved rounds of "hello rust" then "hello world".
+    // A single sequential pass would let the second sentence's STDP
+    // run on top of the first sentence's already-strong weights and
+    // catastrophically bias the network toward the first concept.
+    // Interleaving gives both associations equal effective practice.
+    for _ in 0..3 {
+        brain.reset_state();
+        let _ = run_with_cue(
+            &mut brain,
+            &cue_hello_rust.indices,
+            MULTI_TRAINING_MS,
+            TARGET_WINDOW_MS,
+        );
+        brain.reset_state();
+        let _ = run_with_cue(
+            &mut brain,
+            &cue_hello_world.indices,
+            MULTI_TRAINING_MS,
+            TARGET_WINDOW_MS,
+        );
+    }
+
+    idle(&mut brain, COOLDOWN_MS);
+
+    // Phase 3 — register engram fingerprints *after* training but with
+    // both forms of plasticity frozen, so the act of fingerprinting
+    // does not change the network. Each concept-cue is then run alone
+    // and its kWTA-filtered top-K spike pattern goes into the
+    // dictionary as the "engram for this concept". This is the same
+    // top-K selection that a competing-inhibition recall circuit would
+    // converge to — see module-level note above.
+    brain.disable_stdp_all();
+    brain.disable_homeostasis_all();
+
+    let mut dict = EngramDictionary::new();
+    let cues: [(&str, &[u32]); 3] = [
+        ("hello", &cue_hello.indices),
+        ("rust", &cue_rust.indices),
+        ("world", &cue_world.indices),
+    ];
+    for (word, cue) in cues {
+        brain.reset_state();
+        let counts = run_with_cue_counts(&mut brain, cue, MULTI_RECALL_MS);
+        let kwta = top_k_indices(&counts, MULTI_KWTA);
+        eprintln!("engram '{word}': {} bits", kwta.len());
+        dict.learn_concept(word, &kwta);
+    }
+
+    let (cands_rust, n_rust) = run_recall(&mut brain, &cue_rust.indices, &dict);
+    let (cands_world, n_world) = run_recall(&mut brain, &cue_world.indices, &dict);
+    let (cands_hello, n_hello) = run_recall(&mut brain, &cue_hello.indices, &dict);
+    eprintln!(
+        "recall set sizes: rust={} world={} hello={}",
+        n_rust, n_world, n_hello,
+    );
+
+    let s_rust_hello = score_for(&cands_rust, "hello");
+    let s_rust_rust = score_for(&cands_rust, "rust");
+    let s_rust_world = score_for(&cands_rust, "world");
+
+    let s_world_hello = score_for(&cands_world, "hello");
+    let s_world_world = score_for(&cands_world, "world");
+    let s_world_rust = score_for(&cands_world, "rust");
+
+    let s_hello_hello = score_for(&cands_hello, "hello");
+    let s_hello_rust = score_for(&cands_hello, "rust");
+    let s_hello_world = score_for(&cands_hello, "world");
+
+    eprintln!(
+        "recall(rust)  → hello={:.2} rust={:.2} world={:.2}",
+        s_rust_hello, s_rust_rust, s_rust_world,
+    );
+    eprintln!(
+        "recall(world) → hello={:.2} rust={:.2} world={:.2}",
+        s_world_hello, s_world_rust, s_world_world,
+    );
+    eprintln!(
+        "recall(hello) → hello={:.2} rust={:.2} world={:.2}",
+        s_hello_hello, s_hello_rust, s_hello_world,
+    );
+
+    // Direct concept retrieval: the kWTA-gated readout for the same
+    // cue used to fingerprint each engram must match strongly. We
+    // expect the score very close to 1.0 because the recall pattern
+    // is built from the very same firing distribution as the engram.
+    assert!(
+        s_rust_rust >= 0.95 && s_world_world >= 0.95 && s_hello_hello >= 0.95,
+        "direct retrieval too weak: rust={:.2} world={:.2} hello={:.2}",
+        s_rust_rust, s_world_world, s_hello_hello,
+    );
+
+    // Cross-concept selectivity — the bleeding cure. rust and world
+    // share only the hello hub, so their kWTA-gated engrams must stay
+    // mutually distinguishable below the relevance threshold.
+    assert!(
+        s_rust_world < 0.40,
+        "rust→world contamination ({:.2}, want < 0.40)",
+        s_rust_world,
+    );
+    assert!(
+        s_world_rust < 0.40,
+        "world→rust contamination ({:.2}, want < 0.40)",
+        s_world_rust,
+    );
+
+    // Direct cue dominates the indirect cross-concept activation.
+    assert!(
+        s_rust_rust > s_rust_world && s_world_world > s_world_rust,
+        "direct cue did not dominate over cross-concept",
+    );
+
+    // Pattern completion via the hub still works — every cue lifts
+    // its associated concepts above chance. With kWTA in place the
+    // signal is sparser than in the single-concept test (0.93 → 0.30+)
+    // but it is real associative recall, not network-wide co-activation.
+    assert!(
+        s_rust_hello >= 0.30 && s_world_hello >= 0.30,
+        "hub recall from concept too weak: rust→hello={:.2} world→hello={:.2}",
+        s_rust_hello, s_world_hello,
+    );
+    assert!(
+        s_hello_rust >= 0.30 && s_hello_world >= 0.30,
+        "concept recall from hub too weak — possible catastrophic forgetting: \
+         hello→rust={:.2} hello→world={:.2}",
+        s_hello_rust, s_hello_world,
+    );
+}
