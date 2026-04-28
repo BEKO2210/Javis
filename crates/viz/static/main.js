@@ -269,27 +269,32 @@ function handleEvent(ev) {
 
 let socket = null;
 
-function startSession(query) {
+function startAction(action, paramName, paramValue) {
   if (socket) {
     socket.close();
     socket = null;
   }
-  $("#decoded").textContent = "—";
-  $("#reduction").textContent = "—";
-  $("#rag-tok").textContent = "—";
-  $("#javis-tok").textContent = "—";
-  $("#rag-text").textContent = "—";
-  $("#javis-text").textContent = "—";
+  if (action === "recall") {
+    $("#decoded").textContent = "—";
+    $("#reduction").textContent = "—";
+    $("#rag-tok").textContent = "—";
+    $("#javis-tok").textContent = "—";
+    $("#rag-text").textContent = "—";
+    $("#javis-text").textContent = "—";
+  }
   $("#phase").textContent = "connecting…";
-  $("#log").innerHTML = "";
   recentR1 = 0;
   recentR2 = 0;
   lastSampleMs = 0;
   simTms = 0;
 
-  const url = `ws://${location.host}/ws?query=${encodeURIComponent(query)}`;
+  let url = `ws://${location.host}/ws?action=${action}`;
+  if (paramName && paramValue) {
+    url += `&${paramName}=${encodeURIComponent(paramValue)}`;
+  }
   socket = new WebSocket(url);
-  socket.onopen = () => log(`ws connected — query="${query}"`);
+  socket.onopen = () =>
+    log(`ws ${action}${paramValue ? ` "${paramValue}"` : ""}`);
   socket.onclose = () => log("ws closed");
   socket.onerror = () => log("ws error");
   socket.onmessage = (msg) => {
@@ -301,11 +306,30 @@ function startSession(query) {
   };
 }
 
-$("#cue-form").addEventListener("submit", (e) => {
+$("#train-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  const q = $("#cue").value.trim();
-  if (q) startSession(q);
+  const text = $("#train-text").value.trim();
+  if (!text) return;
+  startAction("train", "text", text);
+  $("#train-text").value = "";
 });
 
-// Auto-start so the first visit shows life.
-startSession($("#cue").value.trim() || "rust");
+$("#recall-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const q = $("#recall-text").value.trim();
+  if (!q) return;
+  startAction("recall", "query", q);
+});
+
+$("#reset").addEventListener("click", () => {
+  startAction("reset");
+  $("#log").innerHTML = "";
+});
+
+// Default: an immediate recall against the bootstrap-trained corpus.
+startAction("recall", "query", "rust");
+
+// Keep `startSession` as a thin alias so older callers keep working.
+function startSession(query) {
+  startAction("recall", "query", query);
+}

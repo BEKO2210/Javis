@@ -33,7 +33,7 @@
         position: fixed;
         top: 0;
         left: 0;
-        right: 360px;
+        right: 380px;
         padding: 14px 20px;
         display: flex;
         align-items: center;
@@ -41,40 +41,69 @@
         z-index: 10;
         background: linear-gradient(
           to bottom,
-          rgba(4, 6, 12, 0.92),
+          rgba(4, 6, 12, 0.94),
           rgba(4, 6, 12, 0)
         );
-        pointer-events: none;
       }
       header h1 {
         margin: 0;
         font-size: 16px;
         letter-spacing: 0.02em;
       }
-      header form {
+      .row-forms {
+        margin-left: auto;
         display: flex;
         gap: 8px;
-        margin-left: auto;
-        pointer-events: auto;
+        align-items: center;
+        flex-wrap: wrap;
       }
-      header input,
-      header button {
-        background: rgba(20, 26, 38, 0.9);
+      form {
+        display: flex;
+        gap: 6px;
+      }
+      form label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+        align-self: center;
+      }
+      input[type="text"],
+      button {
+        background: rgba(20, 26, 38, 0.92);
         border: 1px solid var(--border);
         color: var(--text);
         padding: 6px 10px;
         border-radius: 6px;
         font: inherit;
       }
-      header button {
-        cursor: pointer;
+      input.train {
+        width: 360px;
       }
-      header button:hover {
-        background: rgba(40, 50, 70, 0.9);
+      input.recall {
+        width: 140px;
+      }
+      button {
+        cursor: pointer;
+        font-weight: 500;
+      }
+      button:hover {
+        background: rgba(40, 50, 70, 0.92);
+      }
+      button.primary {
+        background: rgba(122, 162, 255, 0.18);
+        border-color: rgba(122, 162, 255, 0.45);
+        color: var(--accent);
+      }
+      button.primary:hover {
+        background: rgba(122, 162, 255, 0.3);
+      }
+      button.danger {
+        color: var(--r2i);
       }
       main {
         display: grid;
-        grid-template-columns: 1fr 360px;
+        grid-template-columns: 1fr 380px;
         height: 100vh;
       }
       #stage {
@@ -150,7 +179,6 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 12px;
         color: var(--muted);
-        white-space: pre;
       }
       .stat {
         display: flex;
@@ -193,7 +221,7 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
         color: var(--muted);
-        max-height: 180px;
+        max-height: 160px;
         overflow-y: auto;
         background: rgba(0, 0, 0, 0.25);
         border-radius: 6px;
@@ -204,10 +232,31 @@
   <body>
     <header>
       <h1>Javis · Live Brain</h1>
-      <form id="cue-form">
-        <input id="cue" type="text" value="rust" autocomplete="off" />
-        <button type="submit">Recall</button>
-      </form>
+      <div class="row-forms">
+        <form id="train-form">
+          <label>train</label>
+          <input
+            id="train-text"
+            class="train"
+            type="text"
+            placeholder="teach the brain a sentence…"
+            autocomplete="off"
+          />
+          <button type="submit">Learn</button>
+        </form>
+        <form id="recall-form">
+          <label>recall</label>
+          <input
+            id="recall-text"
+            class="recall"
+            type="text"
+            value="rust"
+            autocomplete="off"
+          />
+          <button type="submit" class="primary">Ask</button>
+        </form>
+        <button id="reset" class="danger" type="button">reset brain</button>
+      </div>
     </header>
     <main>
       <div id="stage">
@@ -228,7 +277,7 @@
       <aside>
         <section>
           <h2>Phase</h2>
-          <div id="phase" class="phase-line">idle — waiting for query…</div>
+          <div id="phase" class="phase-line">idle — connect by training or asking</div>
         </section>
         <section>
           <h2>Live stats</h2>

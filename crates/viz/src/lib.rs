@@ -1,13 +1,13 @@
 //! Library face of the Javis visualisation server.
 //!
-//! Exposes the streaming pipeline and the wire types so integration
-//! tests (and any future embedders) can run a session without going
-//! through the binary.
+//! Holds a single persistent brain in [`state::AppState`] and exposes
+//! it via the WebSocket router from [`server`]. Integration tests use
+//! the same building blocks the binary uses.
 
 pub mod events;
-pub mod pipeline;
 pub mod server;
+pub mod state;
 
 pub use events::{DecodedWord, Event};
-pub use pipeline::run_demo_session;
-pub use server::{router, run_session};
+pub use server::{router, router_no_static};
+pub use state::AppState;

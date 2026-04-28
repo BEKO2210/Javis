@@ -1,53 +1,105 @@
 //! Axum router + WebSocket session, factored out so both the binary
 //! (`src/main.rs`) and integration tests can share the same wiring.
+//!
+//! The server holds one persistent [`AppState`]. Each WebSocket
+//! request triggers either a training pass (`?action=train&text=…`),
+//! a recall (`?action=recall&query=…`) or a state reset
+//! (`?action=reset`). All event traffic streams over the same JSON
+//! schema described in [`crate::events`].
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::Query;
+use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tower_http::services::ServeDir;
 
 use crate::events::Event;
-use crate::pipeline::run_demo_session;
+use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Action {
+    #[default]
+    Recall,
+    Train,
+    Reset,
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub struct WsParams {
-    #[serde(default = "default_query")]
-    pub query: String,
+    #[serde(default)]
+    action: Action,
+    /// For `recall` — the query keyword.
+    #[serde(default)]
+    query: Option<String>,
+    /// For `train` — the sentence to learn.
+    #[serde(default)]
+    text: Option<String>,
 }
 
-fn default_query() -> String {
-    "rust".to_string()
-}
-
-/// Build the full router, including the static-file fallback. Pass a
-/// path-less router (no fallback) by calling `Router::new().route(...)`
-/// directly if you don't want static files.
-pub fn router(static_dir: PathBuf) -> Router {
+/// Build the full router (static-file fallback + `/ws` endpoint).
+pub fn router(state: Arc<AppState>, static_dir: PathBuf) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
-        .fallback_service(ServeDir::new(static_dir))
+        .with_state(state)
+        .fallback_service(tower_http::services::ServeDir::new(static_dir))
 }
 
 /// Bare router without static-file serving — handy for tests.
-pub fn router_no_static() -> Router {
-    Router::new().route("/ws", get(ws_handler))
+pub fn router_no_static(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/ws", get(ws_handler))
+        .with_state(state)
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, Query(params): Query<WsParams>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| run_session(socket, params.query))
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<WsParams>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| run_session(socket, state, params))
 }
 
-pub async fn run_session(mut socket: WebSocket, query: String) {
+pub async fn run_session(mut socket: WebSocket, state: Arc<AppState>, params: WsParams) {
     let (tx, mut rx) = mpsc::channel::<Event>(1024);
-    let q = query.clone();
+
+    let handle_state = state.clone();
     let handle = tokio::task::spawn(async move {
-        run_demo_session(q, tx).await;
+        match params.action {
+            Action::Recall => {
+                let query = params.query.unwrap_or_else(|| "rust".to_string());
+                handle_state.run_recall(query, tx).await;
+            }
+            Action::Train => {
+                let sentence = params.text.unwrap_or_default();
+                if sentence.trim().is_empty() {
+                    let _ = tx
+                        .send(Event::Phase {
+                            name: "error".into(),
+                            detail: "empty training text".into(),
+                        })
+                        .await;
+                    let _ = tx.send(Event::Done).await;
+                    return;
+                }
+                handle_state.run_train(sentence, Some(tx)).await;
+            }
+            Action::Reset => {
+                handle_state.reset().await;
+                let _ = tx
+                    .send(Event::Phase {
+                        name: "reset".into(),
+                        detail: "brain wiped".into(),
+                    })
+                    .await;
+                let _ = tx.send(Event::Done).await;
+            }
+        }
     });
 
     while let Some(ev) = rx.recv().await {
