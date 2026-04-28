@@ -76,6 +76,25 @@ impl Brain {
         }
     }
 
+    /// Reset every region's transient state and clear the global event
+    /// queue + clock. Region topology and synaptic weights survive.
+    pub fn reset_state(&mut self) {
+        for region in &mut self.regions {
+            region.network.reset_state();
+        }
+        self.pending.clear();
+        self.time = 0.0;
+        self.events_delivered = 0;
+    }
+
+    /// Turn STDP off in every region. Useful before recall measurements
+    /// so that the act of measuring does not itself modify weights.
+    pub fn disable_stdp_all(&mut self) {
+        for region in &mut self.regions {
+            region.network.disable_stdp();
+        }
+    }
+
     pub fn connect(
         &mut self,
         src_region: usize,
