@@ -15,7 +15,8 @@ use snn_core::{
 };
 use tokio::sync::{mpsc::Sender, Mutex};
 
-use crate::events::{DecodedWord, Event};
+use crate::events::{DecodedWord, Event, LlmReply};
+use llm::LlmClient;
 
 // ----------------------------------------------------------------------
 // Topology + plasticity (sweet spot from notes/11–12)
@@ -279,6 +280,7 @@ fn top_k(counts: &[u32], k: usize) -> Vec<u32> {
 
 pub struct AppState {
     inner: Arc<Mutex<Inner>>,
+    llm: Arc<LlmClient>,
 }
 
 struct Inner {
@@ -300,13 +302,27 @@ impl AppState {
         };
         Self {
             inner: Arc::new(Mutex::new(inner)),
+            llm: Arc::new(LlmClient::from_env()),
         }
+    }
+
+    /// Same brain, but with the LLM forced into mock mode — useful for
+    /// tests and offline demos.
+    pub fn new_with_mock_llm() -> Self {
+        let mut s = Self::new();
+        s.llm = Arc::new(LlmClient::mock());
+        s
     }
 
     pub fn handle(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            llm: Arc::clone(&self.llm),
         }
+    }
+
+    pub fn llm_is_real(&self) -> bool {
+        self.llm.is_real()
     }
 
     /// Reset to a freshly-initialised brain. Loses every learnt engram.
@@ -514,6 +530,60 @@ impl AppState {
     pub async fn stats(&self) -> (usize, usize) {
         let g = self.inner.lock().await;
         (g.trained_sentences.len(), g.known_words.len())
+    }
+
+    /// Send the question to the LLM twice in parallel — once with the
+    /// full RAG payload as context, once with the compact Javis payload.
+    /// Streams the answers back as a single `Asked` event so the UI can
+    /// show them side by side.
+    pub async fn run_ask(
+        &self,
+        question: String,
+        rag_payload: String,
+        javis_payload: String,
+        tx: Sender<Event>,
+    ) {
+        let _ = tx
+            .send(Event::Phase {
+                name: "asking".into(),
+                detail: if self.llm.is_real() {
+                    format!("calling Claude (real) with both payloads")
+                } else {
+                    format!("calling Claude (mock) with both payloads")
+                },
+            })
+            .await;
+
+        let llm = self.llm.clone();
+        let llm_b = self.llm.clone();
+        let q1 = question.clone();
+        let q2 = question.clone();
+        let ctx_rag = rag_payload.clone();
+        let ctx_jvs = javis_payload.clone();
+
+        let (rag_ans, jvs_ans) = tokio::join!(
+            async move { llm.ask(&q1, &ctx_rag).await },
+            async move { llm_b.ask(&q2, &ctx_jvs).await },
+        );
+
+        let _ = tx
+            .send(Event::Asked {
+                question,
+                rag: LlmReply {
+                    text: rag_ans.text,
+                    input_tokens: rag_ans.input_tokens,
+                    output_tokens: rag_ans.output_tokens,
+                    real: rag_ans.real,
+                },
+                javis: LlmReply {
+                    text: jvs_ans.text,
+                    input_tokens: jvs_ans.input_tokens,
+                    output_tokens: jvs_ans.output_tokens,
+                    real: jvs_ans.real,
+                },
+            })
+            .await;
+        let _ = tx.send(Event::Done).await;
     }
 }
 

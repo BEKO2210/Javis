@@ -51,6 +51,57 @@ async fn train_then_recall_streams_decoded() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ask_returns_both_answers_in_mock_mode() {
+    // Force the LLM into mock mode so the test never hits the network.
+    std::env::remove_var("ANTHROPIC_API_KEY");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = Arc::new(viz::AppState::new_with_mock_llm());
+    let app = viz::server::router_no_static(state);
+    let server = tokio::task::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let url = format!(
+        "ws://{addr}/ws?action=ask&query=rust&rag={}&javis=rust",
+        urlencode("Rust is a systems language focused on memory safety."),
+    );
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    let mut asked: Option<serde_json::Value> = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while let Ok(Some(msg)) = tokio::time::timeout_at(deadline, ws.next()).await {
+        let Ok(msg) = msg else { break };
+        let Message::Text(text) = msg else { continue };
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("asked") => asked = Some(v),
+            Some("done") => break,
+            _ => {}
+        }
+    }
+    let _ = ws.send(Message::Close(None)).await;
+
+    let a = asked.expect("no asked event received");
+    let rag = a.get("rag").unwrap();
+    let javis = a.get("javis").unwrap();
+    assert!(rag.get("text").and_then(|t| t.as_str()).unwrap().len() > 0);
+    assert!(javis.get("text").and_then(|t| t.as_str()).unwrap().len() > 0);
+    assert_eq!(rag.get("real").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(javis.get("real").and_then(|v| v.as_bool()), Some(false));
+    let rag_in = rag.get("input_tokens").and_then(|v| v.as_u64()).unwrap();
+    let jvs_in = javis.get("input_tokens").and_then(|v| v.as_u64()).unwrap();
+    assert!(
+        rag_in > jvs_in,
+        "expected RAG context to use more tokens than Javis: rag={rag_in} javis={jvs_in}",
+    );
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reset_clears_dictionary() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

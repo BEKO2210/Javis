@@ -213,6 +213,10 @@ function onStep(ev) {
   tickStats(ev.t_ms, ev.r1.length, ev.r2.length);
 }
 
+// Last decoded payload, kept around so the "Send to LLM" button can
+// fire an `ask` request without re-running recall.
+let lastDecoded = null;
+
 function onDecoded(ev) {
   const decodedDiv = $("#decoded");
   decodedDiv.innerHTML = "";
@@ -231,9 +235,34 @@ function onDecoded(ev) {
   $("#javis-tok").textContent = `${ev.javis_tokens} tokens`;
   $("#rag-text").textContent = ev.rag_payload || "—";
   $("#javis-text").textContent = ev.javis_payload || "—";
+
+  lastDecoded = {
+    query: ev.query,
+    rag: ev.rag_payload || "",
+    javis: ev.javis_payload || "",
+  };
+  $("#send-llm").disabled = false;
+  // Fresh recall hides any previous LLM answer pair.
+  $("#llm-pair").hidden = true;
+
   log(
     `decoded query="${ev.query}" → ${ev.candidates.length} candidates, ` +
       `reduction ${ev.reduction_pct.toFixed(1)}%`,
+  );
+}
+
+function onAsked(ev) {
+  $("#llm-pair").hidden = false;
+  $("#rag-answer").textContent = ev.rag.text;
+  $("#javis-answer").textContent = ev.javis.text;
+  $("#rag-llm-tok").textContent =
+    `in ${ev.rag.input_tokens} · out ${ev.rag.output_tokens}`;
+  $("#javis-llm-tok").textContent =
+    `in ${ev.javis.input_tokens} · out ${ev.javis.output_tokens}`;
+  $("#llm-real").textContent = ev.rag.real ? "yes (Anthropic)" : "no (mock)";
+  log(
+    `asked "${ev.question}" → RAG ${ev.rag.input_tokens}→${ev.rag.output_tokens} ` +
+      `· Javis ${ev.javis.input_tokens}→${ev.javis.output_tokens}`,
   );
 }
 
@@ -256,6 +285,9 @@ function handleEvent(ev) {
       break;
     case "decoded":
       onDecoded(ev);
+      break;
+    case "asked":
+      onAsked(ev);
       break;
     case "done":
       log("session done");
@@ -324,6 +356,37 @@ $("#recall-form").addEventListener("submit", (e) => {
 $("#reset").addEventListener("click", () => {
   startAction("reset");
   $("#log").innerHTML = "";
+  lastDecoded = null;
+  $("#send-llm").disabled = true;
+  $("#llm-pair").hidden = true;
+});
+
+$("#send-llm").addEventListener("click", () => {
+  if (!lastDecoded) return;
+  if (socket) {
+    socket.close();
+    socket = null;
+  }
+  $("#phase").textContent = "asking the LLM…";
+  $("#rag-answer").textContent = "…";
+  $("#javis-answer").textContent = "…";
+  $("#llm-pair").hidden = false;
+  let url =
+    `ws://${location.host}/ws?action=ask` +
+    `&query=${encodeURIComponent(lastDecoded.query)}` +
+    `&rag=${encodeURIComponent(lastDecoded.rag)}` +
+    `&javis=${encodeURIComponent(lastDecoded.javis)}`;
+  socket = new WebSocket(url);
+  socket.onopen = () => log(`ws ask "${lastDecoded.query}"`);
+  socket.onclose = () => log("ws closed");
+  socket.onerror = () => log("ws error");
+  socket.onmessage = (msg) => {
+    try {
+      handleEvent(JSON.parse(msg.data));
+    } catch (e) {
+      /* ignore */
+    }
+  };
 });
 
 // Default: an immediate recall against the bootstrap-trained corpus.

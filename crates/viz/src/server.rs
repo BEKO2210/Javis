@@ -28,18 +28,25 @@ enum Action {
     Recall,
     Train,
     Reset,
+    Ask,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct WsParams {
     #[serde(default)]
     action: Action,
-    /// For `recall` — the query keyword.
+    /// For `recall` and `ask` — the query keyword / question.
     #[serde(default)]
     query: Option<String>,
     /// For `train` — the sentence to learn.
     #[serde(default)]
     text: Option<String>,
+    /// For `ask` — the full RAG context payload.
+    #[serde(default)]
+    rag: Option<String>,
+    /// For `ask` — the compact Javis context payload.
+    #[serde(default)]
+    javis: Option<String>,
 }
 
 /// Build the full router (static-file fallback + `/ws` endpoint).
@@ -98,6 +105,22 @@ pub async fn run_session(mut socket: WebSocket, state: Arc<AppState>, params: Ws
                     })
                     .await;
                 let _ = tx.send(Event::Done).await;
+            }
+            Action::Ask => {
+                let question = params.query.unwrap_or_default();
+                let rag = params.rag.unwrap_or_default();
+                let javis = params.javis.unwrap_or_default();
+                if question.trim().is_empty() {
+                    let _ = tx
+                        .send(Event::Phase {
+                            name: "error".into(),
+                            detail: "ask requires a query".into(),
+                        })
+                        .await;
+                    let _ = tx.send(Event::Done).await;
+                    return;
+                }
+                handle_state.run_ask(question, rag, javis, tx).await;
             }
         }
     });

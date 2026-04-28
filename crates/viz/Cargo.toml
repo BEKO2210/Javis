@@ -16,6 +16,7 @@ path = "src/main.rs"
 snn-core = { path = "../snn-core" }
 encoders = { path = "../encoders" }
 eval = { path = "../eval" }
+llm = { path = "../llm" }
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
 tower-http = { version = "0.5", features = ["fs", "trace"] }

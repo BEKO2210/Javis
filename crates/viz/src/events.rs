@@ -38,8 +38,25 @@ pub enum Event {
         rag_payload: String,
         javis_payload: String,
     },
+    /// Both LLM calls (RAG-payload-context and Javis-payload-context)
+    /// have come back with answers and token usage.
+    Asked {
+        question: String,
+        rag: LlmReply,
+        javis: LlmReply,
+    },
     /// Demo session has finished.
     Done,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LlmReply {
+    pub text: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    /// True if a real Anthropic API call returned this; false for the
+    /// deterministic offline mock.
+    pub real: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

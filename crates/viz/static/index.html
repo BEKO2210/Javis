@@ -217,6 +217,20 @@
         line-height: 1;
         text-shadow: 0 0 18px rgba(255, 209, 102, 0.35);
       }
+      .llm-block {
+        margin-top: 10px;
+      }
+      .llm-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
       #log {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
@@ -302,6 +316,27 @@
         <section>
           <h2>Javis sends</h2>
           <div class="payload" id="javis-text">—</div>
+        </section>
+        <section>
+          <h2>Ask the LLM</h2>
+          <button id="send-llm" type="button" class="primary" disabled>
+            send both to Claude
+          </button>
+          <div id="llm-pair" hidden>
+            <div class="llm-block">
+              <div class="llm-label">RAG → Claude</div>
+              <div class="payload" id="rag-answer">—</div>
+              <div class="stat"><span>tokens</span><span class="v" id="rag-llm-tok">—</span></div>
+            </div>
+            <div class="llm-block">
+              <div class="llm-label">Javis → Claude</div>
+              <div class="payload" id="javis-answer">—</div>
+              <div class="stat"><span>tokens</span><span class="v" id="javis-llm-tok">—</span></div>
+            </div>
+            <div class="stat" style="margin-top: 8px;">
+              <span>real API call?</span><span class="v" id="llm-real">—</span>
+            </div>
+          </div>
         </section>
         <section>
           <h2>Event log</h2>
