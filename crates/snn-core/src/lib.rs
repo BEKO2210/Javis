@@ -9,8 +9,12 @@ pub mod neuron;
 pub mod synapse;
 pub mod network;
 pub mod stdp;
+pub mod rng;
+pub mod poisson;
 
 pub use neuron::{LifNeuron, LifParams};
 pub use synapse::Synapse;
 pub use network::Network;
 pub use stdp::StdpParams;
+pub use rng::Rng;
+pub use poisson::PoissonInput;

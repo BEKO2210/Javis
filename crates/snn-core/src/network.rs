@@ -23,6 +23,9 @@ pub struct Network {
     pub time: f32,
     pub dt: f32,
     pub stdp: Option<StdpParams>,
+    /// Cumulative count of synaptic deliveries since construction.
+    /// Useful for benchmarking real work done.
+    pub synapse_events: u64,
 }
 
 impl Network {
@@ -36,6 +39,7 @@ impl Network {
             time: 0.0,
             dt,
             stdp: None,
+            synapse_events: 0,
         }
     }
 
@@ -56,6 +60,26 @@ impl Network {
 
     pub fn enable_stdp(&mut self, params: StdpParams) {
         self.stdp = Some(params);
+    }
+
+    pub fn disable_stdp(&mut self) {
+        self.stdp = None;
+    }
+
+    /// Reset transient state (membrane potentials, synaptic currents,
+    /// STDP traces, refractory clocks, time). Synapse weights and
+    /// network topology are preserved.
+    pub fn reset_state(&mut self) {
+        for (idx, n) in self.neurons.iter_mut().enumerate() {
+            n.v = n.params.v_rest;
+            n.refractory_until = f32::NEG_INFINITY;
+            n.last_spike = f32::NEG_INFINITY;
+            self.i_syn[idx] = 0.0;
+            self.pre_trace[idx] = 0.0;
+            self.post_trace[idx] = 0.0;
+        }
+        self.time = 0.0;
+        self.synapse_events = 0;
     }
 
     /// Advance the network one timestep with optional external currents.
@@ -102,6 +126,7 @@ impl Network {
             for syn in self.synapses.iter_mut() {
                 if syn.pre == src {
                     self.i_syn[syn.post] += syn.weight;
+                    self.synapse_events += 1;
                     if let Some(p) = stdp {
                         // Pre-before-... → LTD contribution: w -= A_minus * post_trace[post]
                         syn.weight -= p.a_minus * self.post_trace[syn.post];
