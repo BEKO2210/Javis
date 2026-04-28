@@ -5,7 +5,7 @@
     <title>Javis · Live Brain</title>
     <style>
       :root {
-        --bg: #07080d;
+        --bg: #04060c;
         --panel: rgba(14, 18, 28, 0.92);
         --border: rgba(255, 255, 255, 0.08);
         --text: #e6e8ee;
@@ -27,13 +27,24 @@
         color: var(--text);
         font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
           system-ui, sans-serif;
+        overflow: hidden;
       }
       header {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 360px;
         padding: 14px 20px;
-        border-bottom: 1px solid var(--border);
         display: flex;
         align-items: center;
         gap: 14px;
+        z-index: 10;
+        background: linear-gradient(
+          to bottom,
+          rgba(4, 6, 12, 0.92),
+          rgba(4, 6, 12, 0)
+        );
+        pointer-events: none;
       }
       header h1 {
         margin: 0;
@@ -44,10 +55,11 @@
         display: flex;
         gap: 8px;
         margin-left: auto;
+        pointer-events: auto;
       }
       header input,
       header button {
-        background: rgba(255, 255, 255, 0.04);
+        background: rgba(20, 26, 38, 0.9);
         border: 1px solid var(--border);
         color: var(--text);
         padding: 6px 10px;
@@ -58,21 +70,28 @@
         cursor: pointer;
       }
       header button:hover {
-        background: rgba(255, 255, 255, 0.08);
+        background: rgba(40, 50, 70, 0.9);
       }
       main {
         display: grid;
         grid-template-columns: 1fr 360px;
-        height: calc(100vh - 51px);
+        height: 100vh;
       }
       #stage {
-        background: radial-gradient(
-          ellipse at center,
-          #0d1422 0%,
-          var(--bg) 70%
-        );
         position: relative;
         overflow: hidden;
+        background: radial-gradient(
+          ellipse at center,
+          #0a1426 0%,
+          var(--bg) 70%
+        );
+      }
+      #brain3d {
+        width: 100%;
+        height: 100%;
+      }
+      #brain3d canvas {
+        display: block;
       }
       #legend {
         position: absolute;
@@ -84,6 +103,7 @@
         padding: 10px 12px;
         font-size: 12px;
         color: var(--muted);
+        backdrop-filter: blur(10px);
       }
       #legend .row {
         display: flex;
@@ -95,12 +115,26 @@
         width: 10px;
         height: 10px;
         border-radius: 50%;
+        box-shadow: 0 0 6px currentColor;
+      }
+      #hint {
+        position: absolute;
+        bottom: 14px;
+        right: 14px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 11px;
+        color: var(--muted);
+        backdrop-filter: blur(10px);
       }
       aside {
         background: var(--panel);
         border-left: 1px solid var(--border);
         padding: 16px;
         overflow-y: auto;
+        backdrop-filter: blur(10px);
       }
       aside h2 {
         margin: 0 0 8px 0;
@@ -129,9 +163,9 @@
       }
       .pill {
         display: inline-block;
-        background: rgba(122, 162, 255, 0.15);
-        border: 1px solid rgba(122, 162, 255, 0.3);
-        color: var(--accent);
+        background: rgba(255, 209, 102, 0.12);
+        border: 1px solid rgba(255, 209, 102, 0.35);
+        color: var(--r2e);
         border-radius: 999px;
         padding: 2px 9px;
         font-size: 12px;
@@ -148,16 +182,18 @@
         word-break: break-word;
       }
       .reduction {
-        font-size: 28px;
-        font-weight: 600;
+        font-size: 32px;
+        font-weight: 700;
         color: var(--r2e);
         font-variant-numeric: tabular-nums;
+        line-height: 1;
+        text-shadow: 0 0 18px rgba(255, 209, 102, 0.35);
       }
       #log {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
         color: var(--muted);
-        max-height: 220px;
+        max-height: 180px;
         overflow-y: auto;
         background: rgba(0, 0, 0, 0.25);
         border-radius: 6px;
@@ -175,18 +211,19 @@
     </header>
     <main>
       <div id="stage">
-        <canvas id="raster"></canvas>
+        <div id="brain3d"></div>
         <div id="legend">
           <div class="row">
-            <span class="swatch" style="background: var(--r1)"></span>R1 input
+            <span class="swatch" style="background: var(--r1); color: var(--r1)"></span>R1 input cortex
           </div>
           <div class="row">
-            <span class="swatch" style="background: var(--r2e)"></span>R2 excitatory
+            <span class="swatch" style="background: var(--r2e); color: var(--r2e)"></span>R2 excitatory
           </div>
           <div class="row">
-            <span class="swatch" style="background: var(--r2i)"></span>R2 inhibitory
+            <span class="swatch" style="background: var(--r2i); color: var(--r2i)"></span>R2 inhibitory
           </div>
         </div>
+        <div id="hint">drag · scroll · right-click pan</div>
       </div>
       <aside>
         <section>
@@ -223,6 +260,8 @@
         </section>
       </aside>
     </main>
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"></script>
     <script src="/main.js"></script>
   </body>
 </html>

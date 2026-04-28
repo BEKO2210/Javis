@@ -1,6 +1,9 @@
-// Javis live visualisation.
-// Iteration 1: 2D spike raster on canvas + live stats. Iteration 2 will
-// swap the canvas for a 3D brain (Three.js / 3d-force-graph).
+// Javis live visualisation — Iteration 2: 3D brain.
+//
+// Two anatomical "lobes" arranged in space: R1 (input cortex) on the
+// left, R2 (memory cortex) on the right with inhibitory neurons
+// embedded inside it. Spikes paint their neuron bright for ~200 ms and
+// fade back to base colour. Wire format is unchanged from iteration 1.
 
 const $ = (sel) => document.querySelector(sel);
 const log = (msg) => {
@@ -11,138 +14,258 @@ const log = (msg) => {
   el.scrollTop = el.scrollHeight;
 };
 
-// Canvas spike raster -------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Brain layout
+// ---------------------------------------------------------------------------
 
-const canvas = $("#raster");
-const ctx = canvas.getContext("2d");
+const COLORS = {
+  r1: new THREE.Color("#62d6ff"),
+  r2e: new THREE.Color("#ffd166"),
+  r2i: new THREE.Color("#ff5c8a"),
+  spike: new THREE.Color("#ffffff"),
+};
 
-let totalNeurons = 1; // updated on init
-let r1Size = 1;
-let r2eSize = 1;
-let r2iSize = 1;
-let firstR2 = 0;
-let firstR2i = 0;
+// Centres and radii of the two anatomical lobes.
+const LAYOUT = {
+  r1: { cx: -260, cy: 0, cz: 0, radius: 70 },
+  r2: { cx: 140, cy: 0, cz: 0, radius: 130 },
+};
 
-let pixelRatio = 1;
-
-function resizeCanvas() {
-  pixelRatio = window.devicePixelRatio || 1;
-  const stage = $("#stage");
-  const w = stage.clientWidth;
-  const h = stage.clientHeight;
-  canvas.style.width = w + "px";
-  canvas.style.height = h + "px";
-  canvas.width = Math.floor(w * pixelRatio);
-  canvas.height = Math.floor(h * pixelRatio);
-  ctx.fillStyle = "#0a0e18";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-}
-window.addEventListener("resize", resizeCanvas);
-resizeCanvas();
-
-let xCursor = 0;
-let xWindowMs = 600; // visible time window
-let pxPerMs = 0;
-
-function setupRaster(init) {
-  r1Size = init.r1_size;
-  r2eSize = init.r2_excitatory;
-  r2iSize = init.r2_inhibitory;
-  totalNeurons = r1Size + r2eSize + r2iSize;
-  firstR2 = r1Size;
-  firstR2i = r1Size + r2eSize;
-  ctx.fillStyle = "#0a0e18";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  pxPerMs = canvas.width / xWindowMs;
-  xCursor = 0;
+// Fibonacci-sphere distribution: gives an even, organic-looking
+// scatter on the surface of a sphere.
+function fibSpherePoint(idx, total, radius, jitter = 0) {
+  const phi = Math.acos(1 - (2 * (idx + 0.5)) / total);
+  const theta = Math.PI * (1 + Math.sqrt(5)) * idx;
+  const r = radius * (1 - jitter * Math.random());
+  return {
+    x: r * Math.sin(phi) * Math.cos(theta),
+    y: r * Math.sin(phi) * Math.sin(theta),
+    z: r * Math.cos(phi),
+  };
 }
 
-function plotSpikes(t_ms, r1, r2) {
-  // Fade older content slightly.
-  ctx.fillStyle = "rgba(10, 14, 24, 0.04)";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  const x = Math.floor(xCursor * pxPerMs);
-  // wrap
-  if (xCursor >= xWindowMs) {
-    ctx.fillStyle = "#0a0e18";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    xCursor = 0;
+// Each region carries its own colour and centre; we pre-compute fixed
+// positions so the lobes hold their shape (no force-layout drift).
+function buildGraph(init) {
+  const nodes = [];
+  for (let i = 0; i < init.r1_size; i++) {
+    const p = fibSpherePoint(i, init.r1_size, LAYOUT.r1.radius, 0.05);
+    nodes.push({
+      id: `r1-${i}`,
+      region: "r1",
+      fx: LAYOUT.r1.cx + p.x,
+      fy: LAYOUT.r1.cy + p.y,
+      fz: LAYOUT.r1.cz + p.z,
+    });
   }
-  const dotR1 = "#62d6ff";
-  const dotR2e = "#ffd166";
-  const dotR2i = "#ff5c8a";
-
-  const xpos = Math.floor(xCursor * pxPerMs);
-  const dot = 2 * pixelRatio;
-  // R1 band: top third
-  for (const id of r1) {
-    const y = Math.floor((id / r1Size) * canvas.height * 0.30);
-    ctx.fillStyle = dotR1;
-    ctx.fillRect(xpos, y, dot, dot);
+  for (let i = 0; i < init.r2_excitatory; i++) {
+    const p = fibSpherePoint(i, init.r2_excitatory, LAYOUT.r2.radius, 0.04);
+    nodes.push({
+      id: `r2e-${i}`,
+      region: "r2e",
+      fx: LAYOUT.r2.cx + p.x,
+      fy: LAYOUT.r2.cy + p.y,
+      fz: LAYOUT.r2.cz + p.z,
+    });
   }
-  // R2-E band: middle, R2-I band: bottom
-  for (const id of r2) {
-    let y;
-    if (id < firstR2i - firstR2) {
-      // excitatory portion of r2 (id is local to r2)
+  // I-cells on a smaller inner shell — anatomically interneurons sit
+  // inside excitatory tissue.
+  for (let i = 0; i < init.r2_inhibitory; i++) {
+    const p = fibSpherePoint(
+      i,
+      init.r2_inhibitory,
+      LAYOUT.r2.radius * 0.55,
+      0.15,
+    );
+    nodes.push({
+      id: `r2i-${i}`,
+      region: "r2i",
+      fx: LAYOUT.r2.cx + p.x,
+      fy: LAYOUT.r2.cy + p.y,
+      fz: LAYOUT.r2.cz + p.z,
+    });
+  }
+  return { nodes, links: [] };
+}
+
+// ---------------------------------------------------------------------------
+// 3D rendering
+// ---------------------------------------------------------------------------
+
+let Graph = null;
+let nodeById = new Map(); // id -> { node, mat, base, lastSpike }
+
+function initBrain(init) {
+  const data = buildGraph(init);
+
+  if (Graph) {
+    // Tear the old graph down so a re-init (new query) starts fresh.
+    Graph._destructor && Graph._destructor();
+    $("#brain3d").innerHTML = "";
+  }
+  nodeById = new Map();
+
+  Graph = ForceGraph3D()(document.getElementById("brain3d"))
+    .backgroundColor("#04060c")
+    .showNavInfo(false)
+    .nodeRelSize(2)
+    .nodeOpacity(0.92)
+    .graphData(data)
+    .nodeThreeObject((node) => {
+      const base = COLORS[node.region].clone();
+      const radius = node.region === "r2i" ? 1.3 : 1.6;
+      const geom = new THREE.SphereGeometry(radius, 8, 6);
+      const mat = new THREE.MeshBasicMaterial({
+        color: base.clone(),
+        transparent: true,
+        opacity: 0.85,
+      });
+      const mesh = new THREE.Mesh(geom, mat);
+      nodeById.set(node.id, {
+        node,
+        mat,
+        base: base.clone(),
+        lastSpike: -Infinity,
+      });
+      return mesh;
+    })
+    .nodeThreeObjectExtend(false);
+
+  // Camera framing.
+  Graph.cameraPosition({ x: 0, y: 80, z: 480 }, { x: 0, y: 0, z: 0 }, 0);
+
+  // Disable charge-force so positions stay where we set them.
+  const fg = Graph.d3Force("charge");
+  if (fg) fg.strength(0);
+  const link = Graph.d3Force("link");
+  if (link) link.strength(0);
+}
+
+// Spike animation tick — runs every animation frame, decays the glow on
+// every node we've recently illuminated.
+const SPIKE_DECAY_MS = 220;
+
+function animateSpikes() {
+  const now = performance.now();
+  for (const entry of nodeById.values()) {
+    if (entry.lastSpike < 0) continue;
+    const age = now - entry.lastSpike;
+    if (age > SPIKE_DECAY_MS) {
+      entry.mat.color.copy(entry.base);
+      entry.mat.opacity = 0.85;
+      entry.lastSpike = -1;
+      continue;
     }
+    const t = 1 - age / SPIKE_DECAY_MS;
+    entry.mat.color.copy(entry.base).lerp(COLORS.spike, t);
+    entry.mat.opacity = 0.85 + 0.15 * t;
   }
-  // Brain reports r2 indices as global within R2 (0..R2_N).
-  // We split E (first 80%) and I (last 20%).
-  for (const id of r2) {
-    const r2Idx = id; // R2-local
-    if (r2Idx < r2eSize) {
-      const y =
-        canvas.height * 0.32 +
-        (r2Idx / r2eSize) * canvas.height * 0.5;
-      ctx.fillStyle = dotR2e;
-      ctx.fillRect(xpos, Math.floor(y), dot, dot);
-    } else {
-      const i = r2Idx - r2eSize;
-      const y =
-        canvas.height * 0.84 + (i / Math.max(r2iSize, 1)) * canvas.height * 0.14;
-      ctx.fillStyle = dotR2i;
-      ctx.fillRect(xpos, Math.floor(y), dot, dot);
-    }
-  }
+  requestAnimationFrame(animateSpikes);
+}
+requestAnimationFrame(animateSpikes);
 
-  // Sweeping cursor.
-  ctx.fillStyle = "rgba(255,255,255,0.08)";
-  ctx.fillRect(xpos + dot, 0, 1, canvas.height);
-
-  xCursor += 1; // 1ms per Step batch
+function flashNode(id) {
+  const entry = nodeById.get(id);
+  if (!entry) return;
+  entry.lastSpike = performance.now();
 }
 
-// Live stats ----------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Live stats
+// ---------------------------------------------------------------------------
 
 let recentR1 = 0;
 let recentR2 = 0;
-let recentMs = 0;
 let lastSampleMs = 0;
 let simTms = 0;
 
 function tickStats(t_ms, r1Count, r2Count) {
   recentR1 += r1Count;
   recentR2 += r2Count;
-  recentMs += 1; // 1 ms batches
   simTms = t_ms;
   $("#sim-t").textContent = `${Math.round(t_ms)} ms`;
-
-  // Refresh rate readout every ~250 ms of sim time.
   if (simTms - lastSampleMs >= 250) {
     const window_s = (simTms - lastSampleMs) / 1000;
     const r1ps = window_s > 0 ? Math.round(recentR1 / window_s) : 0;
     const r2ps = window_s > 0 ? Math.round(recentR2 / window_s) : 0;
-    $("#rate-r1").textContent = `${r1ps.toLocaleString()}`;
-    $("#rate-r2").textContent = `${r2ps.toLocaleString()}`;
+    $("#rate-r1").textContent = r1ps.toLocaleString();
+    $("#rate-r2").textContent = r2ps.toLocaleString();
     recentR1 = 0;
     recentR2 = 0;
     lastSampleMs = simTms;
   }
 }
 
-// WebSocket session ---------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Event handling
+// ---------------------------------------------------------------------------
+
+let r2eSize = 0;
+
+function onStep(ev) {
+  // R1 indices are global within R1.
+  for (const id of ev.r1) flashNode(`r1-${id}`);
+  // R2 indices are global within R2 (excitatory first, then inhibitory).
+  for (const id of ev.r2) {
+    if (id < r2eSize) flashNode(`r2e-${id}`);
+    else flashNode(`r2i-${id - r2eSize}`);
+  }
+  tickStats(ev.t_ms, ev.r1.length, ev.r2.length);
+}
+
+function onDecoded(ev) {
+  const decodedDiv = $("#decoded");
+  decodedDiv.innerHTML = "";
+  if (ev.candidates.length === 0) {
+    decodedDiv.textContent = "no concepts above threshold";
+  } else {
+    for (const c of ev.candidates) {
+      const pill = document.createElement("span");
+      pill.className = "pill";
+      pill.textContent = `${c.word} · ${c.score.toFixed(2)}`;
+      decodedDiv.appendChild(pill);
+    }
+  }
+  $("#reduction").textContent = `−${ev.reduction_pct.toFixed(1)}%`;
+  $("#rag-tok").textContent = `${ev.rag_tokens} tokens`;
+  $("#javis-tok").textContent = `${ev.javis_tokens} tokens`;
+  $("#rag-text").textContent = ev.rag_payload || "—";
+  $("#javis-text").textContent = ev.javis_payload || "—";
+  log(
+    `decoded query="${ev.query}" → ${ev.candidates.length} candidates, ` +
+      `reduction ${ev.reduction_pct.toFixed(1)}%`,
+  );
+}
+
+function handleEvent(ev) {
+  switch (ev.type) {
+    case "init":
+      r2eSize = ev.r2_excitatory;
+      initBrain(ev);
+      log(
+        `init R1=${ev.r1_size}  R2=${ev.r2_size} ` +
+          `(${ev.r2_excitatory}E + ${ev.r2_inhibitory}I)`,
+      );
+      break;
+    case "phase":
+      $("#phase").textContent = `${ev.name} — ${ev.detail}`;
+      log(`phase: ${ev.name} (${ev.detail})`);
+      break;
+    case "step":
+      onStep(ev);
+      break;
+    case "decoded":
+      onDecoded(ev);
+      break;
+    case "done":
+      log("session done");
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket session
+// ---------------------------------------------------------------------------
 
 let socket = null;
 
@@ -168,63 +291,14 @@ function startSession(query) {
   socket = new WebSocket(url);
   socket.onopen = () => log(`ws connected — query="${query}"`);
   socket.onclose = () => log("ws closed");
-  socket.onerror = (e) => log("ws error");
+  socket.onerror = () => log("ws error");
   socket.onmessage = (msg) => {
-    let ev;
     try {
-      ev = JSON.parse(msg.data);
+      handleEvent(JSON.parse(msg.data));
     } catch (e) {
-      return;
+      /* ignore malformed frames */
     }
-    handleEvent(ev);
   };
-}
-
-function handleEvent(ev) {
-  switch (ev.type) {
-    case "init":
-      setupRaster(ev);
-      log(
-        `init R1=${ev.r1_size}  R2=${ev.r2_size} ` +
-          `(${ev.r2_excitatory}E + ${ev.r2_inhibitory}I)`,
-      );
-      break;
-    case "phase":
-      $("#phase").textContent = `${ev.name} — ${ev.detail}`;
-      log(`phase: ${ev.name} (${ev.detail})`);
-      break;
-    case "step":
-      plotSpikes(ev.t_ms, ev.r1, ev.r2);
-      tickStats(ev.t_ms, ev.r1.length, ev.r2.length);
-      break;
-    case "decoded": {
-      const decodedDiv = $("#decoded");
-      decodedDiv.innerHTML = "";
-      if (ev.candidates.length === 0) {
-        decodedDiv.textContent = "no concepts above threshold";
-      } else {
-        for (const c of ev.candidates) {
-          const pill = document.createElement("span");
-          pill.className = "pill";
-          pill.textContent = `${c.word} · ${c.score.toFixed(2)}`;
-          decodedDiv.appendChild(pill);
-        }
-      }
-      $("#reduction").textContent = `−${ev.reduction_pct.toFixed(1)}%`;
-      $("#rag-tok").textContent = `${ev.rag_tokens} tokens`;
-      $("#javis-tok").textContent = `${ev.javis_tokens} tokens`;
-      $("#rag-text").textContent = ev.rag_payload || "—";
-      $("#javis-text").textContent = ev.javis_payload || "—";
-      log(
-        `decoded query="${ev.query}" → ${ev.candidates.length} candidates, ` +
-          `reduction ${ev.reduction_pct.toFixed(1)}%`,
-      );
-      break;
-    }
-    case "done":
-      log("session done");
-      break;
-  }
 }
 
 $("#cue-form").addEventListener("submit", (e) => {
@@ -233,5 +307,5 @@ $("#cue-form").addEventListener("submit", (e) => {
   if (q) startSession(q);
 });
 
-// Auto-start with the default query so the first visit shows life.
+// Auto-start so the first visit shows life.
 startSession($("#cue").value.trim() || "rust");
