@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/snn-core", "crates/encoders", "crates/eval"]
+members = ["crates/snn-core", "crates/encoders", "crates/eval", "crates/viz"]
 
 [workspace.package]
 version = "0.0.1"

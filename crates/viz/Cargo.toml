@@ -1,0 +1,27 @@
+[package]
+name = "viz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Live 3D visualisation server for Javis. Streams brain state over WebSocket."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "javis-viz"
+path = "src/main.rs"
+
+[dependencies]
+snn-core = { path = "../snn-core" }
+encoders = { path = "../encoders" }
+eval = { path = "../eval" }
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tower-http = { version = "0.5", features = ["fs", "trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
+
+[dev-dependencies]
+tokio-tungstenite = "0.24"

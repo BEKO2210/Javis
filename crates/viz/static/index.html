@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Javis · Live Brain</title>
+    <style>
+      :root {
+        --bg: #07080d;
+        --panel: rgba(14, 18, 28, 0.92);
+        --border: rgba(255, 255, 255, 0.08);
+        --text: #e6e8ee;
+        --muted: #8a93a6;
+        --accent: #7aa2ff;
+        --r1: #62d6ff;
+        --r2e: #ffd166;
+        --r2i: #ff5c8a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
+          system-ui, sans-serif;
+      }
+      header {
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 16px;
+        letter-spacing: 0.02em;
+      }
+      header form {
+        display: flex;
+        gap: 8px;
+        margin-left: auto;
+      }
+      header input,
+      header button {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 6px 10px;
+        border-radius: 6px;
+        font: inherit;
+      }
+      header button {
+        cursor: pointer;
+      }
+      header button:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      main {
+        display: grid;
+        grid-template-columns: 1fr 360px;
+        height: calc(100vh - 51px);
+      }
+      #stage {
+        background: radial-gradient(
+          ellipse at center,
+          #0d1422 0%,
+          var(--bg) 70%
+        );
+        position: relative;
+        overflow: hidden;
+      }
+      #legend {
+        position: absolute;
+        bottom: 14px;
+        left: 14px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      #legend .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 3px 0;
+      }
+      #legend .swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+      aside {
+        background: var(--panel);
+        border-left: 1px solid var(--border);
+        padding: 16px;
+        overflow-y: auto;
+      }
+      aside h2 {
+        margin: 0 0 8px 0;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      aside section {
+        margin-bottom: 18px;
+      }
+      .phase-line {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: var(--muted);
+        white-space: pre;
+      }
+      .stat {
+        display: flex;
+        justify-content: space-between;
+        padding: 3px 0;
+      }
+      .stat .v {
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+      }
+      .pill {
+        display: inline-block;
+        background: rgba(122, 162, 255, 0.15);
+        border: 1px solid rgba(122, 162, 255, 0.3);
+        color: var(--accent);
+        border-radius: 999px;
+        padding: 2px 9px;
+        font-size: 12px;
+        margin: 2px 4px 2px 0;
+      }
+      .payload {
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--text);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .reduction {
+        font-size: 28px;
+        font-weight: 600;
+        color: var(--r2e);
+        font-variant-numeric: tabular-nums;
+      }
+      #log {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: var(--muted);
+        max-height: 220px;
+        overflow-y: auto;
+        background: rgba(0, 0, 0, 0.25);
+        border-radius: 6px;
+        padding: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Javis · Live Brain</h1>
+      <form id="cue-form">
+        <input id="cue" type="text" value="rust" autocomplete="off" />
+        <button type="submit">Recall</button>
+      </form>
+    </header>
+    <main>
+      <div id="stage">
+        <canvas id="raster"></canvas>
+        <div id="legend">
+          <div class="row">
+            <span class="swatch" style="background: var(--r1)"></span>R1 input
+          </div>
+          <div class="row">
+            <span class="swatch" style="background: var(--r2e)"></span>R2 excitatory
+          </div>
+          <div class="row">
+            <span class="swatch" style="background: var(--r2i)"></span>R2 inhibitory
+          </div>
+        </div>
+      </div>
+      <aside>
+        <section>
+          <h2>Phase</h2>
+          <div id="phase" class="phase-line">idle — waiting for query…</div>
+        </section>
+        <section>
+          <h2>Live stats</h2>
+          <div class="stat"><span>Sim time</span><span class="v" id="sim-t">0 ms</span></div>
+          <div class="stat"><span>Spikes / s in R1</span><span class="v" id="rate-r1">—</span></div>
+          <div class="stat"><span>Spikes / s in R2</span><span class="v" id="rate-r2">—</span></div>
+        </section>
+        <section>
+          <h2>Decoded concepts</h2>
+          <div id="decoded">—</div>
+        </section>
+        <section>
+          <h2>Token saving</h2>
+          <div class="reduction" id="reduction">—</div>
+          <div class="stat"><span>RAG payload</span><span class="v" id="rag-tok">—</span></div>
+          <div class="stat"><span>Javis payload</span><span class="v" id="javis-tok">—</span></div>
+        </section>
+        <section>
+          <h2>RAG would send</h2>
+          <div class="payload" id="rag-text">—</div>
+        </section>
+        <section>
+          <h2>Javis sends</h2>
+          <div class="payload" id="javis-text">—</div>
+        </section>
+        <section>
+          <h2>Event log</h2>
+          <div id="log"></div>
+        </section>
+      </aside>
+    </main>
+    <script src="/main.js"></script>
+  </body>
+</html>
