@@ -7,6 +7,9 @@
 //! query?
 
 pub mod token_efficiency;
+pub mod wiki_corpus;
+
+pub use wiki_corpus::{wiki_corpus, wiki_queries};
 
 /// Crude token estimate. Modern BPE tokenisers (GPT, Claude) average
 /// roughly 1.3 tokens per English whitespace-separated word, so we use
