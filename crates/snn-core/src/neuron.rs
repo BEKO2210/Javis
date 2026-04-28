@@ -1,7 +1,16 @@
-//! Leaky Integrate-and-Fire neuron.
+//! Leaky Integrate-and-Fire neuron with Dale's-principle E/I labelling.
 //!
 //! Membrane dynamics:  τ_m · dV/dt = -(V - V_rest) + R_m · I(t)
-//! Discretised with forward Euler at timestep `dt` (ms).
+//! Discretised with forward Euler at timestep `dt` (ms). The neuron's
+//! `kind` (Excitatory or Inhibitory) determines the *sign* with which
+//! its outgoing synapses act on post-synaptic membranes — synaptic
+//! weights themselves stay non-negative.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeuronKind {
+    Excitatory,
+    Inhibitory,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct LifParams {
@@ -29,6 +38,7 @@ impl Default for LifParams {
 #[derive(Debug, Clone, Copy)]
 pub struct LifNeuron {
     pub params: LifParams,
+    pub kind: NeuronKind,
     pub v: f32,
     pub refractory_until: f32,
     pub last_spike: f32,
@@ -36,10 +46,23 @@ pub struct LifNeuron {
 
 impl LifNeuron {
     pub fn new(params: LifParams) -> Self {
+        Self::with_kind(params, NeuronKind::Excitatory)
+    }
+
+    pub fn excitatory(params: LifParams) -> Self {
+        Self::with_kind(params, NeuronKind::Excitatory)
+    }
+
+    pub fn inhibitory(params: LifParams) -> Self {
+        Self::with_kind(params, NeuronKind::Inhibitory)
+    }
+
+    pub fn with_kind(params: LifParams, kind: NeuronKind) -> Self {
         Self {
             v: params.v_rest,
             refractory_until: f32::NEG_INFINITY,
             last_spike: f32::NEG_INFINITY,
+            kind,
             params,
         }
     }
