@@ -238,8 +238,14 @@ impl Network {
                 match src_kind {
                     NeuronKind::Excitatory => {
                         if let Some(p) = stdp {
-                            let new_w = (w - p.a_minus * self.post_trace[post])
-                                .clamp(p.w_min, p.w_max);
+                            // pre-spike → LTD on this outgoing synapse
+                            // proportional to the post-trace.
+                            let new_w = if p.soft_bounds {
+                                w - p.a_minus * self.post_trace[post] * (w - p.w_min)
+                            } else {
+                                (w - p.a_minus * self.post_trace[post])
+                                    .clamp(p.w_min, p.w_max)
+                            };
                             self.synapses[eid].weight = new_w;
                         }
                     }
@@ -268,8 +274,13 @@ impl Network {
                         continue;
                     }
                     let w = self.synapses[eid].weight;
-                    let new_w = (w + p.a_plus * self.pre_trace[pre])
-                        .clamp(p.w_min, p.w_max);
+                    // post-spike → LTP on this incoming synapse
+                    // proportional to the pre-trace.
+                    let new_w = if p.soft_bounds {
+                        w + p.a_plus * self.pre_trace[pre] * (p.w_max - w)
+                    } else {
+                        (w + p.a_plus * self.pre_trace[pre]).clamp(p.w_min, p.w_max)
+                    };
                     self.synapses[eid].weight = new_w;
                 }
             }

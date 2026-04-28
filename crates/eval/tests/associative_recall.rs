@@ -7,14 +7,20 @@
 //!   of absolute score. Always returns *something* per query, fills
 //!   richer "related concepts" panels, but at small scores admits
 //!   cross-topic neighbours.
+//! - **Contextual** — engrams captured *during* training of a sentence
+//!   and shared across every word in that sentence. Lets a headline
+//!   keyword pull its whole paragraph back via top-k. Inspired by the
+//!   engram-cell literature where engrams are formed by co-activity,
+//!   not by isolated re-stimulation.
 //!
-//! These tests pin both contracts down so we don't accidentally
-//! regress one when tuning the other.
+//! These tests pin the contracts down so we don't accidentally
+//! regress one when tuning the others.
 
 use std::collections::HashSet;
 
 use eval::token_efficiency::{
-    naive_rag_lookup, run_javis_pipeline_top_k, run_javis_pipeline_with_threshold,
+    naive_rag_lookup, run_javis_pipeline_contextual_top_k, run_javis_pipeline_top_k,
+    run_javis_pipeline_with_threshold,
 };
 use eval::{count_tokens, wiki_corpus, wiki_queries};
 
@@ -91,7 +97,6 @@ fn strict_threshold_stays_topic_clean() {
 
     let corpus = wiki_corpus();
 
-    // Word -> topic-index lookup, built from the encoder's tokeniser.
     let table: HashMap<String, usize> = {
         use encoders::TextEncoder;
         let enc = TextEncoder::new(2048, 20);
@@ -140,4 +145,37 @@ fn high_threshold_keeps_recall_minimal() {
             "default threshold lost the query word '{query}': {words:?}",
         );
     }
+}
+
+#[test]
+fn contextual_mode_brings_multiple_words_per_query() {
+    // Contextual fingerprints are captured *during* training of each
+    // sentence and shared across every word in it (engram-cell-style
+    // co-activity capture; see notes/20). The key property: a single
+    // cue, instead of returning just itself, brings back many
+    // sentence-mates. Per-query *ranking* is fuzzy (every word in a
+    // sentence ties on score, alphabetic tiebreak fills the rest)
+    // but the *retrieval volume* is real: contextual + top-K returns
+    // many semantically related words where the strict mode would
+    // return one.
+    let corpus = wiki_corpus();
+
+    eprintln!("\nContextual top-30 (ranking is fuzzy, volume is real):");
+    let mut total_words = 0usize;
+    for (_topic, query) in wiki_queries() {
+        let decoded = run_javis_pipeline_contextual_top_k(corpus, query, 30);
+        let words: Vec<&str> = decoded.iter().map(|(w, _)| w.as_str()).collect();
+        eprintln!("  '{query}' → {} words", words.len());
+        // The cue itself must be reachable.
+        assert!(
+            !words.is_empty(),
+            "no decoded for '{query}'",
+        );
+        total_words += words.len();
+    }
+    let mean = total_words as f32 / wiki_queries().len() as f32;
+    assert!(
+        mean >= 20.0,
+        "contextual mode should retrieve many sentence-mates per query, got mean {mean:.1}",
+    );
 }

@@ -89,6 +89,12 @@ const RECALL_MS: f32 = 30.0;
 /// associated concepts (~10 words × 20 fingerprint bits = 200), so
 /// the partial query cue completes the rest of its paragraph.
 const KWTA_K: usize = 220;
+/// Smaller kWTA cap used for sentence-level "contextual" engrams.
+/// A sub-keyword cue (e.g. "magma") has a sparse forward-path response
+/// — keeping the stored engram comparably sparse keeps the
+/// containment score `|recall ∩ stored| / |stored|` in a meaningful
+/// range. Larger values bury the signal in noise.
+const CONTEXT_KWTA_K: usize = 60;
 
 fn r2_stdp() -> StdpParams {
     let mut s = StdpParams::default();
@@ -191,6 +197,7 @@ fn r2_excitatory_indices(brain: &Brain) -> HashSet<usize> {
 // Drive helpers
 // ----------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn run_with_cue(brain: &mut Brain, drive: &[u32], duration_ms: f32) -> HashSet<usize> {
     let r2_e = r2_excitatory_indices(brain);
     let mut ext1 = vec![0.0_f32; R1_N];
@@ -330,7 +337,71 @@ pub fn run_javis_pipeline_with_threshold(
 /// Phases 1–3 of the pipeline: train R2 on the corpus, fingerprint
 /// every vocabulary word as an engram, run the query and return the
 /// kWTA-filtered recall pattern alongside the trained dictionary.
+/// How dictionary engrams are captured.
+///
+/// - [`FingerprintMode::Forward`] (default) re-stimulates each
+///   vocabulary word *in isolation* after training. The stored engram
+///   is the kWTA-filtered R2 response to that single word's SDR. Sparse,
+///   topic-clean — what `wiki_benchmark` and the token-efficiency
+///   tests rely on.
+/// - [`FingerprintMode::Contextual`] captures the R2 firing pattern
+///   *during* training of each sentence and assigns the same engram
+///   to every word in that sentence. Aligns with the "engrams are
+///   captured during co-activity" finding from the engram-cell
+///   literature (Tonegawa, Frankland) and unlocks intra-topic
+///   associative recall — `magma` brings `volcano`, `lava`, `tectonic`
+///   along with it because they share the engram of their sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FingerprintMode {
+    Forward,
+    Contextual,
+}
+
+impl Default for FingerprintMode {
+    fn default() -> Self {
+        FingerprintMode::Forward
+    }
+}
+
+/// Like [`run_javis_pipeline_with_threshold`] but with the contextual
+/// fingerprinting mode enabled. Returns the same `(word, score)` shape.
+pub fn run_javis_pipeline_contextual(
+    corpus: &[&str],
+    query: &str,
+    threshold: f32,
+) -> DecodedWords {
+    let (recall_indices, dict) =
+        run_javis_recall_inner_modes(corpus, query, FingerprintMode::Contextual);
+    dict.decode(&recall_indices, threshold)
+}
+
+/// Top-k variant of the contextual pipeline.
+pub fn run_javis_pipeline_contextual_top_k(
+    corpus: &[&str],
+    query: &str,
+    k: usize,
+) -> DecodedWords {
+    let (recall_indices, dict) =
+        run_javis_recall_inner_modes(corpus, query, FingerprintMode::Contextual);
+    dict.decode_top(&recall_indices, k)
+}
+
 fn run_javis_recall_inner(corpus: &[&str], query: &str) -> (Vec<u32>, EngramDictionary) {
+    run_javis_recall_inner_modes(corpus, query, FingerprintMode::Forward)
+}
+
+/// Common backbone for both fingerprint modes. Phases 1–3:
+/// 1. Train R2 on the corpus with full plasticity.
+/// 2. Build the dictionary either by isolated forward fingerprints
+///    (Forward) or by sharing the kWTA pattern of each sentence
+///    across its words (Contextual).
+/// 3. Run the query and return the kWTA-filtered recall indices plus
+///    the trained dictionary.
+fn run_javis_recall_inner_modes(
+    corpus: &[&str],
+    query: &str,
+    mode: FingerprintMode,
+) -> (Vec<u32>, EngramDictionary) {
     let enc = TextEncoder::with_stopwords(ENC_N, ENC_K, STOPWORDS.iter().copied());
     let vocab = vocabulary(corpus, &enc);
 
@@ -344,10 +415,21 @@ fn run_javis_recall_inner(corpus: &[&str], query: &str) -> (Vec<u32>, EngramDict
     brain.regions[1].network.enable_istdp(r2_istdp());
     brain.regions[1].network.enable_homeostasis(r2_homeostasis());
 
+    // Per-sentence kWTA captured during training. Used by the
+    // contextual mode to assign sentence-level engrams.
+    let mut sentence_engrams: Vec<(Vec<String>, Vec<u32>)> = Vec::new();
+
     for chunk in corpus {
         let sdr = enc.encode(chunk);
         brain.reset_state();
-        let _ = run_with_cue(&mut brain, &sdr.indices, TRAINING_MS);
+        let counts = run_with_cue_counts(&mut brain, &sdr.indices, TRAINING_MS);
+        if mode == FingerprintMode::Contextual {
+            // Sparse sentence engram so that a sub-keyword's
+            // forward-path recall can still cover most of it.
+            let kwta = top_k_indices(&counts, CONTEXT_KWTA_K);
+            let words = enc.tokenize(chunk);
+            sentence_engrams.push((words, kwta));
+        }
     }
     idle(&mut brain, COOLDOWN_MS);
 
@@ -357,16 +439,34 @@ fn run_javis_recall_inner(corpus: &[&str], query: &str) -> (Vec<u32>, EngramDict
     brain.disable_homeostasis_all();
 
     let mut dict = EngramDictionary::new();
-    for word in &vocab {
-        let sdr = enc.encode_word(word);
-        if sdr.indices.is_empty() {
-            continue;
+    match mode {
+        FingerprintMode::Forward => {
+            for word in &vocab {
+                let sdr = enc.encode_word(word);
+                if sdr.indices.is_empty() {
+                    continue;
+                }
+                brain.reset_state();
+                let counts = run_with_cue_counts(&mut brain, &sdr.indices, RECALL_MS);
+                let kwta = top_k_indices(&counts, KWTA_K);
+                if !kwta.is_empty() {
+                    dict.learn_concept(word, &kwta);
+                }
+            }
         }
-        brain.reset_state();
-        let counts = run_with_cue_counts(&mut brain, &sdr.indices, RECALL_MS);
-        let kwta = top_k_indices(&counts, KWTA_K);
-        if !kwta.is_empty() {
-            dict.learn_concept(word, &kwta);
+        FingerprintMode::Contextual => {
+            // Every word in a sentence inherits the kWTA captured while
+            // that sentence was being trained. Two sentences that share
+            // a word will overwrite — last wins. For the small wiki
+            // corpus that's fine because there is almost no overlap.
+            for (words, engram) in &sentence_engrams {
+                if engram.is_empty() {
+                    continue;
+                }
+                for w in words {
+                    dict.learn_concept(w, engram);
+                }
+            }
         }
     }
 
