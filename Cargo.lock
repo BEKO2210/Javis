@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "encoders"
+version = "0.0.1"
+dependencies = [
+ "snn-core",
+]
+
+[[package]]
 name = "snn-core"
 version = "0.0.1"
