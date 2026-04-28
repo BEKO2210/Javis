@@ -12,7 +12,7 @@ pub mod stdp;
 pub mod rng;
 pub mod poisson;
 
-pub use neuron::{LifNeuron, LifParams};
+pub use neuron::{LifNeuron, LifParams, NeuronKind};
 pub use synapse::Synapse;
 pub use network::Network;
 pub use stdp::StdpParams;
