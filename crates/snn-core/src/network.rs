@@ -12,6 +12,7 @@
 //! inhibitory pre-neurons subtract. Weights themselves are non-negative
 //! magnitudes, clamped by STDP into `[w_min, w_max]`.
 
+use crate::homeostasis::HomeostasisParams;
 use crate::neuron::{LifNeuron, NeuronKind};
 use crate::stdp::StdpParams;
 use crate::synapse::Synapse;
@@ -27,6 +28,8 @@ pub struct Network {
     pub time: f32,
     pub dt: f32,
     pub stdp: Option<StdpParams>,
+    pub homeostasis: Option<HomeostasisParams>,
+    pub step_counter: u64,
     /// Cumulative count of synaptic deliveries since construction.
     /// Useful for benchmarking real work done.
     pub synapse_events: u64,
@@ -45,6 +48,8 @@ impl Network {
             time: 0.0,
             dt,
             stdp: None,
+            homeostasis: None,
+            step_counter: 0,
             synapse_events: 0,
         }
     }
@@ -76,19 +81,30 @@ impl Network {
         self.stdp = None;
     }
 
+    pub fn enable_homeostasis(&mut self, params: HomeostasisParams) {
+        self.homeostasis = Some(params);
+    }
+
+    pub fn disable_homeostasis(&mut self) {
+        self.homeostasis = None;
+    }
+
     /// Reset transient state (membrane potentials, synaptic currents,
-    /// STDP traces, refractory clocks, time, event counter). Synapse
-    /// weights and network topology are preserved.
+    /// STDP traces, homeostatic activity traces, refractory clocks,
+    /// time, step counter, event counter). Synapse weights and network
+    /// topology are preserved.
     pub fn reset_state(&mut self) {
         for (idx, n) in self.neurons.iter_mut().enumerate() {
             n.v = n.params.v_rest;
             n.refractory_until = f32::NEG_INFINITY;
             n.last_spike = f32::NEG_INFINITY;
+            n.activity_trace = 0.0;
             self.i_syn[idx] = 0.0;
             self.pre_trace[idx] = 0.0;
             self.post_trace[idx] = 0.0;
         }
         self.time = 0.0;
+        self.step_counter = 0;
         self.synapse_events = 0;
     }
 
@@ -117,6 +133,14 @@ impl Network {
             }
         }
 
+        // 2b) Decay homeostatic activity traces (long time constant).
+        if let Some(h) = self.homeostasis {
+            let decay = (-dt / h.tau_homeo_ms).exp();
+            for n in self.neurons.iter_mut() {
+                n.activity_trace *= decay;
+            }
+        }
+
         // 3) Step every LIF, recording spikes.
         let mut fired: Vec<usize> = Vec::new();
         for (idx, n) in self.neurons.iter_mut().enumerate() {
@@ -128,10 +152,14 @@ impl Network {
 
         // 4) Deliver synaptic effects + STDP updates for spikes this step.
         let stdp = self.stdp;
+        let homeo_active = self.homeostasis.is_some();
         for &src in &fired {
             if stdp.is_some() {
                 self.pre_trace[src] += 1.0;
                 self.post_trace[src] += 1.0;
+            }
+            if homeo_active {
+                self.neurons[src].activity_trace += 1.0;
             }
             let sign: f32 = match self.neurons[src].kind {
                 NeuronKind::Excitatory => 1.0,
@@ -169,7 +197,57 @@ impl Network {
             }
         }
 
+        // 5) Periodic homeostatic synaptic scaling.
+        self.step_counter = self.step_counter.wrapping_add(1);
+        if let Some(h) = self.homeostasis {
+            if h.eta_scale != 0.0
+                && h.apply_every > 0
+                && self.step_counter % h.apply_every as u64 == 0
+            {
+                self.apply_synaptic_scaling(&h);
+            }
+        }
+
         self.time += dt;
         fired
+    }
+
+    /// Multiplicative homeostatic scaling of every excitatory incoming
+    /// synapse, per post-neuron. Pure scalar multiplication preserves
+    /// the relative weight pattern shaped by STDP.
+    ///
+    /// `factor_i = 1 + eta * (A_target - A_trace_i)`, then
+    /// `w_ij = clamp(w_ij * factor_i)` for every excitatory pre `j`.
+    fn apply_synaptic_scaling(&mut self, h: &HomeostasisParams) {
+        let (w_min, w_max) = match self.stdp {
+            Some(s) => (s.w_min, s.w_max),
+            None => (0.0, f32::MAX),
+        };
+
+        let n = self.neurons.len();
+        for post in 0..n {
+            let trace = self.neurons[post].activity_trace;
+            // Guard against very hyperactive neurons producing a negative
+            // `factor` — that would push w * factor below zero and the
+            // clamp to [w_min, …] would zero out *all* of the post's
+            // incoming weights uniformly, destroying their relative
+            // pattern. Clamping the factor to be non-negative keeps the
+            // scaling well-defined even in extreme regimes.
+            let factor = (1.0 + h.eta_scale * (h.a_target - trace)).max(0.0);
+            // Skip if no-op — saves the inner loop entirely.
+            if factor == 1.0 {
+                continue;
+            }
+            let n_in = self.incoming[post].len();
+            for i in 0..n_in {
+                let eid = self.incoming[post][i] as usize;
+                let pre = self.synapses[eid].pre;
+                if self.neurons[pre].kind != NeuronKind::Excitatory {
+                    continue;
+                }
+                let new_w = (self.synapses[eid].weight * factor).clamp(w_min, w_max);
+                self.synapses[eid].weight = new_w;
+            }
+        }
     }
 }
