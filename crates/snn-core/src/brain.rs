@@ -104,6 +104,13 @@ impl Brain {
         }
     }
 
+    /// Turn inhibitory STDP off in every region.
+    pub fn disable_istdp_all(&mut self) {
+        for region in &mut self.regions {
+            region.network.disable_istdp();
+        }
+    }
+
     pub fn connect(
         &mut self,
         src_region: usize,
