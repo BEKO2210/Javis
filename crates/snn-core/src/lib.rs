@@ -11,6 +11,8 @@ pub mod network;
 pub mod stdp;
 pub mod rng;
 pub mod poisson;
+pub mod region;
+pub mod brain;
 
 pub use neuron::{LifNeuron, LifParams, NeuronKind};
 pub use synapse::Synapse;
@@ -18,3 +20,5 @@ pub use network::Network;
 pub use stdp::StdpParams;
 pub use rng::Rng;
 pub use poisson::PoissonInput;
+pub use region::Region;
+pub use brain::{Brain, InterEdge, PendingEvent};
