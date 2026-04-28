@@ -12,7 +12,9 @@
 pub mod sdr;
 pub mod text;
 pub mod inject;
+pub mod decode;
 
 pub use sdr::Sdr;
 pub use text::TextEncoder;
 pub use inject::inject_sdr;
+pub use decode::EngramDictionary;
