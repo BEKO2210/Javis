@@ -1,0 +1,11 @@
+[package]
+name = "snn-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Spiking neural network core for Javis — brain-inspired knowledge graph."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
