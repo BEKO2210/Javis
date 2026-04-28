@@ -79,6 +79,22 @@ fn case_is_normalised() {
 }
 
 #[test]
+fn stopwords_are_dropped() {
+    let stops = ["the", "is", "on", "a"];
+    let enc = TextEncoder::with_stopwords(N, K, stops);
+    let plain = TextEncoder::new(N, K);
+
+    let with_noise = enc.encode("the cat is on the mat");
+    let cleaned = plain.encode("cat mat");
+    assert_eq!(
+        with_noise.indices, cleaned.indices,
+        "stop words must contribute zero bits",
+    );
+    assert!(enc.is_stopword("THE"));
+    assert!(!enc.is_stopword("cat"));
+}
+
+#[test]
 fn union_and_overlap_agree_on_simple_case() {
     let n = 16;
     let a = Sdr::from_indices(n, vec![1, 3, 5, 7]);
