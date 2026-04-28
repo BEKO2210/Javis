@@ -10,5 +10,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "eval"
+version = "0.0.1"
+dependencies = [
+ "encoders",
+ "snn-core",
+]
+
+[[package]]
 name = "snn-core"
 version = "0.0.1"
