@@ -80,14 +80,17 @@ to publish them than have someone tweet them.
 | **Cross-domain bleed** | 4.7 / 6 decoded words | At N > 50 distinct concepts the R2 layer (2 000 neurons, K=220, 11 % sparsity) saturates; iSTDP can no longer build separating walls between engrams, so unrelated domains leak into each other. |
 | **Engram capacity** | ≈ 50 concepts | Geometric upper bound from R2_size / KWTA_K = 2 000 / 220 ≈ 9 fully-orthogonal engrams; with overlap-tolerance about 50 work cleanly before interference dominates. |
 
-### What changes in iter 25 (this branch)
+### Iteration 25 finding (negative result, reverted)
 
-R2 was scaled from 2 000 → 10 000 neurons, recurrent connectivity sparsened
-from p=0.10 → p=0.03, KWTA from 220 → 100 (1 % sparsity), iSTDP retuned for
-aggressive LTD on co-active E-targets. The 113 existing tests still pass at
-the new topology. Updated cross-bleed and recall numbers are in
-[`notes/43-topology-scaling.md`](notes/43-topology-scaling.md) once the
-benchmark run completes.
+We tested the obvious hypothesis: scale R2 from 2 000 → 10 000 neurons,
+drop sparsity from 11 % → 1 %, retune iSTDP — does that fix cross-bleed?
+
+It does not. Cross-bleed and associative-recall numbers were unchanged
+(or marginally worse) at 8× the training cost. The constants were
+reverted; the negative finding is documented in
+[`notes/43-topology-scaling.md`](notes/43-topology-scaling.md). The
+real bottleneck is upstream of R2 — encoder hash collisions and
+random-uniform forward wiring — not the recurrent layer's size.
 
 ### Reproducibility
 

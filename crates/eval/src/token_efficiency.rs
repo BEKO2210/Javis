@@ -66,12 +66,10 @@ pub fn naive_rag_lookup(corpus: &[&str], query: &str) -> Option<String> {
 
 const DT: f32 = 0.1;
 const R1_N: usize = 1000;
-// Iter 25: R2 scaled 5× and connectivity sparsened to attack the
-// cross-bleed wall measured in notes/42. See notes/43.
-const R2_N: usize = 10_000;
+const R2_N: usize = 2000;
 const R2_INH_FRAC: f32 = 0.20;
-const R2_P_CONNECT: f32 = 0.03;
-const FAN_OUT: usize = 30;
+const R2_P_CONNECT: f32 = 0.10;
+const FAN_OUT: usize = 10;
 const INTER_WEIGHT: f32 = 2.0;
 const INTER_DELAY_MS: f32 = 2.0;
 const ENC_N: u32 = R1_N as u32;
@@ -86,12 +84,16 @@ const RECALL_MS: f32 = 30.0;
 /// cardinality. Top-K filtering keeps both fingerprints and recall
 /// patterns sparse so containment scores stay meaningful.
 ///
-/// kWTA cap. Iter 25 dropped this from 220 / 2000 (11 % sparsity) to
-/// 100 / 10_000 (1 % sparsity) so engrams have far less mathematical
-/// overlap by chance.
-const KWTA_K: usize = 100;
-/// Sentence-level "contextual" engrams. Scaled in lock-step.
-const CONTEXT_KWTA_K: usize = 30;
+/// `KWTA_K` is sized to cover roughly one paragraph's worth of
+/// associated concepts (~10 words × 20 fingerprint bits = 200), so
+/// the partial query cue completes the rest of its paragraph.
+const KWTA_K: usize = 220;
+/// Smaller kWTA cap used for sentence-level "contextual" engrams.
+/// A sub-keyword cue (e.g. "magma") has a sparse forward-path response
+/// — keeping the stored engram comparably sparse keeps the
+/// containment score `|recall ∩ stored| / |stored|` in a meaningful
+/// range. Larger values bury the signal in noise.
+const CONTEXT_KWTA_K: usize = 60;
 
 fn r2_stdp() -> StdpParams {
     StdpParams {
@@ -103,14 +105,12 @@ fn r2_stdp() -> StdpParams {
 }
 
 fn r2_istdp() -> IStdpParams {
-    // Iter 25 retune: aggressive LTD on co-active E-targets to fight
-    // cross-bleed in the larger, sparser R2.
     IStdpParams {
-        a_plus: 0.10,
-        a_minus: 1.10,
+        a_plus: 0.05,
+        a_minus: 0.55,
         tau_minus: 30.0,
         w_min: 0.0,
-        w_max: 8.0,
+        w_max: 5.0,
     }
 }
 

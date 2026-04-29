@@ -35,13 +35,13 @@ use snn_core::{
 use crate::count_tokens;
 use crate::scale_corpus::ScaleCorpus;
 
-// Iter 25: R2 5× larger + 1 % sparsity. See notes/43.
+// Same sweet-spot parameters used elsewhere in `eval` and `viz`.
 const DT: f32 = 0.1;
 const R1_N: usize = 1000;
-const R2_N: usize = 10_000;
+const R2_N: usize = 2000;
 const R2_INH_FRAC: f32 = 0.20;
-const R2_P_CONNECT: f32 = 0.03;
-const FAN_OUT: usize = 30;
+const R2_P_CONNECT: f32 = 0.10;
+const FAN_OUT: usize = 10;
 const INTER_WEIGHT: f32 = 2.0;
 const INTER_DELAY_MS: f32 = 2.0;
 const ENC_N: u32 = R1_N as u32;
@@ -50,7 +50,7 @@ const DRIVE_NA: f32 = 200.0;
 const TRAINING_MS: f32 = 150.0;
 const COOLDOWN_MS: f32 = 50.0;
 const RECALL_MS: f32 = 30.0;
-const KWTA_K: usize = 100;
+const KWTA_K: usize = 220;
 
 /// Single query result with everything the report needs.
 #[derive(Debug, Clone)]
@@ -588,13 +588,12 @@ fn stdp() -> StdpParams {
 }
 
 fn istdp() -> IStdpParams {
-    // Iter 25 retune (notes/43).
     IStdpParams {
-        a_plus: 0.10,
-        a_minus: 1.10,
+        a_plus: 0.05,
+        a_minus: 0.55,
         tau_minus: 30.0,
         w_min: 0.0,
-        w_max: 8.0,
+        w_max: 5.0,
     }
 }
 

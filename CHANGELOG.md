@@ -4,38 +4,42 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 25 (topology scaling: R2 → 10 000)
+## Unreleased — Iteration 25 (topology-scaling experiment, reverted)
 
-### Changed
-- `R2_N`: 2 000 → **10 000** (5× more orthogonal space).
-- `R2_P_CONNECT`: 0.10 → **0.03** (sparser recurrent; keeps
-  synapse count manageable at 3 M instead of 10 M).
-- `KWTA_K`: 220 → **100** (1 % sparsity instead of 11 %; baseline
-  random-overlap probability drops by an order of magnitude).
-- `CONTEXT_KWTA_K`: 60 → 30 (proportional).
-- `FAN_OUT` (R1→R2): 10 → 30 (preserves forward drive density).
-- `IStdpParams.a_plus`: 0.05 → 0.10 ; `a_minus`: 0.55 → 1.10 ;
-  `w_max`: 5 → 8. More aggressive LTD on co-active E-targets so
-  inhibitory plasticity can build separating walls in the
-  larger pool.
-- Same constant set propagated to `viz::state`, `eval::token_efficiency`,
-  `eval::scale_bench`.
+Hypothesis: scale R2 from 2 000 → 10 000 neurons + drop sparsity
+from 11 % → 1 % + retune iSTDP to attack the cross-bleed wall
+measured in notes/42. Tested honestly, did not pan out, reverted.
 
-### Verified
-All 113 existing tests still pass at the new topology without
-threshold adjustments. `wiki_benchmark` (5-paragraph corpus)
-preserves its ≥ 70 % token-reduction guarantee on the larger
-brain. Re-run of the 100-sentence scale benchmark
-(notes/43): metrics will be appended once the run completes.
+### Tested (`viz::state`, `eval::token_efficiency`, `eval::scale_bench`)
+- `R2_N`: 2 000 → 10 000
+- `R2_P_CONNECT`: 0.10 → 0.03
+- `KWTA_K`: 220 → 100
+- `CONTEXT_KWTA_K`: 60 → 30
+- `FAN_OUT`: 10 → 30
+- `IStdpParams.a_plus / a_minus / w_max`: 0.05/0.55/5 → 0.10/1.10/8
 
-### Caveats
-- Single-region snapshot file size grows from ~30 MB to
-  ~120-150 MB at this topology. Snapshot compression is a
-  follow-up if it becomes a deploy issue.
-- Brain-step wall-time at R2=10 000 is ~5× the iter-24 baseline.
-  Pipeline profile and load-test numbers (notes/40, /41) are
-  iter-24 baselines and will need re-running on the new
-  topology.
+### Result (100-sentence benchmark, identical seed to notes/42)
+| metric | iter 24 baseline | iter 25 (10 000 R2) |
+| --- | ---: | ---: |
+| Token reduction | 40.6 % | 40.6 % (unchanged) |
+| Self-recall (precision) | 1.000 | 1.000 (unchanged) |
+| Associative recall | 0.021 | 0.017 (-19 %) |
+| Mean FP / 6 decoded | 4.70 | 4.77 (+1.5 %) |
+| Decoder latency | 603 µs | 364 µs (-40 %) |
+| Total wall-time | 73 s | 577 s (8× slower) |
+| Snapshot file | ~30 MB | ~120 MB (4× larger) |
+
+Quality unchanged or marginally worse, training 8× slower,
+snapshots 4× larger. Decoder latency improvement is cosmetic
+(was already sub-ms). The hypothesis that R2 topology is the
+cross-bleed bottleneck is rejected by these numbers.
+
+### Reverted
+Constants restored to iter-24 values in all three crates.
+113 / 113 tests pass on the reverted state. Negative finding
+documented in `notes/43-topology-scaling.md`; the next
+iteration will attack the actual bottleneck (encoder hash
+collisions + random forward-wiring).
 
 ## Iteration 24 — validation at scale, honest limits
 
