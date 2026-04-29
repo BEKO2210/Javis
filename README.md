@@ -220,6 +220,7 @@ What separates Javis from a typical research demo:
 | --- | ---: |
 | `Network::step` (1 000 neurons, sparse, passive) | 3.2 µs |
 | `Network::step` (1 000 neurons, sparse, +STDP) | 3.4 µs |
+| `Network::step_immutable` (1 000 neurons, recall path) | 3.7 µs |
 | `Brain::step` (two regions × 1 000) | 7.7 µs |
 | `encode_sentence` (18 words) | 21 µs |
 | `decode_strict` (vocab 1 000) | 253 µs |
@@ -254,7 +255,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 38 research notes — every decision documented
+├── notes/          ─ 39 research notes — every decision documented
 ├── scripts/        ─ End-to-end sanity check + load test (Python)
 ├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
@@ -326,6 +327,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 36 | Concurrency cap: Semaphore + 503/Retry-After, `JAVIS_MAX_CONCURRENT_SESSIONS` |
 | 37 | Snapshot schema versioning: v2 with metadata, migration chain, v1 backward-compat |
 | 38 | Read-only recall: `Brain::step_immutable` + `RwLock`, 2.5× throughput |
+| 39 | Profile-driven LIF rewrite: pre-summed channel buffer, 1.5× faster step |
 
 ---
 

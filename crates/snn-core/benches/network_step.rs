@@ -92,5 +92,32 @@ fn bench_step_with_stdp(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_step_passive, bench_step_with_stdp);
+/// Read-only path counterpart to `bench_step_passive`. Same network
+/// shape; this is the actual hot path for the recall code.
+fn bench_step_immutable(c: &mut Criterion) {
+    let mut group = c.benchmark_group("network_step_immutable");
+    for &n in &[100usize, 500, 1000, 2000] {
+        let net = build_network(n, 2027, false);
+        let mut state = net.fresh_state();
+        let drive = vec![2.0_f32; n];
+        for _ in 0..50 {
+            let _ = net.step_immutable(&mut state, &drive);
+        }
+
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| {
+                let _ = black_box(net.step_immutable(black_box(&mut state), black_box(&drive)));
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_step_passive,
+    bench_step_with_stdp,
+    bench_step_immutable,
+);
 criterion_main!(benches);

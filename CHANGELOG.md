@@ -4,7 +4,45 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 20 (read-only recall: 2.5× throughput)
+## Unreleased — Iteration 21 (profile-driven LIF speedup, 1.5×)
+
+### Added
+- `crates/snn-core/examples/profile_step_immutable.rs` — hand-
+  instrumented phase-by-phase profiler for `Network::step_immutable`.
+  Three `Instant::now()` brackets around decay / LIF integration /
+  delivery; runs 5000 steps and reports mean/p50/p99 plus share of
+  total step time. Used in lieu of perf, which is unavailable in
+  the dev sandbox.
+- `network_step_immutable` benchmark in
+  `crates/snn-core/benches/network_step.rs` covering sizes
+  100/500/1000/2000.
+- `total_input: Vec<f32>` scratch buffer on `NetworkState` for
+  pre-summed channel input.
+
+### Changed (`snn-core`)
+- `Network::step_immutable` rewritten for autovectoriser-friendly
+  inner loop: NMDA / GABA presence checks hoisted outside the
+  per-neuron loop, channels pre-summed into `state.total_input`
+  via four specialised straight-line loops, no per-iteration
+  `Option::get` accesses. Spike-bit-identity to the mutating path
+  preserved.
+
+### Verified
+- Profile (notes/39): LIF integration is 92 % of step time (decay
+  4 %, deliver 4 %), so optimising the LIF loop is the right
+  target.
+- Criterion bench across sizes 100/500/1000/2000:
+
+  | size | before | after | speedup |
+  | ---: | ---: | ---: | ---: |
+  | 100  | 545 ns | 307 ns | **1.78×** |
+  | 500  | 2.81 µs | 1.66 µs | 1.69× |
+  | 1000 | 5.85 µs | 3.73 µs | 1.57× |
+  | 2000 | 13.79 µs | 9.32 µs | 1.48× |
+
+  All p < 0.05.
+
+## Iteration 20 — read-only recall: 2.5× throughput
 
 ### Added (`snn-core`)
 - `NetworkState` and `Network::step_immutable(&self, &mut state,

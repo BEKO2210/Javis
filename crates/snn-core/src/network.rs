@@ -14,7 +14,7 @@
 
 use crate::homeostasis::HomeostasisParams;
 use crate::istdp::IStdpParams;
-use crate::neuron::{LifNeuron, LifParams, NeuronKind};
+use crate::neuron::{LifNeuron, NeuronKind};
 use crate::stdp::StdpParams;
 use crate::synapse::{Synapse, SynapseKind};
 
@@ -457,6 +457,7 @@ impl Network {
             i_syn: vec![0.0; n],
             i_syn_nmda: if need_nmda { vec![0.0; n] } else { Vec::new() },
             i_syn_gaba: if need_gaba { vec![0.0; n] } else { Vec::new() },
+            total_input: vec![0.0; n],
             time: 0.0,
             step_counter: 0,
             synapse_events: 0,
@@ -479,47 +480,108 @@ impl Network {
     pub fn step_immutable(&self, state: &mut NetworkState, external: &[f32]) -> Vec<usize> {
         let dt = self.dt;
         let t = state.time;
+        let n = self.neurons.len();
 
-        // 1) Decay synaptic channels.
+        // 1) Decay synaptic channels. Each loop is a flat `*x *= scalar`
+        //    walk that the autovectoriser turns into AVX2/AVX-512 multiplies.
         let decay_ampa = (-dt / self.tau_syn_ms.max(1e-3)).exp();
         for x in state.i_syn.iter_mut() {
             *x *= decay_ampa;
         }
-        if !state.i_syn_nmda.is_empty() {
+        let nmda_active = !state.i_syn_nmda.is_empty();
+        if nmda_active {
             let decay = (-dt / self.tau_nmda_ms.max(1e-3)).exp();
             for x in state.i_syn_nmda.iter_mut() {
                 *x *= decay;
             }
         }
-        if !state.i_syn_gaba.is_empty() {
+        let gaba_active = !state.i_syn_gaba.is_empty();
+        if gaba_active {
             let decay = (-dt / self.tau_gaba_ms.max(1e-3)).exp();
             for x in state.i_syn_gaba.iter_mut() {
                 *x *= decay;
             }
         }
 
-        // 2) LIF integration. Same math as `LifNeuron::step` but
-        //    operating on the externalised buffers in `state` rather
-        //    than `self.neurons[i]` fields.
-        let mut fired: Vec<usize> = Vec::new();
-        for (idx, neuron) in self.neurons.iter().enumerate() {
-            let ext = external.get(idx).copied().unwrap_or(0.0);
-            let mut total = ext + state.i_syn[idx];
-            if let Some(v) = state.i_syn_nmda.get(idx) {
-                total += *v;
+        // 1b) Pre-sum the input channels into `total_input` so the
+        //     LIF loop iterates over a single contiguous slice. Hoists
+        //     the NMDA/GABA presence checks out of the per-neuron
+        //     inner loop and gives the autovectoriser a clean
+        //     fused-multiply-add target on three input streams.
+        //
+        //     The `external` slice is allowed to be shorter than `n`
+        //     (callers pass `&[]` for "no drive"); we resolve that
+        //     once into a "fully sized or short" branch so the inner
+        //     loop has no per-iteration bounds checks.
+        if state.total_input.len() != n {
+            state.total_input.resize(n, 0.0);
+        }
+        let i_syn = state.i_syn.as_slice();
+        let nmda = state.i_syn_nmda.as_slice();
+        let gaba = state.i_syn_gaba.as_slice();
+        let total_input = state.total_input.as_mut_slice();
+        let ext_full = external.len() >= n;
+        match (ext_full, nmda_active, gaba_active) {
+            (true, false, false) => {
+                for i in 0..n {
+                    total_input[i] = external[i] + i_syn[i];
+                }
             }
-            if let Some(v) = state.i_syn_gaba.get(idx) {
-                total += *v;
+            (true, true, false) => {
+                for i in 0..n {
+                    total_input[i] = external[i] + i_syn[i] + nmda[i];
+                }
             }
-            if lif_step_state(
-                &neuron.params,
-                &mut state.v[idx],
-                &mut state.refractory_until[idx],
-                &mut state.last_spike[idx],
-                t,
-                dt,
-                total,
-            ) {
+            (true, false, true) => {
+                for i in 0..n {
+                    total_input[i] = external[i] + i_syn[i] + gaba[i];
+                }
+            }
+            (true, true, true) => {
+                for i in 0..n {
+                    total_input[i] = external[i] + i_syn[i] + nmda[i] + gaba[i];
+                }
+            }
+            (false, _, _) => {
+                // Slow path: external too short. Fall back to bounds-
+                // checked access; only happens during snapshot-load
+                // smoke runs and similar.
+                for i in 0..n {
+                    let mut total = i_syn[i] + external.get(i).copied().unwrap_or(0.0);
+                    if nmda_active {
+                        total += nmda[i];
+                    }
+                    if gaba_active {
+                        total += gaba[i];
+                    }
+                    total_input[i] = total;
+                }
+            }
+        }
+
+        // 2) LIF integration. Inputs all live in one slice now; the
+        //    inner loop is a single straight-line walk over the
+        //    per-neuron state vectors. Branches are limited to the
+        //    refractory and threshold checks, both well-predicted
+        //    when the network is in its asynchronous-irregular regime.
+        let v_buf = state.v.as_mut_slice();
+        let refr_buf = state.refractory_until.as_mut_slice();
+        let last_buf = state.last_spike.as_mut_slice();
+        let mut fired: Vec<usize> = Vec::with_capacity(64);
+        for idx in 0..n {
+            let p = &self.neurons[idx].params;
+            let v = &mut v_buf[idx];
+            let refr = &mut refr_buf[idx];
+            if t < *refr {
+                *v = p.v_reset;
+                continue;
+            }
+            let dv = dt / p.tau_m * (-(*v - p.v_rest) + p.r_m * total_input[idx]);
+            *v += dv;
+            if *v >= p.v_threshold {
+                *v = p.v_reset;
+                *refr = t + p.refractory;
+                last_buf[idx] = t;
                 fired.push(idx);
             }
         }
@@ -535,7 +597,7 @@ impl Network {
             };
             for &eid in &self.outgoing[src] {
                 let s = &self.synapses[eid as usize];
-                let channel = state.ensure_channel(s.kind, self.neurons.len());
+                let channel = state.ensure_channel(s.kind, n);
                 channel[s.post] += sign * s.weight;
                 state.synapse_events += 1;
             }
@@ -613,6 +675,12 @@ pub struct NetworkState {
     pub i_syn_nmda: Vec<f32>,
     /// GABA channel — empty until first GABA delivery.
     pub i_syn_gaba: Vec<f32>,
+    /// Scratch buffer holding `external + i_syn (+ i_syn_nmda) (+ i_syn_gaba)`
+    /// for the duration of one [`Network::step_immutable`] call. Pre-summing
+    /// the input channels lets the LIF integration loop iterate over a
+    /// single contiguous slice — autovectoriser-friendly, and removes
+    /// branchy `Option::get` accesses from the inner loop.
+    pub total_input: Vec<f32>,
     /// Sim clock.
     pub time: f32,
     pub step_counter: u64,
@@ -640,33 +708,4 @@ impl NetworkState {
             }
         }
     }
-}
-
-/// Stateless variant of [`LifNeuron::step`] that takes the transient
-/// state as separate `&mut`s instead of borrowing the whole neuron.
-/// Shared between [`Network::step`] (via the in-place `LifNeuron`
-/// state) and [`Network::step_immutable`] (via [`NetworkState`]).
-#[inline]
-fn lif_step_state(
-    p: &LifParams,
-    v: &mut f32,
-    refractory_until: &mut f32,
-    last_spike: &mut f32,
-    t: f32,
-    dt: f32,
-    i_input: f32,
-) -> bool {
-    if t < *refractory_until {
-        *v = p.v_reset;
-        return false;
-    }
-    let dv = dt / p.tau_m * (-(*v - p.v_rest) + p.r_m * i_input);
-    *v += dv;
-    if *v >= p.v_threshold {
-        *v = p.v_reset;
-        *refractory_until = t + p.refractory;
-        *last_spike = t;
-        return true;
-    }
-    false
 }
