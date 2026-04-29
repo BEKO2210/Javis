@@ -9,11 +9,12 @@
 [![Rust edition 2021](https://img.shields.io/badge/rust-edition%202021-CE422B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3a86ff)](#license)
 [![CI](https://img.shields.io/github/actions/workflow/status/BEKO2210/Javis/ci.yml?branch=main&label=ci&logo=github)](.github/workflows/ci.yml)
-[![Tests 91/91](https://img.shields.io/badge/tests-91%2F91%20passing-3fb950)](#tests)
+[![Tests 98/98](https://img.shields.io/badge/tests-98%2F98%20passing-3fb950)](#tests)
 [![Clippy clean](https://img.shields.io/badge/clippy-0%20warnings-3fb950)](#tests)
-[![Crates 5](https://img.shields.io/badge/crates-5-7aa2ff)](#project-structure)
+[![MSRV 1.86](https://img.shields.io/badge/MSRV-1.86-CE422B?logo=rust&logoColor=white)](#tests)
 [![Token reduction 96.7%25](https://img.shields.io/badge/token%20reduction-96.7%25-ffd166)](#token-efficiency)
-[![Live demo](https://img.shields.io/badge/live%20demo-3D%20brain-ff5c8a)](#live-3d-brain)
+[![Observability](https://img.shields.io/badge/observability-tracing%20%C2%B7%20Prometheus-7aa2ff)](#production-readiness)
+[![Container](https://img.shields.io/badge/container-Docker%20%2B%20Compose-2496ed?logo=docker&logoColor=white)](#run-with-docker)
 [![Bio inspired](https://img.shields.io/badge/bio--inspired-LIF%20%C2%B7%20STDP%20%C2%B7%20iSTDP%20%C2%B7%20BTSP-62d6ff)](#plasticity)
 
 </div>
@@ -76,7 +77,7 @@ Every box on the diagram corresponds to a real Rust module:
 # build everything
 cargo build --release
 
-# run the full test suite (91/91 should pass)
+# run the full test suite (98/98 should pass)
 cargo test --release
 
 # minimal 30-line demo printing RAG vs Javis token saving
@@ -117,6 +118,10 @@ docker compose up --build
 | http://localhost:7777/metrics | Prometheus exposition |
 | http://localhost:9090 | Prometheus UI (already scraping Javis) |
 | http://localhost:3000 | Grafana, Javis dashboard pre-provisioned |
+
+The brain state lives on a named volume (`javis-data:/app/data`),
+so `docker compose restart` saves a `brain.snapshot.json` on
+shutdown and reloads it on startup — no retraining needed.
 
 The Grafana instance runs anonymous-admin and the Prometheus
 datasource is auto-wired — meant for local-dev only, see
@@ -177,6 +182,53 @@ cargo test -p eval --release wiki_benchmark    -- --nocapture
 
 ---
 
+## Production readiness
+
+What separates Javis from a typical research demo:
+
+**Observability** (notes 24–26)
+
+| Endpoint | Purpose |
+| --- | --- |
+| `tracing` + `RUST_LOG` | structured logs, JSON mode via `JAVIS_LOG_FORMAT=json`, per-WebSocket-session spans |
+| `GET /health` | liveness — always 200 |
+| `GET /ready` | readiness — JSON with `sentences`, `words`, `llm` mode |
+| `GET /metrics` | Prometheus exposition: counters, histograms (5 ms – 30 s buckets), gauges |
+
+**Supply-chain** (notes 27–30)
+
+| Tool | Where | Catches |
+| --- | --- | --- |
+| `cargo-deny` | CI `deny` job | RustSec advisories, license drift, banned/duplicate crates, unknown sources |
+| Pinned MSRV (1.86) | CI `msrv` job | accidental use of newer-rustc-only features |
+| Dependabot | weekly | grouped `cargo` and `github-actions` updates |
+| `cargo doc -D warnings` | CI `docs` job | broken intra-doc links, invalid codeblock attrs |
+
+**Container** (notes 32–33)
+
+| | |
+| --- | --- |
+| Multi-stage `Dockerfile` | `rust:1.86-bookworm` builder → `debian:bookworm-slim` runtime, ~150 MB final |
+| Non-root user | `javis` (uid 1000) with `tini` as PID 1 |
+| HEALTHCHECK | `curl /health`, 15 s interval |
+| Snapshot volume | `javis-data:/app/data` survives restarts |
+| Optional CA secret | for sandbox / corporate-proxy environments |
+
+**Performance baselines** (note 31, local x86_64 Linux)
+
+| Path | Time |
+| --- | ---: |
+| `Network::step` (1 000 neurons, sparse, passive) | 3.2 µs |
+| `Network::step` (1 000 neurons, sparse, +STDP) | 3.4 µs |
+| `Brain::step` (two regions × 1 000) | 7.7 µs |
+| `encode_sentence` (18 words) | 21 µs |
+| `decode_strict` (vocab 1 000) | 253 µs |
+
+CI runs eight jobs on every push: `fmt`, `clippy -D warnings`,
+`test`, `doc-tests`, `deny`, `msrv`, `docs`, `benches` (compile-only).
+
+---
+
 ## Project structure
 
 ```
@@ -187,7 +239,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 32 research notes — every decision documented
+├── notes/          ─ 33 research notes — every decision documented
 ├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
 ```
@@ -252,6 +304,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 30 | `cargo doc -D warnings` as CI gate |
 | 31 | Criterion benchmarks for `Network::step`, `Brain::step`, encode/decode |
 | 32 | Container & deploy: Dockerfile + docker-compose with Prometheus + Grafana |
+| 33 | Docker stack verified end-to-end + snapshot volume |
 
 ---
 

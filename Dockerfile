@@ -31,15 +31,33 @@ COPY crates/llm/Cargo.toml           crates/llm/Cargo.toml
 COPY crates/viz/Cargo.toml           crates/viz/Cargo.toml
 
 # Stub-source the entire workspace so `cargo fetch` resolves and
-# caches the dep graph without seeing real code yet.
-RUN mkdir -p crates/snn-core/src crates/encoders/src crates/eval/src \
-             crates/llm/src crates/viz/src \
+# caches the dep graph without seeing real code yet. We have to stub
+# every explicit `[[bin]]` / `[[bench]]` target too — cargo refuses
+# to parse a manifest whose declared target file does not exist.
+RUN mkdir -p crates/snn-core/src crates/snn-core/benches \
+             crates/encoders/src crates/encoders/benches \
+             crates/eval/src crates/llm/src \
+             crates/viz/src \
  && echo 'fn main() {}' > crates/viz/src/main.rs \
  && echo ''            > crates/snn-core/src/lib.rs \
  && echo ''            > crates/encoders/src/lib.rs \
  && echo ''            > crates/eval/src/lib.rs \
  && echo ''            > crates/llm/src/lib.rs \
  && echo ''            > crates/viz/src/lib.rs \
+ && echo 'fn main() {}' > crates/snn-core/benches/network_step.rs \
+ && echo 'fn main() {}' > crates/snn-core/benches/brain_step.rs \
+ && echo 'fn main() {}' > crates/encoders/benches/encode_decode.rs
+
+# Cargo fetch can be wrapped with a host CA bundle for environments
+# behind a TLS-intercepting proxy. Pass via:
+#   docker buildx build --secret id=hostca,src=/etc/ssl/certs/ca-certificates.crt
+# In normal CI / dev environments this is a no-op — the secret is
+# optional (`required=false`) and `update-ca-certificates` is skipped.
+RUN --mount=type=secret,id=hostca,target=/tmp/hostca.crt,required=false \
+    if [ -s /tmp/hostca.crt ]; then \
+        cp /tmp/hostca.crt /usr/local/share/ca-certificates/sandbox-ca.crt && \
+        update-ca-certificates; \
+    fi \
  && cargo fetch --locked
 
 # Real source. Now Cargo only rebuilds the workspace, not the deps.
@@ -64,6 +82,12 @@ RUN groupadd --system --gid 1000 javis \
  && useradd  --system --uid 1000 --gid javis --home /app --shell /usr/sbin/nologin javis
 
 WORKDIR /app
+
+# `/app/data` is the conventional snapshot location. Pre-create it
+# with the right ownership so that a `--mount type=volume` ends up
+# writable for the non-root javis user (Docker named volumes
+# inherit the destination's permissions on first mount).
+RUN mkdir -p /app/data && chown javis:javis /app/data
 
 COPY --from=builder /usr/src/javis/target/release/javis-viz /usr/local/bin/javis-viz
 COPY --chown=javis:javis crates/viz/static /app/static

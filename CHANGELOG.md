@@ -12,6 +12,20 @@ note that introduced the change — every iteration has a corresponding
   `javis` (uid 1000) with `tini` as PID 1 and a `curl /health`
   HEALTHCHECK. Layer-cache trick stubs the workspace so `cargo
   fetch` only re-runs on manifest changes.
+- Persistent brain volume: `javis-data:/app/data` mount plus
+  `--snapshot /app/data/brain.snapshot.json` arg in compose. Brain
+  state survives `docker compose restart` (verified locally:
+  29.5 MB snapshot, save → load round-trip preserves sentences/words).
+- Optional `--secret id=hostca` build-time CA bundle for sandbox /
+  TLS-intercepting-proxy environments. Declared in
+  `docker-compose.yml` so a single `docker compose up --build`
+  works without manual flag-fiddling.
+
+### Fixed
+- Dockerfile stub-source step now creates placeholder files for
+  `[[bench]]` targets too — without them `cargo fetch` refuses to
+  parse the manifest. Discovered when the iter-15 image build was
+  first exercised end-to-end.
 - `.dockerignore` keeps the build context lean (no `target/`,
   `.git/`, `notes/`, etc.).
 - `docker-compose.yml` brings up three services: javis-viz,

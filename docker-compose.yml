@@ -14,9 +14,19 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Optional sandbox/proxy CA bundle. The Dockerfile reads
+      # `--secret id=hostca` if it's present and otherwise falls
+      # through cleanly. Compose passes the secret to BuildKit only
+      # if the host file actually exists.
+      secrets:
+        - hostca
     image: javis-viz:local
     container_name: javis-viz
     restart: unless-stopped
+    # Persist the brain across container restarts. The binary loads
+    # the file at startup if it exists and writes it back on graceful
+    # shutdown (SIGTERM → tini → graceful shutdown → save).
+    command: ["--snapshot", "/app/data/brain.snapshot.json"]
     ports:
       - "7777:7777"
     environment:
@@ -24,6 +34,8 @@ services:
       JAVIS_LOG_FORMAT: json
       # Optional: set to a real key to exercise the LLM path.
       # ANTHROPIC_API_KEY: ""
+    volumes:
+      - javis-data:/app/data
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:7777/health"]
       interval: 15s
@@ -68,5 +80,14 @@ services:
       - prometheus
 
 volumes:
+  javis-data:
   prometheus-data:
   grafana-data:
+
+# Build-time secret. Only read during `docker compose build`; the
+# resulting image does not contain the file. Useful for sandbox /
+# corporate-proxy environments that intercept TLS — point it at the
+# host's combined CA bundle.
+secrets:
+  hostca:
+    file: /etc/ssl/certs/ca-certificates.crt
