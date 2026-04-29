@@ -7,6 +7,11 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/beko2210/javis"
+# All workspace crates are internal — explicitly opt out of publishing
+# so cargo-deny won't flag intra-workspace path deps as wildcards. Flip
+# this to true on individual crates if/when we ever publish to
+# crates.io.
+publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

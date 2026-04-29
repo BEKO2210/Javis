@@ -4,7 +4,25 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 12 (operational hardening, parts A + B + C)
+## Unreleased — Iteration 13 (supply-chain hygiene, part A)
+
+### Added
+- `deny.toml` — repository-root `cargo-deny` configuration. Four
+  checks: advisories (RustSec), licenses (allow-list), bans
+  (wildcard / duplicate detection), sources (only crates.io).
+- License allow-list explicitly enumerates the ten permissive
+  licenses our dep tree actually contains. `unused-allowed-license =
+  "deny"` keeps the list tight.
+- `.github/workflows/ci.yml` — new `deny` job runs `cargo-deny
+  check` on every push via `EmbarkStudios/cargo-deny-action@v2`.
+
+### Changed
+- `[workspace.package]` declares `publish = false` and every member
+  `[package]` adds `publish.workspace = true`. Required so
+  `allow-wildcard-paths = true` applies — without it, intra-
+  workspace path deps would be flagged as wildcards.
+
+## Iteration 12 — operational hardening (parts A + B + C)
 
 ### Added (part C — Prometheus metrics)
 - `GET /metrics` — Prometheus exposition endpoint. Returns the global

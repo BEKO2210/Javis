@@ -1,0 +1,97 @@
+# cargo-deny configuration for Javis.
+#
+# Run locally:   `cargo deny check`
+# In CI:         the `.github/workflows/ci.yml` `deny` job runs the same
+#                command on every push.
+#
+# Each section is intentionally explicit. We never want a silently-
+# accepted GPL transitive or a duplicate of a major dependency to land
+# unnoticed.
+
+[graph]
+# Default — every target rustc knows about. Override here if Javis ever
+# ships a target-restricted crate.
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------
+# Advisories — RustSec database. Any unfixed advisory is a CI failure.
+# ---------------------------------------------------------------------
+[advisories]
+# `version = 2` enables the post-0.16 schema where `vulnerability` /
+# `unmaintained` / `yanked` are merged into a single `severity`-based
+# rule set. The default severity threshold is `Low` — any RustSec hit
+# counts.
+version = 2
+# Crate-by-crate exemptions go here. Always with a reason.
+ignore = []
+
+# ---------------------------------------------------------------------
+# Licenses — explicit allow-list of permissive OSI/FSF-approved
+# licenses. Anything not on this list fails the check.
+# ---------------------------------------------------------------------
+[licenses]
+version = 2
+# Permissive licenses we are happy to ship with under our own MIT
+# license. No copyleft (no GPL/LGPL/AGPL/MPL) — if a transitive ever
+# pulls one in, CI fails until we either find an alternative or
+# explicitly add an `exceptions` entry below with a clear reason.
+#
+# Each entry is currently encountered in the actual dep tree —
+# unused-allowance noise is silenced. Add new licenses only when CI
+# fails on an actual transitive.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+unused-allowed-license = "deny"
+# Crate-specific exceptions. Each one is a deliberate decision —
+# leaving the list empty until something legitimately requires it.
+exceptions = []
+
+# ---------------------------------------------------------------------
+# Bans — duplicate-version policing and explicit crate denials.
+# ---------------------------------------------------------------------
+[bans]
+# Duplicates eat compile time and bloat the binary. We warn instead of
+# fail because some popular crates legitimately publish breaking
+# changes faster than their transitive consumers can keep up.
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies inside the workspace look like wildcards (no
+# version constraint) but are perfectly fine — they're how Cargo
+# expresses intra-workspace deps.
+allow-wildcard-paths = true
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+# ---------------------------------------------------------------------
+# Sources — only crates.io. No git deps, no random custom registries.
+# ---------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

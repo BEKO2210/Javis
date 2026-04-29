@@ -165,7 +165,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 26 research notes — every decision documented
+├── notes/          ─ 27 research notes — every decision documented
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
 ```
 
@@ -223,6 +223,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 24 | Structured logging via `tracing` (RUST_LOG, JSON mode, session spans) |
 | 25 | `/health` (liveness) + `/ready` (readiness with brain stats) |
 | 26 | Prometheus metrics: `/metrics` endpoint, counters/histograms/gauges |
+| 27 | Supply-chain hygiene: `cargo-deny` (advisories + licenses + bans + sources) |
 
 ---
 

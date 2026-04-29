@@ -3,6 +3,7 @@ name = "snn-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "Spiking neural network core for Javis — brain-inspired knowledge graph."
 
 [lib]

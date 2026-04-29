@@ -3,6 +3,7 @@ name = "viz"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "Live 3D visualisation server for Javis. Streams brain state over WebSocket."
 
 [lib]
