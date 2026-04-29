@@ -4,7 +4,44 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 21 (profile-driven LIF speedup, 1.5×)
+## Unreleased — Iteration 22 (pipeline profile: 77 % brain, NOT Amdahl-bound)
+
+### Added
+- Six phase timers in `AppState::run_recall` covering
+  `lock_overhead`, `encode`, `snn_compute`, `decode`,
+  `rag_search`, `response_build`. Plus two sub-phase timers
+  inside `run_with_cue_streaming_immutable` (`brain_compute`,
+  `ws_stream`) so the dominant `snn_compute` phase can be split
+  further.
+- Prometheus histograms `javis_recall_phase_seconds{phase}` and
+  `javis_recall_subphase_seconds{phase}`, sharing the existing
+  duration-bucket layout from `viz::metrics::init`.
+- Structured `tracing::info!` line per recall with all six phase
+  durations as fields.
+- `scripts/pipeline_profile.py` — drives N recalls, reads the
+  per-phase histograms before+after, prints the breakdown sorted
+  by mean. Defaults: 100 sequential recalls.
+
+### Verified (notes/40)
+Across 200 sequential recalls against the docker stack:
+
+| phase | mean ms | share |
+| --- | ---: | ---: |
+| `snn_compute` | 7.91 | 97.9 % |
+| `decode` | 0.13 | 1.6 % |
+| `response_build` | 0.02 | 0.2 % |
+| `lock_overhead` | 0.009 | 0.1 % |
+| `encode` | 0.004 | 0.0 % |
+| `rag_search` | 0.002 | 0.0 % |
+
+`snn_compute` breakdown: `brain_compute` 6.18 ms (77 % of total
+recall), `ws_stream` 0.53 ms (6.5 %).
+
+Conclusion: brain-compute is still the dominant cost. Amdahl
+hasn't taken over yet — a 2× brain-step speedup still buys 1.65×
+on the full pipeline.
+
+## Iteration 21 — profile-driven LIF speedup, 1.5×
 
 ### Added
 - `crates/snn-core/examples/profile_step_immutable.rs` — hand-

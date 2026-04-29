@@ -271,7 +271,15 @@ async fn run_with_cue_streaming_immutable(
     let mut batch_r2: Vec<u32> = Vec::new();
     let mut t_ms: f32 = 0.0;
 
+    // Sub-phase timers: distinguish raw brain compute from the
+    // WS-channel send overhead that interleaves with it. Reported via
+    // `javis_recall_subphase_seconds{phase}` so the existing pipeline
+    // profile script can break the SNN-compute number down further.
+    let mut compute_s: f64 = 0.0;
+    let mut stream_s: f64 = 0.0;
+
     for step in 0..total_steps {
+        let t0 = Instant::now();
         let spikes = brain.step_immutable(state, &externals);
         for &id in &spikes[0] {
             batch_r1.push(id as u32);
@@ -282,8 +290,11 @@ async fn run_with_cue_streaming_immutable(
                 counts[id] += 1;
             }
         }
+        compute_s += t0.elapsed().as_secs_f64();
+
         if (step + 1) % batch_steps == 0 || step + 1 == total_steps {
             t_ms += BATCH_MS;
+            let t1 = Instant::now();
             let _ = tx
                 .send(Event::Step {
                     t_ms,
@@ -291,8 +302,14 @@ async fn run_with_cue_streaming_immutable(
                     r2: std::mem::take(&mut batch_r2),
                 })
                 .await;
+            stream_s += t1.elapsed().as_secs_f64();
         }
     }
+
+    metrics::histogram!("javis_recall_subphase_seconds", "phase" => "brain_compute")
+        .record(compute_s);
+    metrics::histogram!("javis_recall_subphase_seconds", "phase" => "ws_stream").record(stream_s);
+
     counts
 }
 
@@ -695,12 +712,12 @@ impl AppState {
     /// the final Decoded event.
     pub async fn run_recall(&self, query: String, tx: Sender<Event>) {
         let started = Instant::now();
-        // Recall takes only a read lock — multiple concurrent recalls
-        // may proceed in parallel. Each one drives its own
-        // `BrainState`, so the heavy LIF / synapse-delivery work never
-        // serialises against the others.
-        let g = self.inner.read().await;
 
+        // Phase 1: lock acquisition + init/phase event sends. This is
+        // the "request handling overhead" that sits between the WS
+        // upgrade and the first useful brain work.
+        let p_lock_t0 = Instant::now();
+        let g = self.inner.read().await;
         let (r1, r2_e, r2_i) = count_neurons(&g.brain);
         let _ = tx
             .send(Event::Init {
@@ -716,32 +733,47 @@ impl AppState {
                 detail: format!("query: '{query}'"),
             })
             .await;
+        let phase_lock_s = p_lock_t0.elapsed().as_secs_f64();
 
-        // Note: `step_immutable` ignores plasticity unconditionally, so
-        // we no longer need to reach in and `disable_*_all()` before
-        // running. The brain's plasticity configuration stays exactly
-        // as the most recent `run_train` left it.
-
+        // Phase 2: text → SDR via the deterministic-hash encoder.
+        let p_enc_t0 = Instant::now();
         let sdr = g.encoder.encode(&query);
+        let phase_encode_s = p_enc_t0.elapsed().as_secs_f64();
         if sdr.indices.is_empty() {
             warn!(%query, "recall: query produced empty SDR (unknown vocabulary)");
             let _ = tx.send(Event::Done).await;
             return;
         }
+
+        // Phase 3: SNN compute. `step_immutable` runs RECALL_MS of
+        // simulated time and emits Step events to the WS channel as
+        // it goes — channel-send latency is *included* in this phase
+        // because it interleaves with the brain step.
+        let p_sim_t0 = Instant::now();
         let mut state = g.brain.fresh_state();
         let counts =
             run_with_cue_streaming_immutable(&g.brain, &mut state, &sdr.indices, RECALL_MS, &tx)
                 .await;
-        let recall_indices = top_k(&counts, KWTA_K);
+        let phase_sim_s = p_sim_t0.elapsed().as_secs_f64();
 
+        // Phase 4: SNN-output → text. kWTA top-k plus the
+        // EngramDictionary scan that compares the recalled SDR
+        // against every learnt concept.
+        let p_dec_t0 = Instant::now();
+        let recall_indices = top_k(&counts, KWTA_K);
         let candidates = g.dict.decode(&recall_indices, DECODE_THRESHOLD);
+        let phase_decode_s = p_dec_t0.elapsed().as_secs_f64();
+
         let javis_payload = candidates
             .iter()
             .map(|(w, _)| w.as_str())
             .collect::<Vec<_>>()
             .join(" ");
 
-        // RAG search across the sentences trained so far.
+        // Phase 5: naïve-RAG mock. Linear scan over every trained
+        // sentence; included here as the comparison baseline that
+        // motivates the whole brain-side pipeline.
+        let p_rag_t0 = Instant::now();
         let q_lc = query.to_lowercase();
         let rag_payload = g
             .trained_sentences
@@ -749,6 +781,7 @@ impl AppState {
             .find(|s| s.to_lowercase().contains(&q_lc))
             .cloned()
             .unwrap_or_default();
+        let phase_rag_s = p_rag_t0.elapsed().as_secs_f64();
 
         let rag_tokens = eval::count_tokens(&rag_payload) as u32;
         let javis_tokens = eval::count_tokens(&javis_payload) as u32;
@@ -764,6 +797,41 @@ impl AppState {
         metrics::histogram!("javis_recall_duration_seconds").record(elapsed.as_secs_f64());
         metrics::counter!("javis_recall_tokens_rag_total").increment(rag_tokens as u64);
         metrics::counter!("javis_recall_tokens_javis_total").increment(javis_tokens as u64);
+
+        // Phase 6: Decoded-event build + send. The actual JSON
+        // serialisation happens later in `run_session_inner`; what
+        // we capture here is the cost of constructing the payload
+        // and pushing it onto the channel.
+        let p_build_t0 = Instant::now();
+        let decoded_event = Event::Decoded {
+            query: query.clone(),
+            candidates: candidates
+                .into_iter()
+                .map(|(word, score)| DecodedWord { word, score })
+                .collect(),
+            rag_tokens,
+            javis_tokens,
+            reduction_pct: reduction,
+            rag_payload,
+            javis_payload,
+        };
+        let _ = tx.send(decoded_event).await;
+        let phase_build_s = p_build_t0.elapsed().as_secs_f64();
+
+        // Per-phase histograms (Prometheus). Same `_seconds` suffix
+        // as the existing duration metrics so they share the bucket
+        // configuration from `viz::metrics::init`.
+        for (phase, value) in [
+            ("lock_overhead", phase_lock_s),
+            ("encode", phase_encode_s),
+            ("snn_compute", phase_sim_s),
+            ("decode", phase_decode_s),
+            ("rag_search", phase_rag_s),
+            ("response_build", phase_build_s),
+        ] {
+            metrics::histogram!("javis_recall_phase_seconds", "phase" => phase).record(value);
+        }
+
         info!(
             %query,
             candidates = candidate_count,
@@ -771,23 +839,15 @@ impl AppState {
             javis_tokens,
             reduction_pct = reduction,
             elapsed_ms,
+            phase_lock_ms = phase_lock_s * 1000.0,
+            phase_encode_ms = phase_encode_s * 1000.0,
+            phase_snn_ms = phase_sim_s * 1000.0,
+            phase_decode_ms = phase_decode_s * 1000.0,
+            phase_rag_ms = phase_rag_s * 1000.0,
+            phase_build_ms = phase_build_s * 1000.0,
             "recall completed",
         );
 
-        let _ = tx
-            .send(Event::Decoded {
-                query,
-                candidates: candidates
-                    .into_iter()
-                    .map(|(word, score)| DecodedWord { word, score })
-                    .collect(),
-                rag_tokens,
-                javis_tokens,
-                reduction_pct: reduction,
-                rag_payload,
-                javis_payload,
-            })
-            .await;
         let _ = tx.send(Event::Done).await;
     }
 

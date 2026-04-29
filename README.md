@@ -255,7 +255,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 39 research notes — every decision documented
+├── notes/          ─ 40 research notes — every decision documented
 ├── scripts/        ─ End-to-end sanity check + load test (Python)
 ├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
@@ -328,6 +328,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 37 | Snapshot schema versioning: v2 with metadata, migration chain, v1 backward-compat |
 | 38 | Read-only recall: `Brain::step_immutable` + `RwLock`, 2.5× throughput |
 | 39 | Profile-driven LIF rewrite: pre-summed channel buffer, 1.5× faster step |
+| 40 | Pipeline profile: brain compute is 77 % of recall — not Amdahl-bound yet |
 
 ---
 
