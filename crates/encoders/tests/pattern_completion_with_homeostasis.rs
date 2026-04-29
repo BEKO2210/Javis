@@ -67,11 +67,12 @@ fn build_input_region() -> Region {
 }
 
 fn r2_stdp() -> StdpParams {
-    let mut stdp = StdpParams::default();
-    stdp.a_plus = 0.04;
-    stdp.a_minus = 0.025;
-    stdp.w_max = 2.0;
-    stdp
+    StdpParams {
+        a_plus: 0.04,
+        a_minus: 0.025,
+        w_max: 2.0,
+        ..StdpParams::default()
+    }
 }
 
 /// Asymmetric homeostasis: weights can only shrink. STDP is

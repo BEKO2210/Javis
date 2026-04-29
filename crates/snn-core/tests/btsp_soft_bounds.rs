@@ -34,13 +34,14 @@ fn idle(net: &mut Network, ms: f32) {
 
 fn build_pair(initial_weight: f32, soft_bounds: bool) -> (Network, usize, usize) {
     let mut net = Network::new(0.1);
-    let mut p = StdpParams::default();
-    p.a_plus = 0.05;
-    p.a_minus = 0.025;
-    p.w_min = 0.0;
-    p.w_max = 1.0;
-    p.soft_bounds = soft_bounds;
-    net.enable_stdp(p);
+    net.enable_stdp(StdpParams {
+        a_plus: 0.05,
+        a_minus: 0.025,
+        w_min: 0.0,
+        w_max: 1.0,
+        soft_bounds,
+        ..StdpParams::default()
+    });
     let pre = net.add_neuron(LifNeuron::new(LifParams::default()));
     let post = net.add_neuron(LifNeuron::new(LifParams::default()));
     net.connect(pre, post, initial_weight);

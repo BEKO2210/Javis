@@ -22,10 +22,11 @@ const INH_FRACTION: f32 = 0.20;
 fn build(n: usize, seed: u64) -> Network {
     let mut rng = Rng::new(seed);
     let mut net = Network::new(DT);
-    let mut stdp = StdpParams::default();
-    stdp.a_plus = 0.05;
-    stdp.a_minus = 0.025;
-    net.enable_stdp(stdp);
+    net.enable_stdp(StdpParams {
+        a_plus: 0.05,
+        a_minus: 0.025,
+        ..StdpParams::default()
+    });
 
     // Assign neuron types: first 80% excitatory, last 20% inhibitory.
     let n_inh = (n as f32 * INH_FRACTION) as usize;

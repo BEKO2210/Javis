@@ -87,8 +87,8 @@ async fn ask_returns_both_answers_in_mock_mode() {
     let a = asked.expect("no asked event received");
     let rag = a.get("rag").unwrap();
     let javis = a.get("javis").unwrap();
-    assert!(rag.get("text").and_then(|t| t.as_str()).unwrap().len() > 0);
-    assert!(javis.get("text").and_then(|t| t.as_str()).unwrap().len() > 0);
+    assert!(!rag.get("text").and_then(|t| t.as_str()).unwrap().is_empty());
+    assert!(!javis.get("text").and_then(|t| t.as_str()).unwrap().is_empty());
     assert_eq!(rag.get("real").and_then(|v| v.as_bool()), Some(false));
     assert_eq!(javis.get("real").and_then(|v| v.as_bool()), Some(false));
     let rag_in = rag.get("input_tokens").and_then(|v| v.as_u64()).unwrap();

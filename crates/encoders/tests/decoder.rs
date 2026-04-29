@@ -47,11 +47,12 @@ fn build_input_region() -> Region {
 }
 
 fn r2_stdp() -> StdpParams {
-    let mut stdp = StdpParams::default();
-    stdp.a_plus = 0.04;
-    stdp.a_minus = 0.025;
-    stdp.w_max = 2.0;
-    stdp
+    StdpParams {
+        a_plus: 0.04,
+        a_minus: 0.025,
+        w_max: 2.0,
+        ..StdpParams::default()
+    }
 }
 
 fn r2_homeostasis() -> HomeostasisParams {
@@ -317,11 +318,12 @@ fn r2_homeostasis_multi() -> HomeostasisParams {
 }
 
 fn r2_stdp_multi() -> StdpParams {
-    let mut stdp = StdpParams::default();
-    stdp.a_plus = 0.015;
-    stdp.a_minus = 0.012;
-    stdp.w_max = 0.8;
-    stdp
+    StdpParams {
+        a_plus: 0.015,
+        a_minus: 0.012,
+        w_max: 0.8,
+        ..StdpParams::default()
+    }
 }
 
 /// iSTDP tuned for the multi-concept regime. `a_plus` is small —

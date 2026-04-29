@@ -16,7 +16,17 @@ use crate::homeostasis::HomeostasisParams;
 use crate::istdp::IStdpParams;
 use crate::neuron::{LifNeuron, NeuronKind};
 use crate::stdp::StdpParams;
-use crate::synapse::Synapse;
+use crate::synapse::{Synapse, SynapseKind};
+
+fn default_tau_syn_ms() -> f32 {
+    5.0
+}
+fn default_tau_nmda_ms() -> f32 {
+    100.0
+}
+fn default_tau_gaba_ms() -> f32 {
+    10.0
+}
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Network {
@@ -24,10 +34,18 @@ pub struct Network {
     pub synapses: Vec<Synapse>,
     pub outgoing: Vec<Vec<u32>>,
     pub incoming: Vec<Vec<u32>>,
-    /// Synaptic current channel — transient, rebuilt on first step
-    /// after a snapshot load.
+    /// AMPA synaptic current channel — transient, rebuilt on first
+    /// step after a snapshot load. The default channel; `Brain` and
+    /// most existing code only ever touch this one.
     #[serde(skip, default)]
     pub i_syn: Vec<f32>,
+    /// NMDA channel. Only allocated lazily when the first NMDA
+    /// synapse fires — most networks never use it.
+    #[serde(skip, default)]
+    pub i_syn_nmda: Vec<f32>,
+    /// GABA channel. Lazily allocated, see `i_syn_nmda`.
+    #[serde(skip, default)]
+    pub i_syn_gaba: Vec<f32>,
     /// STDP pre-trace per neuron — transient.
     #[serde(skip, default)]
     pub pre_trace: Vec<f32>,
@@ -38,6 +56,17 @@ pub struct Network {
     #[serde(skip, default)]
     pub time: f32,
     pub dt: f32,
+    /// AMPA decay time constant (ms). Default 5 ms — biologically the
+    /// AMPA range. Settable via [`Network::set_tau_syn_ms`]. Older
+    /// snapshots without this field deserialise with the default.
+    #[serde(default = "default_tau_syn_ms")]
+    pub tau_syn_ms: f32,
+    /// NMDA decay time constant (ms). Default 100 ms.
+    #[serde(default = "default_tau_nmda_ms")]
+    pub tau_nmda_ms: f32,
+    /// GABA decay time constant (ms). Default 10 ms.
+    #[serde(default = "default_tau_gaba_ms")]
+    pub tau_gaba_ms: f32,
     pub stdp: Option<StdpParams>,
     pub istdp: Option<IStdpParams>,
     pub homeostasis: Option<HomeostasisParams>,
@@ -58,10 +87,15 @@ impl Network {
             outgoing: Vec::new(),
             incoming: Vec::new(),
             i_syn: Vec::new(),
+            i_syn_nmda: Vec::new(),
+            i_syn_gaba: Vec::new(),
             pre_trace: Vec::new(),
             post_trace: Vec::new(),
             time: 0.0,
             dt,
+            tau_syn_ms: default_tau_syn_ms(),
+            tau_nmda_ms: default_tau_nmda_ms(),
+            tau_gaba_ms: default_tau_gaba_ms(),
             stdp: None,
             istdp: None,
             homeostasis: None,
@@ -76,22 +110,68 @@ impl Network {
         self.outgoing.push(Vec::new());
         self.incoming.push(Vec::new());
         self.i_syn.push(0.0);
+        // NMDA / GABA channels are kept lazy — they only get sized when
+        // a synapse of that kind first delivers, see `kind_channel_mut`.
         self.pre_trace.push(0.0);
         self.post_trace.push(0.0);
         id
     }
 
+    /// Borrow the per-neuron `i_syn` slot for the requested receptor
+    /// kind, allocating the channel buffer on first use.
+    fn ensure_channel(&mut self, kind: SynapseKind) -> &mut Vec<f32> {
+        let n = self.neurons.len();
+        match kind {
+            SynapseKind::Ampa => &mut self.i_syn,
+            SynapseKind::Nmda => {
+                if self.i_syn_nmda.len() != n {
+                    self.i_syn_nmda = vec![0.0; n];
+                }
+                &mut self.i_syn_nmda
+            }
+            SynapseKind::Gaba => {
+                if self.i_syn_gaba.len() != n {
+                    self.i_syn_gaba = vec![0.0; n];
+                }
+                &mut self.i_syn_gaba
+            }
+        }
+    }
+
+    /// Wire a synapse from `pre` to `post` with the given weight. Both
+    /// indices must reference existing neurons; weight must be finite.
+    /// Self-loops are allowed but rare in cortical wiring.
     pub fn connect(&mut self, pre: usize, post: usize, weight: f32) -> usize {
+        let n = self.neurons.len();
+        assert!(
+            pre < n,
+            "Network::connect: pre {pre} out of bounds (only {n} neurons)",
+        );
+        assert!(
+            post < n,
+            "Network::connect: post {post} out of bounds (only {n} neurons)",
+        );
+        assert!(
+            weight.is_finite(),
+            "Network::connect: weight must be finite, got {weight}",
+        );
         let id = self.synapses.len();
+        assert!(
+            id < u32::MAX as usize,
+            "Network::connect: synapse count exceeds u32 capacity",
+        );
         self.synapses.push(Synapse::new(pre, post, weight));
         self.outgoing[pre].push(id as u32);
         self.incoming[post].push(id as u32);
         id
     }
 
-    /// Ensure the transient buffers (`i_syn`, `pre_trace`, `post_trace`)
-    /// have the right length for the current neuron count. Called after
-    /// loading a snapshot, where `#[serde(skip)]` left them empty.
+    /// Ensure the transient buffers (`i_syn` channels, STDP traces)
+    /// have the right length for the current neuron count. Called
+    /// after loading a snapshot, where `#[serde(skip)]` left them
+    /// empty. NMDA / GABA channels are only sized if any synapse
+    /// uses that kind — keeps the snapshot cheap for default
+    /// AMPA-only networks.
     pub fn ensure_transient_state(&mut self) {
         let n = self.neurons.len();
         if self.i_syn.len() != n {
@@ -103,6 +183,37 @@ impl Network {
         if self.post_trace.len() != n {
             self.post_trace = vec![0.0; n];
         }
+        let need_nmda = self.synapses.iter().any(|s| s.kind == SynapseKind::Nmda);
+        let need_gaba = self.synapses.iter().any(|s| s.kind == SynapseKind::Gaba);
+        if need_nmda && self.i_syn_nmda.len() != n {
+            self.i_syn_nmda = vec![0.0; n];
+        }
+        if need_gaba && self.i_syn_gaba.len() != n {
+            self.i_syn_gaba = vec![0.0; n];
+        }
+    }
+
+    /// Set the AMPA decay time constant (ms). Must be positive.
+    pub fn set_tau_syn_ms(&mut self, tau_syn_ms: f32) {
+        assert!(
+            tau_syn_ms > 0.0 && tau_syn_ms.is_finite(),
+            "tau_syn_ms must be positive and finite, got {tau_syn_ms}",
+        );
+        self.tau_syn_ms = tau_syn_ms;
+    }
+
+    /// Set every synaptic channel's τ at once. All values must be
+    /// positive and finite.
+    pub fn set_synaptic_taus(&mut self, ampa_ms: f32, nmda_ms: f32, gaba_ms: f32) {
+        for (label, value) in [("ampa", ampa_ms), ("nmda", nmda_ms), ("gaba", gaba_ms)] {
+            assert!(
+                value > 0.0 && value.is_finite(),
+                "tau_{label} must be positive and finite, got {value}",
+            );
+        }
+        self.tau_syn_ms = ampa_ms;
+        self.tau_nmda_ms = nmda_ms;
+        self.tau_gaba_ms = gaba_ms;
     }
 
     pub fn enable_stdp(&mut self, params: StdpParams) {
@@ -140,6 +251,12 @@ impl Network {
             n.last_spike = f32::NEG_INFINITY;
             n.activity_trace = 0.0;
             self.i_syn[idx] = 0.0;
+            if idx < self.i_syn_nmda.len() {
+                self.i_syn_nmda[idx] = 0.0;
+            }
+            if idx < self.i_syn_gaba.len() {
+                self.i_syn_gaba[idx] = 0.0;
+            }
             self.pre_trace[idx] = 0.0;
             self.post_trace[idx] = 0.0;
         }
@@ -155,10 +272,24 @@ impl Network {
         let dt = self.dt;
         let t = self.time;
 
-        // 1) Decay synaptic currents (fixed τ_syn = 5 ms for now).
-        let decay_psc = (-dt / 5.0_f32).exp();
+        // 1) Decay every active synaptic channel with its own τ.
+        //    NMDA / GABA buffers are only walked if they were ever
+        //    sized (i.e. at least one synapse of that kind delivered).
+        let decay_ampa = (-dt / self.tau_syn_ms.max(1e-3)).exp();
         for x in self.i_syn.iter_mut() {
-            *x *= decay_psc;
+            *x *= decay_ampa;
+        }
+        if !self.i_syn_nmda.is_empty() {
+            let decay_nmda = (-dt / self.tau_nmda_ms.max(1e-3)).exp();
+            for x in self.i_syn_nmda.iter_mut() {
+                *x *= decay_nmda;
+            }
+        }
+        if !self.i_syn_gaba.is_empty() {
+            let decay_gaba = (-dt / self.tau_gaba_ms.max(1e-3)).exp();
+            for x in self.i_syn_gaba.iter_mut() {
+                *x *= decay_gaba;
+            }
         }
 
         // 2) Decay plasticity traces. `pre_trace` is only used by E-side
@@ -195,7 +326,15 @@ impl Network {
         let mut fired: Vec<usize> = Vec::new();
         for (idx, n) in self.neurons.iter_mut().enumerate() {
             let ext = external.get(idx).copied().unwrap_or(0.0);
-            if n.step(t, dt, ext + self.i_syn[idx]) {
+            // Sum across every active receptor channel.
+            let mut total = ext + self.i_syn[idx];
+            if let Some(v) = self.i_syn_nmda.get(idx) {
+                total += *v;
+            }
+            if let Some(v) = self.i_syn_gaba.get(idx) {
+                total += *v;
+            }
+            if n.step(t, dt, total) {
                 fired.push(idx);
             }
         }
@@ -233,7 +372,9 @@ impl Network {
                 let eid = self.outgoing[src][i] as usize;
                 let post = self.synapses[eid].post;
                 let w = self.synapses[eid].weight;
-                self.i_syn[post] += sign * w;
+                let kind = self.synapses[eid].kind;
+                let channel = self.ensure_channel(kind);
+                channel[post] += sign * w;
                 self.synapse_events += 1;
                 match src_kind {
                     NeuronKind::Excitatory => {
@@ -291,7 +432,7 @@ impl Network {
         if let Some(h) = self.homeostasis {
             if h.eta_scale != 0.0
                 && h.apply_every > 0
-                && self.step_counter % h.apply_every as u64 == 0
+                && self.step_counter.is_multiple_of(h.apply_every as u64)
             {
                 self.apply_synaptic_scaling(&h);
             }
