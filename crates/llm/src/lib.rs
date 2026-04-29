@@ -80,7 +80,11 @@ impl LlmClient {
             match call_anthropic(&key, &self.model, &prompt, self.timeout).await {
                 Ok(answer) => return answer,
                 Err(e) => {
-                    eprintln!("llm: real call failed ({e}); falling back to mock");
+                    tracing::warn!(
+                        error = %e,
+                        model = %self.model,
+                        "real LLM call failed; falling back to mock",
+                    );
                 }
             }
         }

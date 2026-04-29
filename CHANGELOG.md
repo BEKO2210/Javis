@@ -4,7 +4,26 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 11 (production polish)
+## Unreleased — Iteration 12 (operational hardening, part A)
+
+### Added
+- `tracing` + `tracing-subscriber` for structured logging. Subscriber
+  in `viz::main` honours `RUST_LOG` for level/target filtering and
+  `JAVIS_LOG_FORMAT=json` to switch from human-readable to JSON output
+  (for log aggregators like Loki / ELK).
+- Per-WebSocket-session spans with monotonic `session` id and `action`
+  field, so concurrent client logs can be disentangled.
+- Structured fields on every state-mutating operation:
+  `train completed` / `recall completed` / `ask completed` /
+  `snapshot saved|loaded` / `brain reset` all carry timing
+  (`elapsed_ms`) and outcome counters.
+
+### Changed
+- `println!`/`eprintln!` in the production code paths (binary +
+  library + `llm` crate fallback) replaced by `tracing` macros at the
+  appropriate level. Examples and tests keep their plain stdout output.
+
+## Iteration 11 — production polish
 
 ### Added
 - GitHub Actions CI workflow (`.github/workflows/ci.yml`) that runs

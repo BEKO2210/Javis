@@ -17,16 +17,28 @@
 //! If the file exists, it's loaded and the bootstrap-corpus step is
 //! skipped. On graceful shutdown (SIGINT) the current state is written
 //! back to the same path.
+//!
+//! ## Logging
+//!
+//! Logs are emitted via the `tracing` crate. The verbosity is
+//! controlled by `RUST_LOG` (e.g. `RUST_LOG=info`, `RUST_LOG=viz=debug`)
+//! and defaults to `info`. Set `JAVIS_LOG_FORMAT=json` to switch from
+//! human-readable to JSON-structured output for log aggregation.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use tracing::{error, info};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use viz::server::router;
 use viz::AppState;
 
 #[tokio::main]
 async fn main() {
+    init_tracing();
+
     let static_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static");
 
     let snapshot_path = parse_snapshot_arg();
@@ -36,53 +48,79 @@ async fn main() {
         if path.exists() {
             match state.load_from_file(path).await {
                 Ok(()) => {
-                    let (s, w) = state.stats().await;
-                    println!(
-                        "javis-viz: loaded snapshot from {} ({s} sentences, {w} concepts)",
-                        path.display(),
+                    let (sentences, words) = state.stats().await;
+                    info!(
+                        path = %path.display(),
+                        sentences,
+                        words,
+                        "loaded snapshot",
                     );
                 }
                 Err(e) => {
-                    eprintln!(
-                        "javis-viz: failed to load snapshot {}: {e}; bootstrapping fresh",
-                        path.display(),
+                    error!(
+                        path = %path.display(),
+                        error = %e,
+                        "failed to load snapshot; bootstrapping fresh",
                     );
                     state.bootstrap_default_corpus(None).await;
                 }
             }
         } else {
-            println!(
-                "javis-viz: no snapshot at {}; bootstrapping default corpus",
-                path.display(),
+            info!(
+                path = %path.display(),
+                "no snapshot found; bootstrapping default corpus",
             );
             state.bootstrap_default_corpus(None).await;
         }
     } else {
-        println!("javis-viz: bootstrapping brain on default corpus…");
+        info!("bootstrapping brain on default corpus");
         state.bootstrap_default_corpus(None).await;
     }
 
     let (sentences, words) = state.stats().await;
-    println!("javis-viz: ready ({sentences} sentences, {words} concepts)",);
+    info!(sentences, words, "brain ready");
 
     let app = router(state.clone(), static_dir);
     let addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
-    println!("javis-viz listening on http://{addr}");
+    info!(%addr, "javis-viz listening");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
     let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
     if let Err(e) = server.await {
-        eprintln!("javis-viz: server error: {e}");
+        error!(error = %e, "server error");
     }
 
     if let Some(path) = snapshot_path {
         match state.save_to_file(&path).await {
-            Ok(()) => println!("javis-viz: snapshot written to {}", path.display()),
-            Err(e) => eprintln!(
-                "javis-viz: failed to write snapshot {}: {e}",
-                path.display(),
+            Ok(()) => info!(path = %path.display(), "snapshot written"),
+            Err(e) => error!(
+                path = %path.display(),
+                error = %e,
+                "failed to write snapshot",
             ),
         }
+    }
+}
+
+/// Initialise the `tracing` subscriber.
+///
+/// Defaults to `info`-level human-readable output. Override with
+/// `RUST_LOG` (e.g. `RUST_LOG=viz=debug`) for finer control. Set
+/// `JAVIS_LOG_FORMAT=json` to emit JSON-structured logs (useful for
+/// production log aggregation).
+fn init_tracing() {
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,viz=info"));
+
+    let json_format = std::env::var("JAVIS_LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+
+    let registry = tracing_subscriber::registry().with(env_filter);
+    if json_format {
+        registry.with(fmt::layer().json()).init();
+    } else {
+        registry.with(fmt::layer().with_target(false)).init();
     }
 }
 
@@ -125,5 +163,5 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-    println!("javis-viz: shutdown signal received");
+    info!("shutdown signal received");
 }

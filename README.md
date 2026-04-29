@@ -165,7 +165,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 23 research notes — every decision documented
+├── notes/          ─ 24 research notes — every decision documented
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
 ```
 
@@ -220,6 +220,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 21 | Architecture hardening: dead code, bounds checks, lints |
 | 22 | Min-heap pending queue, AMPA/NMDA/GABA channels, zero lints |
 | 23 | Production polish: CI, doc-tests, examples, CHANGELOG |
+| 24 | Structured logging via `tracing` (RUST_LOG, JSON mode, session spans) |
 
 ---
 

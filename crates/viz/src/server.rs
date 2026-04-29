@@ -8,6 +8,7 @@
 //! schema described in [`crate::events`].
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -17,11 +18,12 @@ use axum::routing::get;
 use axum::Router;
 use serde::Deserialize;
 use tokio::sync::mpsc;
+use tracing::{debug, info, info_span, warn, Instrument};
 
 use crate::events::Event;
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Action {
     #[default]
@@ -29,6 +31,17 @@ enum Action {
     Train,
     Reset,
     Ask,
+}
+
+impl Action {
+    fn as_str(self) -> &'static str {
+        match self {
+            Action::Recall => "recall",
+            Action::Train => "train",
+            Action::Reset => "reset",
+            Action::Ask => "ask",
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -72,68 +85,104 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| run_session(socket, state, params))
 }
 
-pub async fn run_session(mut socket: WebSocket, state: Arc<AppState>, params: WsParams) {
+/// Monotonic per-process WebSocket session counter. Embedded in every
+/// log line via the `session` field so concurrent sessions can be
+/// disambiguated in aggregated output.
+static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub async fn run_session(socket: WebSocket, state: Arc<AppState>, params: WsParams) {
+    let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let span = info_span!(
+        "ws_session",
+        session = session_id,
+        action = params.action.as_str(),
+    );
+    run_session_inner(socket, state, params)
+        .instrument(span)
+        .await;
+}
+
+async fn run_session_inner(mut socket: WebSocket, state: Arc<AppState>, params: WsParams) {
+    info!("session started");
+
     let (tx, mut rx) = mpsc::channel::<Event>(1024);
 
     let handle_state = state.clone();
-    let handle = tokio::task::spawn(async move {
-        match params.action {
-            Action::Recall => {
-                let query = params.query.unwrap_or_else(|| "rust".to_string());
-                handle_state.run_recall(query, tx).await;
-            }
-            Action::Train => {
-                let sentence = params.text.unwrap_or_default();
-                if sentence.trim().is_empty() {
+    let handle = tokio::task::spawn(
+        async move {
+            match params.action {
+                Action::Recall => {
+                    let query = params.query.unwrap_or_else(|| "rust".to_string());
+                    debug!(%query, "dispatching recall");
+                    handle_state.run_recall(query, tx).await;
+                }
+                Action::Train => {
+                    let sentence = params.text.unwrap_or_default();
+                    if sentence.trim().is_empty() {
+                        warn!("rejecting train: empty text");
+                        let _ = tx
+                            .send(Event::Phase {
+                                name: "error".into(),
+                                detail: "empty training text".into(),
+                            })
+                            .await;
+                        let _ = tx.send(Event::Done).await;
+                        return;
+                    }
+                    debug!(text_len = sentence.len(), "dispatching train");
+                    handle_state.run_train(sentence, Some(tx)).await;
+                }
+                Action::Reset => {
+                    info!("dispatching reset");
+                    handle_state.reset().await;
                     let _ = tx
                         .send(Event::Phase {
-                            name: "error".into(),
-                            detail: "empty training text".into(),
+                            name: "reset".into(),
+                            detail: "brain wiped".into(),
                         })
                         .await;
                     let _ = tx.send(Event::Done).await;
-                    return;
                 }
-                handle_state.run_train(sentence, Some(tx)).await;
-            }
-            Action::Reset => {
-                handle_state.reset().await;
-                let _ = tx
-                    .send(Event::Phase {
-                        name: "reset".into(),
-                        detail: "brain wiped".into(),
-                    })
-                    .await;
-                let _ = tx.send(Event::Done).await;
-            }
-            Action::Ask => {
-                let question = params.query.unwrap_or_default();
-                let rag = params.rag.unwrap_or_default();
-                let javis = params.javis.unwrap_or_default();
-                if question.trim().is_empty() {
-                    let _ = tx
-                        .send(Event::Phase {
-                            name: "error".into(),
-                            detail: "ask requires a query".into(),
-                        })
-                        .await;
-                    let _ = tx.send(Event::Done).await;
-                    return;
+                Action::Ask => {
+                    let question = params.query.unwrap_or_default();
+                    let rag = params.rag.unwrap_or_default();
+                    let javis = params.javis.unwrap_or_default();
+                    if question.trim().is_empty() {
+                        warn!("rejecting ask: empty query");
+                        let _ = tx
+                            .send(Event::Phase {
+                                name: "error".into(),
+                                detail: "ask requires a query".into(),
+                            })
+                            .await;
+                        let _ = tx.send(Event::Done).await;
+                        return;
+                    }
+                    debug!(
+                        rag_len = rag.len(),
+                        javis_len = javis.len(),
+                        "dispatching ask",
+                    );
+                    handle_state.run_ask(question, rag, javis, tx).await;
                 }
-                handle_state.run_ask(question, rag, javis, tx).await;
             }
         }
-    });
+        .in_current_span(),
+    );
 
+    let mut events_sent: u64 = 0;
     while let Some(ev) = rx.recv().await {
         let payload = match serde_json::to_string(&ev) {
             Ok(s) => s,
             Err(_) => continue,
         };
         if socket.send(Message::Text(payload)).await.is_err() {
+            debug!(events_sent, "client closed socket early");
             break;
         }
+        events_sent += 1;
     }
     let _ = socket.close().await;
     let _ = handle.await;
+    info!(events_sent, "session ended");
 }

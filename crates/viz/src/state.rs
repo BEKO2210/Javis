@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 use encoders::{EngramDictionary, TextEncoder};
 use snn_core::{
@@ -14,6 +15,7 @@ use snn_core::{
     StdpParams,
 };
 use tokio::sync::{mpsc::Sender, Mutex};
+use tracing::{debug, info, warn};
 
 use std::path::Path;
 
@@ -349,10 +351,16 @@ impl AppState {
     /// Reset to a freshly-initialised brain. Loses every learnt engram.
     pub async fn reset(&self) {
         let mut g = self.inner.lock().await;
+        let dropped_sentences = g.trained_sentences.len();
+        let dropped_words = g.known_words.len();
         g.brain = fresh_brain();
         g.dict = EngramDictionary::new();
         g.known_words.clear();
         g.trained_sentences.clear();
+        info!(
+            dropped_sentences,
+            dropped_words, "brain reset to fresh state",
+        );
     }
 
     /// Train the brain on every default-corpus sentence at startup so
@@ -367,6 +375,8 @@ impl AppState {
     /// every newly-seen word into the dictionary. Streams init/phase/
     /// step events on `tx` if provided.
     pub async fn run_train(&self, sentence: String, tx: Option<Sender<Event>>) {
+        let started = Instant::now();
+        let sentence_len = sentence.len();
         let mut g = self.inner.lock().await;
 
         if let Some(tx) = &tx {
@@ -453,26 +463,36 @@ impl AppState {
         }
 
         g.trained_sentences.push(sentence);
+        let total_sentences = g.trained_sentences.len();
+        let total_words = g.known_words.len();
+        let new_words_count = new_words.len();
+        let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
 
         if let Some(tx) = &tx {
             let _ = tx
                 .send(Event::Phase {
                     name: "ready".into(),
-                    detail: format!(
-                        "{} sentences, {} concepts learnt",
-                        g.trained_sentences.len(),
-                        g.known_words.len()
-                    ),
+                    detail: format!("{total_sentences} sentences, {total_words} concepts learnt",),
                 })
                 .await;
             let _ = tx.send(Event::Done).await;
         }
+
+        info!(
+            sentence_len,
+            new_words = new_words_count,
+            total_sentences,
+            total_words,
+            elapsed_ms,
+            "train completed",
+        );
     }
 
     /// Push the query into R1 and decode the resulting R2 pattern
     /// against the current dictionary. Streams the spike activity and
     /// the final Decoded event.
     pub async fn run_recall(&self, query: String, tx: Sender<Event>) {
+        let started = Instant::now();
         let mut g = self.inner.lock().await;
 
         let (r1, r2_e, r2_i) = count_neurons(&g.brain);
@@ -498,6 +518,7 @@ impl AppState {
 
         let sdr = g.encoder.encode(&query);
         if sdr.indices.is_empty() {
+            warn!(%query, "recall: query produced empty SDR (unknown vocabulary)");
             let _ = tx.send(Event::Done).await;
             return;
         }
@@ -529,6 +550,18 @@ impl AppState {
             0.0
         };
 
+        let candidate_count = candidates.len();
+        let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
+        info!(
+            %query,
+            candidates = candidate_count,
+            rag_tokens,
+            javis_tokens,
+            reduction_pct = reduction,
+            elapsed_ms,
+            "recall completed",
+        );
+
         let _ = tx
             .send(Event::Decoded {
                 query,
@@ -558,6 +591,8 @@ impl AppState {
     /// the global clock) are not written — they reset to zero on load
     /// and rebuild within milliseconds of simulation.
     pub async fn save_to_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        let started = Instant::now();
+        let path_ref = path.as_ref().to_path_buf();
         let g = self.inner.lock().await;
         let snap = Snapshot {
             version: SNAPSHOT_VERSION,
@@ -568,14 +603,25 @@ impl AppState {
             trained_sentences: g.trained_sentences.clone(),
         };
         let bytes = serde_json::to_vec(&snap).map_err(io_err)?;
-        tokio::fs::write(path, bytes).await
+        let bytes_len = bytes.len();
+        tokio::fs::write(path, bytes).await?;
+        info!(
+            path = %path_ref.display(),
+            bytes = bytes_len,
+            elapsed_ms = started.elapsed().as_secs_f32() * 1000.0,
+            "snapshot saved",
+        );
+        Ok(())
     }
 
     /// Replace the in-memory state with a snapshot read from disk.
     /// Transient buffers are re-initialised so the brain is immediately
     /// runnable.
     pub async fn load_from_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
-        let bytes = tokio::fs::read(path).await?;
+        let started = Instant::now();
+        let path_ref = path.as_ref().to_path_buf();
+        let bytes = tokio::fs::read(&path_ref).await?;
+        let bytes_len = bytes.len();
         let mut snap: Snapshot = serde_json::from_slice(&bytes).map_err(io_err)?;
         if snap.version != SNAPSHOT_VERSION {
             return Err(std::io::Error::new(
@@ -588,12 +634,24 @@ impl AppState {
         }
         snap.brain.ensure_transient_state();
 
+        let sentences = snap.trained_sentences.len();
+        let words = snap.known_words.len();
+
         let mut g = self.inner.lock().await;
         g.brain = snap.brain;
         g.dict = snap.dict;
         g.encoder = snap.encoder;
         g.known_words = snap.known_words;
         g.trained_sentences = snap.trained_sentences;
+
+        info!(
+            path = %path_ref.display(),
+            bytes = bytes_len,
+            sentences,
+            words,
+            elapsed_ms = started.elapsed().as_secs_f32() * 1000.0,
+            "snapshot loaded",
+        );
         Ok(())
     }
 
@@ -608,10 +666,18 @@ impl AppState {
         javis_payload: String,
         tx: Sender<Event>,
     ) {
+        let started = Instant::now();
+        let real = self.llm.is_real();
+        debug!(
+            real,
+            rag_len = rag_payload.len(),
+            javis_len = javis_payload.len(),
+            "ask: dispatching parallel LLM calls",
+        );
         let _ = tx
             .send(Event::Phase {
                 name: "asking".into(),
-                detail: if self.llm.is_real() {
+                detail: if real {
                     "calling Claude (real) with both payloads".into()
                 } else {
                     "calling Claude (mock) with both payloads".into()
@@ -630,6 +696,17 @@ impl AppState {
             tokio::join!(async move { llm.ask(&q1, &ctx_rag).await }, async move {
                 llm_b.ask(&q2, &ctx_jvs).await
             },);
+
+        let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
+        info!(
+            real,
+            rag_input_tokens = rag_ans.input_tokens,
+            rag_output_tokens = rag_ans.output_tokens,
+            javis_input_tokens = jvs_ans.input_tokens,
+            javis_output_tokens = jvs_ans.output_tokens,
+            elapsed_ms,
+            "ask completed",
+        );
 
         let _ = tx
             .send(Event::Asked {
