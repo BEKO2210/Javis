@@ -28,3 +28,5 @@ futures-util = "0.3"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

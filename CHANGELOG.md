@@ -4,9 +4,18 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 12 (operational hardening, part A)
+## Unreleased — Iteration 12 (operational hardening, parts A + B)
 
-### Added
+### Added (part B — health/readiness probes)
+- `GET /health` — liveness probe. Returns `200 ok` as long as the
+  HTTP runtime can answer. Cheap enough for sub-second probe intervals.
+- `GET /ready` — readiness probe. Returns `200` plus a JSON body
+  with `status`, `sentences`, `words`, and `llm` mode (real / mock).
+  Both probes are registered on `router` and `router_no_static`.
+- Three new tests in `crates/viz/tests/health.rs` driving the router
+  via `tower::ServiceExt::oneshot` (no real TCP needed).
+
+### Added (part A — structured logging)
 - `tracing` + `tracing-subscriber` for structured logging. Subscriber
   in `viz::main` honours `RUST_LOG` for level/target filtering and
   `JAVIS_LOG_FORMAT=json` to switch from human-readable to JSON output

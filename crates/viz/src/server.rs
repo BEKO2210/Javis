@@ -13,10 +13,11 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
-use serde::Deserialize;
+use axum::{Json, Router};
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{debug, info, info_span, warn, Instrument};
 
@@ -62,10 +63,13 @@ pub struct WsParams {
     javis: Option<String>,
 }
 
-/// Build the full router (static-file fallback + `/ws` endpoint).
+/// Build the full router (static-file fallback + `/ws` endpoint +
+/// `/health` and `/ready` probes).
 pub fn router(state: Arc<AppState>, static_dir: PathBuf) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
         .with_state(state)
         .fallback_service(tower_http::services::ServeDir::new(static_dir))
 }
@@ -74,7 +78,47 @@ pub fn router(state: Arc<AppState>, static_dir: PathBuf) -> Router {
 pub fn router_no_static(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
         .with_state(state)
+}
+
+/// Liveness probe.
+///
+/// Returns `200 OK` as long as the HTTP runtime can answer at all.
+/// Container orchestrators should hit this on a short interval; a
+/// failure means restart the process.
+async fn health_handler() -> impl IntoResponse {
+    (StatusCode::OK, "ok")
+}
+
+/// Readiness probe.
+///
+/// Returns `200 OK` plus a small JSON body describing the brain state
+/// (sentence count, vocabulary size, LLM mode). Orchestrators should
+/// only route traffic to the pod once this returns 200; before
+/// `bootstrap_default_corpus` finishes, it can take a few hundred ms.
+///
+/// We don't fail this endpoint when the brain is "empty" — an empty
+/// brain is a valid state right after `reset`. The response is
+/// purely informational.
+async fn ready_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let (sentences, words) = state.stats().await;
+    let body = ReadyBody {
+        status: "ready",
+        sentences,
+        words,
+        llm: if state.llm_is_real() { "real" } else { "mock" },
+    };
+    (StatusCode::OK, Json(body))
+}
+
+#[derive(Debug, Serialize)]
+struct ReadyBody {
+    status: &'static str,
+    sentences: usize,
+    words: usize,
+    llm: &'static str,
 }
 
 async fn ws_handler(
