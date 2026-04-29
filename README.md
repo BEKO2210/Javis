@@ -220,25 +220,25 @@ What separates Javis from a typical research demo:
 | --- | ---: |
 | `Network::step` (1 000 neurons, sparse, passive) | 3.2 µs |
 | `Network::step` (1 000 neurons, sparse, +STDP) | 3.4 µs |
-| `Network::step_immutable` (1 000 neurons, recall path) | 3.7 µs |
+| `Network::step_immutable` (1 000 neurons, recall path, post-SoA) | **2.7 µs** |
 | `Brain::step` (two regions × 1 000) | 7.7 µs |
 | `encode_sentence` (18 words) | 21 µs |
 | `decode_strict` (vocab 1 000) | 253 µs |
 
-**End-to-end load profile** (note 38, against `docker compose` stack)
+**End-to-end load profile** (note 41, against `docker compose` stack)
 
 | Concurrent WS clients | Throughput | p50 / p99 latency | Server-mean |
 | ---: | ---: | ---: | ---: |
-| 1 | 112 ops/s | 8.8 / 11 ms | 7 ms |
-| 10 | 357 ops/s | 27 / 48 ms | 9 ms |
-| 50 | 359 ops/s | 141 / 244 ms | 9 ms |
-| 100 | 358 ops/s | 270 / 564 ms | 9 ms |
+| 1 | 138 ops/s | 7.2 / 8.9 ms | 5.8 ms |
+| 10 | 430 ops/s | 22.5 / 41 ms | 7.5 ms |
+| 50 | 436 ops/s | 116 / 197 ms | 7.6 ms |
+| 100 | 432 ops/s | 229 / 486 ms | 7.6 ms |
 
 Recall runs against an `Arc<RwLock<Inner>>` with a per-call
-`BrainState`, so multiple recalls proceed in parallel. Server-side
-latency stays flat at ~9 ms regardless of concurrency; remaining
-client-side p99 growth is tokio-runtime queueing of TCP connections.
-Bound is now CPU cores, not Mutex serialisation.
+`BrainState`, so multiple recalls proceed in parallel. After the
+SoA refactor (note 41), server-side latency is ~7.6 ms across all
+concurrency levels — Brain step is now ~4.5 ms / recall, ws-stream
+0.31 ms, decode 0.13 ms.
 
 CI runs eight jobs on every push: `fmt`, `clippy -D warnings`,
 `test`, `doc-tests`, `deny`, `msrv`, `docs`, `benches` (compile-only).
@@ -255,7 +255,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 40 research notes — every decision documented
+├── notes/          ─ 41 research notes — every decision documented
 ├── scripts/        ─ End-to-end sanity check + load test (Python)
 ├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
@@ -329,6 +329,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 38 | Read-only recall: `Brain::step_immutable` + `RwLock`, 2.5× throughput |
 | 39 | Profile-driven LIF rewrite: pre-summed channel buffer, 1.5× faster step |
 | 40 | Pipeline profile: brain compute is 77 % of recall — not Amdahl-bound yet |
+| 41 | AoS → SoA refactor + WS fire-and-forget: 1.40× pipeline, 2× LIF total |
 
 ---
 

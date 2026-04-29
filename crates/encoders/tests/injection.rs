@@ -58,13 +58,13 @@ fn untargeted_neurons_remain_at_rest() {
     let v_rest = LifParams::default().v_rest;
 
     let mut wrong = 0;
-    for (i, n) in net.neurons.iter().enumerate() {
+    for i in 0..net.neurons.len() {
         if active.contains(&(i as u32)) {
             continue;
         }
         // Untargeted neurons must be exactly at V_rest after one step
         // (no external input, no synapses, no Poisson noise).
-        if (n.v - v_rest).abs() > 1e-4 {
+        if (net.v[i] - v_rest).abs() > 1e-4 {
             wrong += 1;
         }
     }
@@ -85,7 +85,7 @@ fn weak_drive_only_depolarises() {
     let v_rest = LifParams::default().v_rest;
     let v_th = LifParams::default().v_threshold;
     for &idx in &sdr.indices {
-        let v = net.neurons[idx as usize].v;
+        let v = net.v[idx as usize];
         assert!(v > v_rest + 0.1, "neuron {idx} not depolarised: V={v}");
         assert!(
             v < v_th,

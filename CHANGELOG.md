@@ -4,7 +4,54 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 22 (pipeline profile: 77 % brain, NOT Amdahl-bound)
+## Unreleased — Iteration 23 (AoS → SoA + WS fire-and-forget, 1.4× pipeline)
+
+### Changed (`snn-core`)
+- **AoS → SoA refactor.** `LifNeuron` now holds *only* `params` and
+  `kind` — 32 B per neuron, 2 fitting in one cache line. The
+  per-neuron transient state (`v`, `refractory_until`,
+  `last_spike`, `activity_trace`) moved to parallel `Vec<f32>`
+  buffers on `Network`, indexed lock-step with `neurons`.
+- `LifNeuron::step` removed. The LIF math is now inlined in
+  `Network::step` and `Network::step_immutable`, operating on the
+  parallel slices directly — single straight-line loop, no per-
+  neuron struct loads.
+- `Network::add_neuron`, `reset_state`, `ensure_transient_state`
+  updated to manage the new parallel Vecs.
+- `Network::apply_synaptic_scaling` reads `self.activity_trace[post]`
+  instead of `self.neurons[post].activity_trace`.
+
+### Changed (`viz`)
+- `tx.send(Event::Step{…}).await` → `tx.try_send(...)` in
+  `run_with_cue_streaming_immutable`. Step events are
+  visualisation breadcrumbs; if the WS consumer falls behind we
+  drop the event into a new `javis_ws_step_dropped_total` counter
+  rather than awaiting backpressure into the simulation loop.
+
+### Tests
+- `lif_basic.rs` rewritten to drive a one-neuron `Network` instead
+  of calling the (removed) `LifNeuron::step`.
+- `homeostasis.rs`, `injection.rs`, `immutable_step_equivalence.rs`
+  updated to read transient state from the new parallel Vecs.
+- All four spike-bit-identity equivalence tests still pass without
+  modification — SoA path produces bit-identical spikes to the
+  pre-refactor path.
+
+### Verified (notes/41)
+Criterion, `Network::step_immutable`, p < 0.05:
+
+| size | iter 21 | iter 23 | improvement | total since iter 20 |
+| ---: | ---: | ---: | ---: | ---: |
+| 100  | 307 ns | 240 ns | -22.5 % | 2.27× |
+| 500  | 1.66 µs | 1.17 µs | -26.7 % | 2.40× |
+| 1000 | 3.73 µs | 2.69 µs | -26.8 % | 2.17× |
+| 2000 | 9.32 µs | 7.35 µs | -18.6 % | 1.88× |
+
+Pipeline (200 sequential recalls): total 8.05 ms → 5.77 ms (-28 %).
+Load test: throughput 358 → 432 ops/s (+21 %), p99 -14 % to -19 %
+across concurrency 1/10/50/100.
+
+## Iteration 22 — pipeline profile: 77 % brain, NOT Amdahl-bound
 
 ### Added
 - Six phase timers in `AppState::run_recall` covering

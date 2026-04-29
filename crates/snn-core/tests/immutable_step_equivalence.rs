@@ -73,12 +73,14 @@ fn network_step_immutable_matches_step_when_plasticity_off() {
     }
 
     // Final transient state must match too. We compare the
-    // mutating-path's `Network` fields against the read-only state.
+    // mutating-path's `Network` parallel `Vec<f32>` against the
+    // read-only state's parallel `Vec<f32>` — both are SoA after
+    // iteration 22.
     for i in 0..net_mut.neurons.len() {
         assert!(
-            (net_mut.neurons[i].v - state.v[i]).abs() < 1e-4,
+            (net_mut.v[i] - state.v[i]).abs() < 1e-4,
             "membrane v mismatch at neuron {i}: {} vs {}",
-            net_mut.neurons[i].v,
+            net_mut.v[i],
             state.v[i],
         );
     }
