@@ -74,3 +74,19 @@ jobs:
           # Run all four checks. The thresholds and allow-lists are
           # in the repo-root `deny.toml`.
           arguments: --workspace --all-features
+
+  msrv:
+    name: msrv (1.86)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned MSRV toolchain
+        # `rust-version = "1.86"` in Cargo.toml is the contract;
+        # this job verifies the workspace still builds and tests
+        # green against exactly that toolchain.
+        uses: dtolnay/rust-toolchain@1.86
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Test
+        run: cargo test --workspace --locked -- --test-threads=2

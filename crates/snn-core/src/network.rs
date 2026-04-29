@@ -431,7 +431,7 @@ impl Network {
         if let Some(h) = self.homeostasis {
             if h.eta_scale != 0.0
                 && h.apply_every > 0
-                && self.step_counter.is_multiple_of(h.apply_every as u64)
+                && self.step_counter % (h.apply_every as u64) == 0
             {
                 self.apply_synaptic_scaling(&h);
             }

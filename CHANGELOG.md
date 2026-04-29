@@ -4,9 +4,23 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 13 (supply-chain hygiene, part A)
+## Unreleased — Iteration 13 (supply-chain hygiene, parts A + B)
 
-### Added
+### Added (part B — MSRV)
+- `[workspace.package].rust-version = "1.86"` — explicit MSRV
+  contract. Every member `[package]` declares
+  `rust-version.workspace = true` so the inheritance is literal.
+- New `msrv` CI job in `.github/workflows/ci.yml` runs
+  `cargo build --locked` and the full test suite against
+  `dtolnay/rust-toolchain@1.86` on every push, so accidental use of
+  1.87+-only features fails CI.
+
+### Changed (part B)
+- `snn-core/src/network.rs` — replaced `u64::is_multiple_of`
+  (stabilised in 1.87) with the equivalent `% == 0`. Discovered
+  during MSRV verification.
+
+### Added (part A — cargo-deny)
 - `deny.toml` — repository-root `cargo-deny` configuration. Four
   checks: advisories (RustSec), licenses (allow-list), bans
   (wildcard / duplicate detection), sources (only crates.io).
@@ -16,7 +30,7 @@ note that introduced the change — every iteration has a corresponding
 - `.github/workflows/ci.yml` — new `deny` job runs `cargo-deny
   check` on every push via `EmbarkStudios/cargo-deny-action@v2`.
 
-### Changed
+### Changed (part A)
 - `[workspace.package]` declares `publish = false` and every member
   `[package]` adds `publish.workspace = true`. Required so
   `allow-wildcard-paths = true` applies — without it, intra-
