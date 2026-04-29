@@ -1,0 +1,19 @@
+# Auto-provision the Prometheus datasource so the user does not have
+# to click through the UI on first start. Maps to the in-network
+# hostname of the prometheus service in docker-compose.
+#
+# `uid` is pinned (instead of letting Grafana hash one) so the
+# bundled dashboard JSON in `../../dashboards/` can reference the
+# datasource by a stable name. Without this, panel queries would
+# break with "Datasource not found".
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

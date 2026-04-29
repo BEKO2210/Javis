@@ -2,7 +2,9 @@
 name = "viz"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "Live 3D visualisation server for Javis. Streams brain state over WebSocket."
 
 [lib]
@@ -22,7 +24,13 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 tower-http = { version = "0.5", features = ["fs", "trace"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 futures-util = "0.3"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

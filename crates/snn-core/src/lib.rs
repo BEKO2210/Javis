@@ -53,10 +53,10 @@ pub mod rng;
 pub mod stdp;
 pub mod synapse;
 
-pub use brain::{Brain, InterEdge, PendingEvent, PendingQueue};
+pub use brain::{Brain, BrainState, InterEdge, PendingEvent, PendingQueue};
 pub use homeostasis::HomeostasisParams;
 pub use istdp::IStdpParams;
-pub use network::Network;
+pub use network::{Network, NetworkState};
 pub use neuron::{LifNeuron, LifParams, NeuronKind};
 pub use poisson::PoissonInput;
 pub use region::Region;

@@ -2,7 +2,9 @@
 name = "eval"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "End-to-end evaluation harness for Javis. Token-efficiency benchmarks against naive RAG."
 
 [lib]

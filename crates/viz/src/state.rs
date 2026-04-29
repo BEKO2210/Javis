@@ -7,13 +7,15 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 use encoders::{EngramDictionary, TextEncoder};
 use snn_core::{
-    Brain, HomeostasisParams, IStdpParams, LifNeuron, LifParams, NeuronKind, Region, Rng,
-    StdpParams,
+    Brain, BrainState, HomeostasisParams, IStdpParams, LifNeuron, LifParams, NeuronKind, Region,
+    Rng, StdpParams,
 };
-use tokio::sync::{mpsc::Sender, Mutex};
+use tokio::sync::{mpsc::Sender, RwLock, Semaphore};
+use tracing::{debug, info, warn};
 
 use std::path::Path;
 
@@ -238,6 +240,79 @@ async fn run_with_cue_streaming(
     counts
 }
 
+/// Read-only variant of [`run_with_cue_streaming`] for the recall
+/// path. Same dynamics (plasticity is off either way during recall),
+/// but the brain is read-only — every concurrent caller drives its
+/// own [`BrainState`] against the same shared `Brain`. This is what
+/// frees the recall path from the `RwLock` write-side bottleneck.
+async fn run_with_cue_streaming_immutable(
+    brain: &Brain,
+    state: &mut BrainState,
+    drive: &[u32],
+    duration_ms: f32,
+    tx: &Sender<Event>,
+) -> Vec<u32> {
+    let r2_e_set = r2_excitatory_indices(brain);
+    let r2_size = brain.regions[1].num_neurons();
+    let mut counts = vec![0u32; r2_size];
+
+    let mut ext1 = vec![0.0_f32; R1_N];
+    for &idx in drive {
+        if (idx as usize) < R1_N {
+            ext1[idx as usize] = DRIVE_NA;
+        }
+    }
+    let ext2 = vec![0.0_f32; R2_N];
+    let externals = vec![ext1, ext2];
+
+    let total_steps = (duration_ms / DT) as usize;
+    let batch_steps = (BATCH_MS / DT) as usize;
+    let mut batch_r1: Vec<u32> = Vec::new();
+    let mut batch_r2: Vec<u32> = Vec::new();
+    let mut t_ms: f32 = 0.0;
+
+    // Sub-phase timers: distinguish raw brain compute from the
+    // WS-channel send overhead that interleaves with it. Reported via
+    // `javis_recall_subphase_seconds{phase}` so the existing pipeline
+    // profile script can break the SNN-compute number down further.
+    let mut compute_s: f64 = 0.0;
+    let mut stream_s: f64 = 0.0;
+
+    for step in 0..total_steps {
+        let t0 = Instant::now();
+        let spikes = brain.step_immutable(state, &externals);
+        for &id in &spikes[0] {
+            batch_r1.push(id as u32);
+        }
+        for &id in &spikes[1] {
+            batch_r2.push(id as u32);
+            if r2_e_set.contains(&id) {
+                counts[id] += 1;
+            }
+        }
+        compute_s += t0.elapsed().as_secs_f64();
+
+        if (step + 1) % batch_steps == 0 || step + 1 == total_steps {
+            t_ms += BATCH_MS;
+            let t1 = Instant::now();
+            let _ = tx
+                .send(Event::Step {
+                    t_ms,
+                    r1: std::mem::take(&mut batch_r1),
+                    r2: std::mem::take(&mut batch_r2),
+                })
+                .await;
+            stream_s += t1.elapsed().as_secs_f64();
+        }
+    }
+
+    metrics::histogram!("javis_recall_subphase_seconds", "phase" => "brain_compute")
+        .record(compute_s);
+    metrics::histogram!("javis_recall_subphase_seconds", "phase" => "ws_stream").record(stream_s);
+
+    counts
+}
+
 fn run_with_cue_counts(brain: &mut Brain, drive: &[u32], duration_ms: f32) -> Vec<u32> {
     let r2_e_set = r2_excitatory_indices(brain);
     let r2_size = brain.regions[1].num_neurons();
@@ -283,8 +358,48 @@ fn top_k(counts: &[u32], k: usize) -> Vec<u32> {
 // ----------------------------------------------------------------------
 
 pub struct AppState {
-    inner: Arc<Mutex<Inner>>,
+    /// Inner state behind a `RwLock`: train / reset / load take the
+    /// write lock; recall, stats, snapshot save take the read lock
+    /// so they run concurrently. The plasticity-free recall path uses
+    /// [`snn_core::Brain::step_immutable`] with a per-task
+    /// [`BrainState`] so multiple readers can drive simulations on
+    /// the same shared `Brain` without contention.
+    inner: Arc<RwLock<Inner>>,
     llm: Arc<LlmClient>,
+    /// Bounded WebSocket-session counter. Each session acquires one
+    /// permit on accept and releases it on close. When the cap is
+    /// reached the upgrade handler rejects new connections with
+    /// `503 Service Unavailable + Retry-After`. Configurable via
+    /// `JAVIS_MAX_CONCURRENT_SESSIONS` (default 32).
+    sessions: Arc<Semaphore>,
+}
+
+/// Default ceiling on simultaneous WebSocket sessions. Chosen by
+/// reading `notes/35-load-test.md`: throughput plateaus at ~141 ops/s
+/// regardless of concurrency, but p99 latency stays under ~100 ms only
+/// up to roughly 10 parallel clients. 32 leaves headroom for short
+/// bursts while still bounding worst-case queue depth.
+pub const DEFAULT_MAX_CONCURRENT_SESSIONS: usize = 32;
+
+/// Resolve the session cap from the `JAVIS_MAX_CONCURRENT_SESSIONS`
+/// env var. Falls back to [`DEFAULT_MAX_CONCURRENT_SESSIONS`] if unset
+/// or unparseable; logs a warning on bad input rather than panicking
+/// because a server should not refuse to start over an env-var typo.
+fn resolve_session_cap() -> usize {
+    match std::env::var("JAVIS_MAX_CONCURRENT_SESSIONS") {
+        Err(_) => DEFAULT_MAX_CONCURRENT_SESSIONS,
+        Ok(s) => match s.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                tracing::warn!(
+                    value = %s,
+                    default = DEFAULT_MAX_CONCURRENT_SESSIONS,
+                    "JAVIS_MAX_CONCURRENT_SESSIONS not a positive integer; using default",
+                );
+                DEFAULT_MAX_CONCURRENT_SESSIONS
+            }
+        },
+    }
 }
 
 struct Inner {
@@ -295,14 +410,20 @@ struct Inner {
     trained_sentences: Vec<String>,
 }
 
-/// On-disk wire format for an Javis snapshot. Matches `Inner` exactly
-/// so the round-trip is just `serde_json::{from,to}_writer`. Schema is
-/// versioned so a future format change can fail loudly rather than
-/// silently reading stale data.
+/// On-disk wire format for an Javis snapshot. Matches `Inner` plus a
+/// small block of metadata so a future operator can tell when and by
+/// which build a snapshot was written. The schema is explicitly
+/// versioned; older formats are upgraded through the migration chain
+/// in [`migrate_snapshot`] before deserialisation.
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
-    /// Bumped any time the schema becomes incompatible.
+    /// Bumped any time the schema becomes incompatible. Loading a
+    /// snapshot with `version != SNAPSHOT_VERSION` triggers the
+    /// migration chain; loading a snapshot with `version >
+    /// SNAPSHOT_VERSION` is a hard error (we cannot downgrade).
     version: u32,
+    /// Provenance information; introduced in v2.
+    metadata: SnapshotMetadata,
     brain: Brain,
     dict: EngramDictionary,
     encoder: TextEncoder,
@@ -310,10 +431,94 @@ struct Snapshot {
     trained_sentences: Vec<String>,
 }
 
-const SNAPSHOT_VERSION: u32 = 1;
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SnapshotMetadata {
+    /// UNIX seconds at which the snapshot was first written; 0 means
+    /// the snapshot was migrated from a pre-v2 file that did not
+    /// record this.
+    pub created_at_unix: u64,
+    /// Free-form identifier of the Javis build that wrote the
+    /// snapshot. For migrated snapshots this is the literal string
+    /// `"migrated-from-v1"`.
+    pub javis_version: String,
+}
+
+/// Current schema version. Incremented in lock-step with the
+/// migration table in [`migrate_snapshot`].
+pub const SNAPSHOT_VERSION: u32 = 2;
+
+/// Type-erased migration step. Takes a `Value` describing a snapshot
+/// at version `N` and returns the same logical snapshot at version
+/// `N+1`. Failing with `String` keeps error reporting cheap; the
+/// caller wraps it in an `io::Error` for the load API.
+type MigrationFn = fn(serde_json::Value) -> Result<serde_json::Value, String>;
+
+/// Migration registry. Each entry is `(from_version, fn)`. The chain
+/// is walked top-to-bottom by [`migrate_snapshot`], applying each
+/// step exactly once until the value is at [`SNAPSHOT_VERSION`]. To
+/// add a v3 schema later, append `(2, migrate_v2_to_v3)` and bump
+/// `SNAPSHOT_VERSION` to 3.
+const MIGRATIONS: &[(u32, MigrationFn)] = &[(1, migrate_v1_to_v2)];
+
+/// Walk the migration chain on `value` from `from_version` up to
+/// [`SNAPSHOT_VERSION`]. Returns the migrated value or a string
+/// describing the first failure.
+fn migrate_snapshot(
+    mut value: serde_json::Value,
+    from_version: u32,
+) -> Result<serde_json::Value, String> {
+    if from_version > SNAPSHOT_VERSION {
+        return Err(format!(
+            "snapshot version {from_version} is newer than this build supports \
+             (max {SNAPSHOT_VERSION}); refusing to downgrade",
+        ));
+    }
+    let mut current = from_version;
+    while current < SNAPSHOT_VERSION {
+        let step = MIGRATIONS
+            .iter()
+            .find(|(from, _)| *from == current)
+            .map(|(_, f)| f)
+            .ok_or_else(|| format!("no migration registered for version {current}"))?;
+        value = step(value)?;
+        current += 1;
+        // Bump the embedded version so the post-loop deserialise sees
+        // a self-consistent document.
+        if let serde_json::Value::Object(ref mut map) = value {
+            map.insert("version".into(), serde_json::Value::from(current));
+        }
+    }
+    Ok(value)
+}
+
+/// v1 → v2: introduce the mandatory `metadata` block.
+///
+/// v1 had no metadata; we backfill `created_at_unix = 0` and
+/// `javis_version = "migrated-from-v1"` so an operator can spot in
+/// `/ready` (or by inspecting the file) that this snapshot did not
+/// originate from a v2-or-later writer.
+fn migrate_v1_to_v2(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let map = value
+        .as_object_mut()
+        .ok_or_else(|| "v1 snapshot root is not a JSON object".to_string())?;
+    map.insert(
+        "metadata".into(),
+        serde_json::json!({
+            "created_at_unix": 0,
+            "javis_version": "migrated-from-v1",
+        }),
+    );
+    Ok(value)
+}
 
 impl AppState {
     pub fn new() -> Self {
+        Self::with_session_cap(resolve_session_cap())
+    }
+
+    /// Like [`AppState::new`] but with an explicit cap. Useful for
+    /// integration tests that want to exercise the rejection path.
+    pub fn with_session_cap(cap: usize) -> Self {
         let inner = Inner {
             brain: fresh_brain(),
             dict: EngramDictionary::new(),
@@ -322,8 +527,9 @@ impl AppState {
             trained_sentences: Vec::new(),
         };
         Self {
-            inner: Arc::new(Mutex::new(inner)),
+            inner: Arc::new(RwLock::new(inner)),
             llm: Arc::new(LlmClient::from_env()),
+            sessions: Arc::new(Semaphore::new(cap)),
         }
     }
 
@@ -335,10 +541,18 @@ impl AppState {
         s
     }
 
+    /// Hand out a clone of the session-permit semaphore so the
+    /// HTTP-layer can `try_acquire_owned()` before upgrading the
+    /// WebSocket. Returns the same `Arc` every call.
+    pub fn sessions(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.sessions)
+    }
+
     pub fn handle(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
             llm: Arc::clone(&self.llm),
+            sessions: Arc::clone(&self.sessions),
         }
     }
 
@@ -348,11 +562,19 @@ impl AppState {
 
     /// Reset to a freshly-initialised brain. Loses every learnt engram.
     pub async fn reset(&self) {
-        let mut g = self.inner.lock().await;
+        let mut g = self.inner.write().await;
+        let dropped_sentences = g.trained_sentences.len();
+        let dropped_words = g.known_words.len();
         g.brain = fresh_brain();
         g.dict = EngramDictionary::new();
         g.known_words.clear();
         g.trained_sentences.clear();
+        metrics::gauge!("javis_brain_sentences").set(0.0);
+        metrics::gauge!("javis_brain_words").set(0.0);
+        info!(
+            dropped_sentences,
+            dropped_words, "brain reset to fresh state",
+        );
     }
 
     /// Train the brain on every default-corpus sentence at startup so
@@ -367,7 +589,9 @@ impl AppState {
     /// every newly-seen word into the dictionary. Streams init/phase/
     /// step events on `tx` if provided.
     pub async fn run_train(&self, sentence: String, tx: Option<Sender<Event>>) {
-        let mut g = self.inner.lock().await;
+        let started = Instant::now();
+        let sentence_len = sentence.len();
+        let mut g = self.inner.write().await;
 
         if let Some(tx) = &tx {
             let (r1, r2_e, r2_i) = count_neurons(&g.brain);
@@ -453,28 +677,47 @@ impl AppState {
         }
 
         g.trained_sentences.push(sentence);
+        let total_sentences = g.trained_sentences.len();
+        let total_words = g.known_words.len();
+        let new_words_count = new_words.len();
+        let elapsed = started.elapsed();
+        let elapsed_ms = elapsed.as_secs_f32() * 1000.0;
 
         if let Some(tx) = &tx {
             let _ = tx
                 .send(Event::Phase {
                     name: "ready".into(),
-                    detail: format!(
-                        "{} sentences, {} concepts learnt",
-                        g.trained_sentences.len(),
-                        g.known_words.len()
-                    ),
+                    detail: format!("{total_sentences} sentences, {total_words} concepts learnt",),
                 })
                 .await;
             let _ = tx.send(Event::Done).await;
         }
+
+        metrics::histogram!("javis_train_duration_seconds").record(elapsed.as_secs_f64());
+        metrics::gauge!("javis_brain_sentences").set(total_sentences as f64);
+        metrics::gauge!("javis_brain_words").set(total_words as f64);
+
+        info!(
+            sentence_len,
+            new_words = new_words_count,
+            total_sentences,
+            total_words,
+            elapsed_ms,
+            "train completed",
+        );
     }
 
     /// Push the query into R1 and decode the resulting R2 pattern
     /// against the current dictionary. Streams the spike activity and
     /// the final Decoded event.
     pub async fn run_recall(&self, query: String, tx: Sender<Event>) {
-        let mut g = self.inner.lock().await;
+        let started = Instant::now();
 
+        // Phase 1: lock acquisition + init/phase event sends. This is
+        // the "request handling overhead" that sits between the WS
+        // upgrade and the first useful brain work.
+        let p_lock_t0 = Instant::now();
+        let g = self.inner.read().await;
         let (r1, r2_e, r2_i) = count_neurons(&g.brain);
         let _ = tx
             .send(Event::Init {
@@ -490,29 +733,47 @@ impl AppState {
                 detail: format!("query: '{query}'"),
             })
             .await;
+        let phase_lock_s = p_lock_t0.elapsed().as_secs_f64();
 
-        // Plasticity stays frozen for recall.
-        g.brain.disable_stdp_all();
-        g.brain.disable_istdp_all();
-        g.brain.disable_homeostasis_all();
-
+        // Phase 2: text → SDR via the deterministic-hash encoder.
+        let p_enc_t0 = Instant::now();
         let sdr = g.encoder.encode(&query);
+        let phase_encode_s = p_enc_t0.elapsed().as_secs_f64();
         if sdr.indices.is_empty() {
+            warn!(%query, "recall: query produced empty SDR (unknown vocabulary)");
             let _ = tx.send(Event::Done).await;
             return;
         }
-        g.brain.reset_state();
-        let counts = run_with_cue_streaming(&mut g.brain, &sdr.indices, RECALL_MS, &tx).await;
-        let recall_indices = top_k(&counts, KWTA_K);
 
+        // Phase 3: SNN compute. `step_immutable` runs RECALL_MS of
+        // simulated time and emits Step events to the WS channel as
+        // it goes — channel-send latency is *included* in this phase
+        // because it interleaves with the brain step.
+        let p_sim_t0 = Instant::now();
+        let mut state = g.brain.fresh_state();
+        let counts =
+            run_with_cue_streaming_immutable(&g.brain, &mut state, &sdr.indices, RECALL_MS, &tx)
+                .await;
+        let phase_sim_s = p_sim_t0.elapsed().as_secs_f64();
+
+        // Phase 4: SNN-output → text. kWTA top-k plus the
+        // EngramDictionary scan that compares the recalled SDR
+        // against every learnt concept.
+        let p_dec_t0 = Instant::now();
+        let recall_indices = top_k(&counts, KWTA_K);
         let candidates = g.dict.decode(&recall_indices, DECODE_THRESHOLD);
+        let phase_decode_s = p_dec_t0.elapsed().as_secs_f64();
+
         let javis_payload = candidates
             .iter()
             .map(|(w, _)| w.as_str())
             .collect::<Vec<_>>()
             .join(" ");
 
-        // RAG search across the sentences trained so far.
+        // Phase 5: naïve-RAG mock. Linear scan over every trained
+        // sentence; included here as the comparison baseline that
+        // motivates the whole brain-side pipeline.
+        let p_rag_t0 = Instant::now();
         let q_lc = query.to_lowercase();
         let rag_payload = g
             .trained_sentences
@@ -520,6 +781,7 @@ impl AppState {
             .find(|s| s.to_lowercase().contains(&q_lc))
             .cloned()
             .unwrap_or_default();
+        let phase_rag_s = p_rag_t0.elapsed().as_secs_f64();
 
         let rag_tokens = eval::count_tokens(&rag_payload) as u32;
         let javis_tokens = eval::count_tokens(&javis_payload) as u32;
@@ -529,27 +791,70 @@ impl AppState {
             0.0
         };
 
-        let _ = tx
-            .send(Event::Decoded {
-                query,
-                candidates: candidates
-                    .into_iter()
-                    .map(|(word, score)| DecodedWord { word, score })
-                    .collect(),
-                rag_tokens,
-                javis_tokens,
-                reduction_pct: reduction,
-                rag_payload,
-                javis_payload,
-            })
-            .await;
+        let candidate_count = candidates.len();
+        let elapsed = started.elapsed();
+        let elapsed_ms = elapsed.as_secs_f32() * 1000.0;
+        metrics::histogram!("javis_recall_duration_seconds").record(elapsed.as_secs_f64());
+        metrics::counter!("javis_recall_tokens_rag_total").increment(rag_tokens as u64);
+        metrics::counter!("javis_recall_tokens_javis_total").increment(javis_tokens as u64);
+
+        // Phase 6: Decoded-event build + send. The actual JSON
+        // serialisation happens later in `run_session_inner`; what
+        // we capture here is the cost of constructing the payload
+        // and pushing it onto the channel.
+        let p_build_t0 = Instant::now();
+        let decoded_event = Event::Decoded {
+            query: query.clone(),
+            candidates: candidates
+                .into_iter()
+                .map(|(word, score)| DecodedWord { word, score })
+                .collect(),
+            rag_tokens,
+            javis_tokens,
+            reduction_pct: reduction,
+            rag_payload,
+            javis_payload,
+        };
+        let _ = tx.send(decoded_event).await;
+        let phase_build_s = p_build_t0.elapsed().as_secs_f64();
+
+        // Per-phase histograms (Prometheus). Same `_seconds` suffix
+        // as the existing duration metrics so they share the bucket
+        // configuration from `viz::metrics::init`.
+        for (phase, value) in [
+            ("lock_overhead", phase_lock_s),
+            ("encode", phase_encode_s),
+            ("snn_compute", phase_sim_s),
+            ("decode", phase_decode_s),
+            ("rag_search", phase_rag_s),
+            ("response_build", phase_build_s),
+        ] {
+            metrics::histogram!("javis_recall_phase_seconds", "phase" => phase).record(value);
+        }
+
+        info!(
+            %query,
+            candidates = candidate_count,
+            rag_tokens,
+            javis_tokens,
+            reduction_pct = reduction,
+            elapsed_ms,
+            phase_lock_ms = phase_lock_s * 1000.0,
+            phase_encode_ms = phase_encode_s * 1000.0,
+            phase_snn_ms = phase_sim_s * 1000.0,
+            phase_decode_ms = phase_decode_s * 1000.0,
+            phase_rag_ms = phase_rag_s * 1000.0,
+            phase_build_ms = phase_build_s * 1000.0,
+            "recall completed",
+        );
+
         let _ = tx.send(Event::Done).await;
     }
 
     /// Snapshot for the UI: how many sentences / concepts have been
     /// learnt so far.
     pub async fn stats(&self) -> (usize, usize) {
-        let g = self.inner.lock().await;
+        let g = self.inner.read().await;
         (g.trained_sentences.len(), g.known_words.len())
     }
 
@@ -558,9 +863,18 @@ impl AppState {
     /// the global clock) are not written — they reset to zero on load
     /// and rebuild within milliseconds of simulation.
     pub async fn save_to_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
-        let g = self.inner.lock().await;
+        let started = Instant::now();
+        let path_ref = path.as_ref().to_path_buf();
+        let g = self.inner.read().await;
         let snap = Snapshot {
             version: SNAPSHOT_VERSION,
+            metadata: SnapshotMetadata {
+                created_at_unix: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                javis_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
             brain: clone_brain(&g.brain),
             dict: g.dict.clone(),
             encoder: g.encoder.clone(),
@@ -568,32 +882,91 @@ impl AppState {
             trained_sentences: g.trained_sentences.clone(),
         };
         let bytes = serde_json::to_vec(&snap).map_err(io_err)?;
-        tokio::fs::write(path, bytes).await
+        let bytes_len = bytes.len();
+        tokio::fs::write(path, bytes).await?;
+        let elapsed = started.elapsed();
+        metrics::histogram!("javis_snapshot_duration_seconds", "op" => "save")
+            .record(elapsed.as_secs_f64());
+        info!(
+            path = %path_ref.display(),
+            bytes = bytes_len,
+            elapsed_ms = elapsed.as_secs_f32() * 1000.0,
+            "snapshot saved",
+        );
+        Ok(())
     }
 
     /// Replace the in-memory state with a snapshot read from disk.
     /// Transient buffers are re-initialised so the brain is immediately
     /// runnable.
     pub async fn load_from_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
-        let bytes = tokio::fs::read(path).await?;
-        let mut snap: Snapshot = serde_json::from_slice(&bytes).map_err(io_err)?;
-        if snap.version != SNAPSHOT_VERSION {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "snapshot version {} unsupported (expected {})",
-                    snap.version, SNAPSHOT_VERSION
-                ),
-            ));
-        }
+        let started = Instant::now();
+        let path_ref = path.as_ref().to_path_buf();
+        let bytes = tokio::fs::read(&path_ref).await?;
+        let bytes_len = bytes.len();
+
+        // Two-step parse: first into a generic Value so we can read
+        // the version field without binding the schema, then through
+        // the migration chain, then into the canonical Snapshot
+        // struct. This is what lets a v1 file load on a v2 build.
+        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(io_err)?;
+        let from_version = value
+            .get("version")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "snapshot is missing required `version` field",
+                )
+            })?;
+        let migrated_from_version = if from_version != SNAPSHOT_VERSION {
+            Some(from_version)
+        } else {
+            None
+        };
+        let value = migrate_snapshot(value, from_version)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let mut snap: Snapshot = serde_json::from_value(value).map_err(io_err)?;
         snap.brain.ensure_transient_state();
 
-        let mut g = self.inner.lock().await;
+        let sentences = snap.trained_sentences.len();
+        let words = snap.known_words.len();
+
+        let mut g = self.inner.write().await;
         g.brain = snap.brain;
         g.dict = snap.dict;
         g.encoder = snap.encoder;
         g.known_words = snap.known_words;
         g.trained_sentences = snap.trained_sentences;
+
+        let elapsed = started.elapsed();
+        metrics::histogram!("javis_snapshot_duration_seconds", "op" => "load")
+            .record(elapsed.as_secs_f64());
+        metrics::gauge!("javis_brain_sentences").set(sentences as f64);
+        metrics::gauge!("javis_brain_words").set(words as f64);
+
+        if let Some(from) = migrated_from_version {
+            info!(
+                path = %path_ref.display(),
+                from_version = from,
+                to_version = SNAPSHOT_VERSION,
+                bytes = bytes_len,
+                sentences,
+                words,
+                elapsed_ms = elapsed.as_secs_f32() * 1000.0,
+                "snapshot loaded after schema migration",
+            );
+        } else {
+            info!(
+                path = %path_ref.display(),
+                bytes = bytes_len,
+                sentences,
+                words,
+                elapsed_ms = elapsed.as_secs_f32() * 1000.0,
+                "snapshot loaded",
+            );
+        }
         Ok(())
     }
 
@@ -608,10 +981,18 @@ impl AppState {
         javis_payload: String,
         tx: Sender<Event>,
     ) {
+        let started = Instant::now();
+        let real = self.llm.is_real();
+        debug!(
+            real,
+            rag_len = rag_payload.len(),
+            javis_len = javis_payload.len(),
+            "ask: dispatching parallel LLM calls",
+        );
         let _ = tx
             .send(Event::Phase {
                 name: "asking".into(),
-                detail: if self.llm.is_real() {
+                detail: if real {
                     "calling Claude (real) with both payloads".into()
                 } else {
                     "calling Claude (mock) with both payloads".into()
@@ -630,6 +1011,23 @@ impl AppState {
             tokio::join!(async move { llm.ask(&q1, &ctx_rag).await }, async move {
                 llm_b.ask(&q2, &ctx_jvs).await
             },);
+
+        let elapsed = started.elapsed();
+        let elapsed_ms = elapsed.as_secs_f32() * 1000.0;
+        metrics::histogram!(
+            "javis_ask_duration_seconds",
+            "real" => if real { "true" } else { "false" },
+        )
+        .record(elapsed.as_secs_f64());
+        info!(
+            real,
+            rag_input_tokens = rag_ans.input_tokens,
+            rag_output_tokens = rag_ans.output_tokens,
+            javis_input_tokens = jvs_ans.input_tokens,
+            javis_output_tokens = jvs_ans.output_tokens,
+            elapsed_ms,
+            "ask completed",
+        );
 
         let _ = tx
             .send(Event::Asked {

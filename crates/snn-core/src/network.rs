@@ -431,13 +431,180 @@ impl Network {
         if let Some(h) = self.homeostasis {
             if h.eta_scale != 0.0
                 && h.apply_every > 0
-                && self.step_counter.is_multiple_of(h.apply_every as u64)
+                && self.step_counter % (h.apply_every as u64) == 0
             {
                 self.apply_synaptic_scaling(&h);
             }
         }
 
         self.time += dt;
+        fired
+    }
+
+    /// Build a fresh, at-rest [`NetworkState`] sized for this network.
+    /// Membrane potentials sit at `v_rest`, all refractory clocks at
+    /// `-inf`, every channel and trace at zero. NMDA/GABA buffers are
+    /// allocated only if any synapse uses that kind — same lazy
+    /// policy as the in-place [`Self::step`] path.
+    pub fn fresh_state(&self) -> NetworkState {
+        let n = self.neurons.len();
+        let need_nmda = self.synapses.iter().any(|s| s.kind == SynapseKind::Nmda);
+        let need_gaba = self.synapses.iter().any(|s| s.kind == SynapseKind::Gaba);
+        NetworkState {
+            v: self.neurons.iter().map(|n| n.params.v_rest).collect(),
+            refractory_until: vec![f32::NEG_INFINITY; n],
+            last_spike: vec![f32::NEG_INFINITY; n],
+            i_syn: vec![0.0; n],
+            i_syn_nmda: if need_nmda { vec![0.0; n] } else { Vec::new() },
+            i_syn_gaba: if need_gaba { vec![0.0; n] } else { Vec::new() },
+            total_input: vec![0.0; n],
+            time: 0.0,
+            step_counter: 0,
+            synapse_events: 0,
+        }
+    }
+
+    /// Plasticity-free read-only step.
+    ///
+    /// Mathematically equivalent to [`Self::step`] when STDP / iSTDP /
+    /// homeostasis are all disabled, but reads weights from `&self`
+    /// without ever mutating them. All transient state lives in
+    /// `state`, so a single `Network` can be stepped from multiple
+    /// concurrent contexts as long as each holds its own
+    /// [`NetworkState`].
+    ///
+    /// Plasticity is *unconditionally* skipped here regardless of
+    /// what the parent `Network` has enabled — recall paths get the
+    /// same dynamics whether the brain is in a "training" or
+    /// "frozen" configuration.
+    pub fn step_immutable(&self, state: &mut NetworkState, external: &[f32]) -> Vec<usize> {
+        let dt = self.dt;
+        let t = state.time;
+        let n = self.neurons.len();
+
+        // 1) Decay synaptic channels. Each loop is a flat `*x *= scalar`
+        //    walk that the autovectoriser turns into AVX2/AVX-512 multiplies.
+        let decay_ampa = (-dt / self.tau_syn_ms.max(1e-3)).exp();
+        for x in state.i_syn.iter_mut() {
+            *x *= decay_ampa;
+        }
+        let nmda_active = !state.i_syn_nmda.is_empty();
+        if nmda_active {
+            let decay = (-dt / self.tau_nmda_ms.max(1e-3)).exp();
+            for x in state.i_syn_nmda.iter_mut() {
+                *x *= decay;
+            }
+        }
+        let gaba_active = !state.i_syn_gaba.is_empty();
+        if gaba_active {
+            let decay = (-dt / self.tau_gaba_ms.max(1e-3)).exp();
+            for x in state.i_syn_gaba.iter_mut() {
+                *x *= decay;
+            }
+        }
+
+        // 1b) Pre-sum the input channels into `total_input` so the
+        //     LIF loop iterates over a single contiguous slice. Hoists
+        //     the NMDA/GABA presence checks out of the per-neuron
+        //     inner loop and gives the autovectoriser a clean
+        //     fused-multiply-add target on three input streams.
+        //
+        //     The `external` slice is allowed to be shorter than `n`
+        //     (callers pass `&[]` for "no drive"); we resolve that
+        //     once into a "fully sized or short" branch so the inner
+        //     loop has no per-iteration bounds checks.
+        if state.total_input.len() != n {
+            state.total_input.resize(n, 0.0);
+        }
+        let i_syn = state.i_syn.as_slice();
+        let nmda = state.i_syn_nmda.as_slice();
+        let gaba = state.i_syn_gaba.as_slice();
+        let total_input = state.total_input.as_mut_slice();
+        let ext_full = external.len() >= n;
+        match (ext_full, nmda_active, gaba_active) {
+            (true, false, false) => {
+                for i in 0..n {
+                    total_input[i] = external[i] + i_syn[i];
+                }
+            }
+            (true, true, false) => {
+                for i in 0..n {
+                    total_input[i] = external[i] + i_syn[i] + nmda[i];
+                }
+            }
+            (true, false, true) => {
+                for i in 0..n {
+                    total_input[i] = external[i] + i_syn[i] + gaba[i];
+                }
+            }
+            (true, true, true) => {
+                for i in 0..n {
+                    total_input[i] = external[i] + i_syn[i] + nmda[i] + gaba[i];
+                }
+            }
+            (false, _, _) => {
+                // Slow path: external too short. Fall back to bounds-
+                // checked access; only happens during snapshot-load
+                // smoke runs and similar.
+                for i in 0..n {
+                    let mut total = i_syn[i] + external.get(i).copied().unwrap_or(0.0);
+                    if nmda_active {
+                        total += nmda[i];
+                    }
+                    if gaba_active {
+                        total += gaba[i];
+                    }
+                    total_input[i] = total;
+                }
+            }
+        }
+
+        // 2) LIF integration. Inputs all live in one slice now; the
+        //    inner loop is a single straight-line walk over the
+        //    per-neuron state vectors. Branches are limited to the
+        //    refractory and threshold checks, both well-predicted
+        //    when the network is in its asynchronous-irregular regime.
+        let v_buf = state.v.as_mut_slice();
+        let refr_buf = state.refractory_until.as_mut_slice();
+        let last_buf = state.last_spike.as_mut_slice();
+        let mut fired: Vec<usize> = Vec::with_capacity(64);
+        for idx in 0..n {
+            let p = &self.neurons[idx].params;
+            let v = &mut v_buf[idx];
+            let refr = &mut refr_buf[idx];
+            if t < *refr {
+                *v = p.v_reset;
+                continue;
+            }
+            let dv = dt / p.tau_m * (-(*v - p.v_rest) + p.r_m * total_input[idx]);
+            *v += dv;
+            if *v >= p.v_threshold {
+                *v = p.v_reset;
+                *refr = t + p.refractory;
+                last_buf[idx] = t;
+                fired.push(idx);
+            }
+        }
+
+        // 3) Deliver synaptic effects. No plasticity, no homeostasis,
+        //    no traces. Lazy NMDA/GABA buffer allocation just like
+        //    `step` — `state.ensure_channel` mirrors `Self::ensure_channel`.
+        for &src in &fired {
+            let src_kind = self.neurons[src].kind;
+            let sign: f32 = match src_kind {
+                NeuronKind::Excitatory => 1.0,
+                NeuronKind::Inhibitory => -1.0,
+            };
+            for &eid in &self.outgoing[src] {
+                let s = &self.synapses[eid as usize];
+                let channel = state.ensure_channel(s.kind, n);
+                channel[s.post] += sign * s.weight;
+                state.synapse_events += 1;
+            }
+        }
+
+        state.step_counter = state.step_counter.wrapping_add(1);
+        state.time += dt;
         fired
     }
 
@@ -481,6 +648,63 @@ impl Network {
                 }
                 let new_w = (self.synapses[eid].weight * factor).clamp(w_min, w_max);
                 self.synapses[eid].weight = new_w;
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------------
+// Read-only step support: NetworkState carries every field that `step()`
+// mutates, so the same `Network` can be stepped concurrently by giving
+// each caller its own state.
+// ------------------------------------------------------------------------
+
+/// Per-step transient state, owned by the caller. Has the same shape
+/// as the `#[serde(skip)]` fields of [`Network`] plus the per-neuron
+/// transient state that normally lives inside [`LifNeuron`]. Allocate
+/// one with [`Network::fresh_state`].
+#[derive(Clone, Debug)]
+pub struct NetworkState {
+    /// Per-neuron membrane potential.
+    pub v: Vec<f32>,
+    pub refractory_until: Vec<f32>,
+    pub last_spike: Vec<f32>,
+    /// AMPA synaptic current channel.
+    pub i_syn: Vec<f32>,
+    /// NMDA channel — empty until first NMDA delivery.
+    pub i_syn_nmda: Vec<f32>,
+    /// GABA channel — empty until first GABA delivery.
+    pub i_syn_gaba: Vec<f32>,
+    /// Scratch buffer holding `external + i_syn (+ i_syn_nmda) (+ i_syn_gaba)`
+    /// for the duration of one [`Network::step_immutable`] call. Pre-summing
+    /// the input channels lets the LIF integration loop iterate over a
+    /// single contiguous slice — autovectoriser-friendly, and removes
+    /// branchy `Option::get` accesses from the inner loop.
+    pub total_input: Vec<f32>,
+    /// Sim clock.
+    pub time: f32,
+    pub step_counter: u64,
+    pub synapse_events: u64,
+}
+
+impl NetworkState {
+    /// Borrow the channel slot for `kind`, allocating on first touch.
+    /// Mirrors [`Network::ensure_channel`] but operates on the
+    /// caller-owned buffers.
+    fn ensure_channel(&mut self, kind: SynapseKind, n: usize) -> &mut Vec<f32> {
+        match kind {
+            SynapseKind::Ampa => &mut self.i_syn,
+            SynapseKind::Nmda => {
+                if self.i_syn_nmda.len() != n {
+                    self.i_syn_nmda = vec![0.0; n];
+                }
+                &mut self.i_syn_nmda
+            }
+            SynapseKind::Gaba => {
+                if self.i_syn_gaba.len() != n {
+                    self.i_syn_gaba = vec![0.0; n];
+                }
+                &mut self.i_syn_gaba
             }
         }
     }

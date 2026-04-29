@@ -5,9 +5,20 @@ members = ["crates/snn-core", "crates/encoders", "crates/eval", "crates/llm", "c
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
+# Pinned MSRV. CI runs the full suite against this exact version on
+# every push; bumps are deliberate, motivated by a transitive that
+# requires a newer rustc, and called out in CHANGELOG.md.
+rust-version = "1.86"
 license = "MIT"
 repository = "https://github.com/beko2210/javis"
+# All workspace crates are internal — explicitly opt out of publishing
+# so cargo-deny won't flag intra-workspace path deps as wildcards. Flip
+# this to true on individual crates if/when we ever publish to
+# crates.io.
+publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }

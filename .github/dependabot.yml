@@ -1,0 +1,74 @@
+# Dependabot configuration.
+#
+# Two ecosystems are tracked:
+#   - cargo: every Cargo.toml in the workspace (root + crates/*)
+#   - github-actions: every workflow file under .github/workflows/
+#
+# Updates land as PRs against `main`. Patch + minor bumps for the
+# same ecosystem are grouped into a single PR per week so the queue
+# stays manageable; major bumps stay solo because they usually need
+# manual review and CHANGELOG attention.
+
+version: 2
+updates:
+  # ----- Rust dependencies ---------------------------------------------
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - rust
+    commit-message:
+      prefix: "deps"
+      include: scope
+    groups:
+      # Patch + minor bumps in one PR. Major bumps stay solo so they
+      # get reviewed individually with their breaking-change notes.
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+      # The whole tracing stack tends to bump in lock-step (tracing,
+      # tracing-subscriber, tracing-core). Group them so we don't get
+      # three PRs for one ecosystem release.
+      tracing:
+        patterns:
+          - "tracing"
+          - "tracing-*"
+      # Same for tokio + tower + axum, which are often co-versioned.
+      tokio-stack:
+        patterns:
+          - "tokio"
+          - "tokio-*"
+          - "tower"
+          - "tower-*"
+          - "axum"
+          - "axum-*"
+          - "hyper"
+          - "hyper-*"
+
+  # ----- GitHub Actions in .github/workflows/ --------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"
+      include: scope
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch

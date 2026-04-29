@@ -16,6 +16,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+use crate::network::NetworkState;
 use crate::neuron::NeuronKind;
 use crate::region::Region;
 
@@ -357,4 +358,92 @@ impl Brain {
         self.time += self.dt;
         spikes
     }
+
+    /// Build a fresh, at-rest [`BrainState`] sized for this brain.
+    /// Each region gets its own [`NetworkState`] from
+    /// [`crate::Network::fresh_state`]; the pending event queue is
+    /// empty.
+    pub fn fresh_state(&self) -> BrainState {
+        BrainState {
+            regions: self
+                .regions
+                .iter()
+                .map(|r| r.network.fresh_state())
+                .collect(),
+            pending: PendingQueue::new(),
+            time: 0.0,
+            events_delivered: 0,
+        }
+    }
+
+    /// Read-only step: same orchestration as [`Self::step`] but every
+    /// piece of mutable state lives in `state`. The brain's regions,
+    /// inter-region edges, and synapse weights are untouched, so the
+    /// same [`Brain`] can be stepped from multiple concurrent
+    /// contexts as long as each holds its own [`BrainState`].
+    pub fn step_immutable(
+        &self,
+        state: &mut BrainState,
+        externals: &[Vec<f32>],
+    ) -> Vec<Vec<usize>> {
+        let t = state.time;
+
+        // 1) Deliver due inter-region events into the corresponding
+        //    region state's AMPA channel.
+        let due: Vec<PendingEvent> = state.pending.drain_due(t).collect();
+        for ev in due {
+            let region_state = &mut state.regions[ev.dst_region as usize];
+            let idx = ev.dst_neuron as usize;
+            if let Some(slot) = region_state.i_syn.get_mut(idx) {
+                *slot += ev.weight;
+            }
+            state.events_delivered += 1;
+        }
+
+        // 2) Step each region's network read-only.
+        let mut spikes: Vec<Vec<usize>> = Vec::with_capacity(self.regions.len());
+        for (ri, region) in self.regions.iter().enumerate() {
+            let ext = externals.get(ri).map(|v| v.as_slice()).unwrap_or(&[]);
+            let fired = region.network.step_immutable(&mut state.regions[ri], ext);
+            spikes.push(fired);
+        }
+
+        // 3) Schedule new inter-region events for spikes this step.
+        for (ri, fired_local) in spikes.iter().enumerate() {
+            for &src in fired_local {
+                let edges = &self.outgoing[ri][src];
+                if edges.is_empty() {
+                    continue;
+                }
+                let sign = match self.regions[ri].network.neurons[src].kind {
+                    NeuronKind::Excitatory => 1.0_f32,
+                    NeuronKind::Inhibitory => -1.0_f32,
+                };
+                for &eid in edges {
+                    let edge = self.inter_edges[eid as usize];
+                    state.pending.push(PendingEvent {
+                        arrive_at: t + edge.delay_ms,
+                        dst_region: edge.dst_region,
+                        dst_neuron: edge.dst_neuron,
+                        weight: sign * edge.weight,
+                    });
+                }
+            }
+        }
+
+        state.time += self.dt;
+        spikes
+    }
+}
+
+/// Per-recall transient state. Mirrors the mutable surface of [`Brain`]
+/// (the per-region [`NetworkState`]s, the pending event queue, the
+/// global clock and event counter) so a single immutable [`Brain`]
+/// can drive multiple concurrent recalls.
+#[derive(Debug, Clone)]
+pub struct BrainState {
+    pub regions: Vec<NetworkState>,
+    pub pending: PendingQueue,
+    pub time: f32,
+    pub events_delivered: u64,
 }

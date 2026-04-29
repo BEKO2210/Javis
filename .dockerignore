@@ -1,0 +1,41 @@
+# Keep the build context lean. Anything not strictly needed by the
+# Dockerfile's `COPY .` should be listed here so the daemon doesn't
+# upload it on every `docker build`.
+
+# Build artefacts
+target/
+Cargo.lock.bak
+**/*.rs.bk
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Git history (we don't compile it)
+.git/
+.gitignore
+.gitattributes
+
+# CI / docs / deploy auxiliaries that don't influence the binary
+.github/
+notes/
+assets/
+CHANGELOG.md
+README.md
+LICENSE
+
+# The Docker stack itself
+Dockerfile
+docker-compose.yml
+deploy/
+
+# Per-developer environment files
+.env
+.env.local
+*.local.toml
+
+# Local snapshots — there's no reason to bake them into an image
+*.snapshot
+*.snapshot.json
