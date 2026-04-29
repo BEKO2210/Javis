@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Javis mark">
+  <title>Javis mark</title>
+  <desc>Square brain-mark for favicons and avatars.</desc>
+
+  <defs>
+    <radialGradient id="markR1" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#62d6ff" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#62d6ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="markR2" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffd166" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#ffd166" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="markTrail" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#62d6ff" stop-opacity="0.0"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.7"/>
+      <stop offset="100%" stop-color="#ffd166" stop-opacity="0.0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Dark rounded background so the mark works on white sites too -->
+  <rect width="256" height="256" rx="48" ry="48" fill="#04060c"/>
+
+  <!-- R1 lobe -->
+  <g transform="translate(80,128)">
+    <circle r="48" fill="url(#markR1)"/>
+    <g fill="#62d6ff">
+      <circle cx="0"   cy="0"   r="3.2"/>
+      <circle cx="-22" cy="-10" r="2.6"/>
+      <circle cx="18"  cy="-18" r="2.6"/>
+      <circle cx="-10" cy="22"  r="2.2"/>
+      <circle cx="22"  cy="10"  r="2.2"/>
+      <circle cx="-26" cy="6"   r="1.8"/>
+      <circle cx="8"   cy="-26" r="1.8"/>
+      <circle cx="-16" cy="-22" r="1.5"/>
+      <circle cx="24"  cy="-2"  r="1.5"/>
+      <circle cx="-22" cy="18"  r="1.4"/>
+    </g>
+  </g>
+
+  <!-- Inter-region trails -->
+  <g fill="none" stroke="url(#markTrail)" stroke-width="1.4" opacity="0.9">
+    <path d="M 124 110 C 150 100, 170 100, 192 112"/>
+    <path d="M 124 128 C 152 128, 172 128, 192 128"/>
+    <path d="M 124 146 C 150 156, 170 156, 192 144"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="158" cy="106" r="2.0" opacity="0.9"/>
+    <circle cx="160" cy="148" r="1.8" opacity="0.75"/>
+  </g>
+
+  <!-- R2 lobe -->
+  <g transform="translate(192,128)">
+    <circle r="56" fill="url(#markR2)"/>
+    <g fill="#ffd166">
+      <circle cx="0"   cy="0"   r="3.2"/>
+      <circle cx="-26" cy="-14" r="2.8"/>
+      <circle cx="22"  cy="-18" r="2.8"/>
+      <circle cx="-14" cy="24"  r="2.4"/>
+      <circle cx="26"  cy="14"  r="2.4"/>
+      <circle cx="-34" cy="8"   r="2.0"/>
+      <circle cx="32"  cy="-6"  r="2.0"/>
+      <circle cx="14"  cy="-32" r="1.8"/>
+      <circle cx="-8"  cy="-28" r="1.8"/>
+      <circle cx="36"  cy="22"  r="1.7"/>
+      <circle cx="-28" cy="-26" r="1.6"/>
+      <circle cx="22"  cy="32"  r="1.6"/>
+      <circle cx="-40" cy="-2"  r="1.5"/>
+    </g>
+    <g fill="#ff5c8a">
+      <circle cx="-6" cy="8"   r="2.0"/>
+      <circle cx="10" cy="-4"  r="1.8"/>
+      <circle cx="-2" cy="-18" r="1.5"/>
+      <circle cx="18" cy="20"  r="1.5"/>
+    </g>
+  </g>
+</svg>

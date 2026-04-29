@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 360" width="1100" height="360" role="img" aria-label="Javis architecture">
+  <title>Javis architecture</title>
+  <desc>Pipeline from text input through encoder, SDR, R1 input cortex, address-event routing into R2 memory cortex, kWTA + decode, back to text concepts. Side annotations note STDP, iSTDP, asymmetric homeostasis, BTSP soft bounds, and contextual fingerprinting.</desc>
+
+  <defs>
+    <linearGradient id="block" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#10182a"/>
+      <stop offset="100%" stop-color="#0a1020"/>
+    </linearGradient>
+    <radialGradient id="r1Bubble" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#62d6ff" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#62d6ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="r2Bubble" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffd166" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#ffd166" stop-opacity="0"/>
+    </radialGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7aa2ff"/>
+    </marker>
+  </defs>
+
+  <style><![CDATA[
+    .label  { font: 600 12px -apple-system, "SF Pro Display", Inter, system-ui, sans-serif; fill: #e6e8ee; letter-spacing: 0.5px; }
+    .small  { font: 500 10px -apple-system, "SF Pro Display", Inter, system-ui, sans-serif; fill: #8a93a6; }
+    .badge  { font: 700 10px -apple-system, "SF Pro Display", Inter, system-ui, sans-serif; fill: #7aa2ff; letter-spacing: 1.5px; }
+    .header { font: 700 14px -apple-system, "SF Pro Display", Inter, system-ui, sans-serif; fill: #e6e8ee; letter-spacing: 0.8px; }
+    .annot  { font: 500 11px ui-monospace, "SF Mono", Menlo, monospace; fill: #8a93a6; }
+  ]]></style>
+
+  <!-- Background grid (very subtle) -->
+  <rect width="1100" height="360" fill="#04060c"/>
+
+  <!-- ================== Stage 1: Text ================== -->
+  <g transform="translate(40,120)">
+    <rect width="120" height="120" rx="14" fill="url(#block)" stroke="rgba(255,255,255,0.08)"/>
+    <text x="60" y="20" text-anchor="middle" class="badge">INPUT</text>
+    <text x="60" y="60" text-anchor="middle" class="header">text</text>
+    <text x="60" y="82" text-anchor="middle" class="small">"rust memory</text>
+    <text x="60" y="98" text-anchor="middle" class="small">safety …"</text>
+  </g>
+
+  <!-- arrow -->
+  <line x1="170" y1="180" x2="200" y2="180" stroke="#7aa2ff" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ================== Stage 2: Encoder ================== -->
+  <g transform="translate(210,120)">
+    <rect width="140" height="120" rx="14" fill="url(#block)" stroke="rgba(255,255,255,0.08)"/>
+    <text x="70" y="20" text-anchor="middle" class="badge">ENCODER</text>
+    <text x="70" y="60" text-anchor="middle" class="header">SDR hash</text>
+    <text x="70" y="82" text-anchor="middle" class="small">k=20 bits per word</text>
+    <text x="70" y="98" text-anchor="middle" class="small">stop-words filtered</text>
+    <text x="70" y="114" text-anchor="middle" class="annot">DefaultHasher</text>
+  </g>
+
+  <line x1="360" y1="180" x2="390" y2="180" stroke="#7aa2ff" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ================== Stage 3: R1 ================== -->
+  <g transform="translate(400,120)">
+    <rect width="140" height="120" rx="14" fill="url(#block)" stroke="rgba(255,255,255,0.08)"/>
+    <text x="70" y="20" text-anchor="middle" class="badge">R1 CORTEX</text>
+    <!-- bubble + dots -->
+    <g transform="translate(70,72)">
+      <circle r="34" fill="url(#r1Bubble)"/>
+      <g fill="#62d6ff">
+        <circle cx="0"   cy="0"   r="2.2"/>
+        <circle cx="-16" cy="-8"  r="1.8"/>
+        <circle cx="14"  cy="-12" r="1.8"/>
+        <circle cx="-8"  cy="14"  r="1.6"/>
+        <circle cx="18"  cy="6"   r="1.6"/>
+        <circle cx="-22" cy="4"   r="1.4"/>
+        <circle cx="6"   cy="-22" r="1.4"/>
+      </g>
+    </g>
+    <text x="70" y="116" text-anchor="middle" class="small">1000 excitatory</text>
+  </g>
+
+  <!-- ================== Stage 4: AER routing ================== -->
+  <g>
+    <text x="615" y="100" text-anchor="middle" class="badge">AER ROUTING</text>
+    <text x="615" y="118" text-anchor="middle" class="annot">2 ms delay · sparse fan-out</text>
+    <!-- multiple bowed arrows -->
+    <g fill="none" stroke="#7aa2ff" stroke-width="1.2" opacity="0.85" marker-end="url(#arrow)">
+      <path d="M 540 160 C 580 130, 640 130, 680 160"/>
+      <path d="M 540 180 C 590 175, 630 175, 680 180"/>
+      <path d="M 540 200 C 580 230, 640 230, 680 200"/>
+    </g>
+    <!-- spike pulses on the trails -->
+    <circle cx="600" cy="148" r="1.8" fill="#fff" opacity="0.85"/>
+    <circle cx="610" cy="217" r="1.6" fill="#fff" opacity="0.7"/>
+  </g>
+
+  <!-- ================== Stage 5: R2 ================== -->
+  <g transform="translate(680,120)">
+    <rect width="170" height="120" rx="14" fill="url(#block)" stroke="rgba(255,255,255,0.08)"/>
+    <text x="85" y="20" text-anchor="middle" class="badge">R2 CORTEX</text>
+    <!-- bubble + dots -->
+    <g transform="translate(85,72)">
+      <circle r="42" fill="url(#r2Bubble)"/>
+      <g fill="#ffd166">
+        <circle cx="0"   cy="0"   r="2.2"/>
+        <circle cx="-22" cy="-10" r="2.0"/>
+        <circle cx="20"  cy="-14" r="2.0"/>
+        <circle cx="-12" cy="20"  r="1.8"/>
+        <circle cx="22"  cy="12"  r="1.8"/>
+        <circle cx="-28" cy="6"   r="1.6"/>
+        <circle cx="26"  cy="-4"  r="1.6"/>
+        <circle cx="10"  cy="-26" r="1.6"/>
+        <circle cx="-6"  cy="-22" r="1.4"/>
+        <circle cx="32"  cy="20"  r="1.4"/>
+      </g>
+      <g fill="#ff5c8a">
+        <circle cx="-6"  cy="8"   r="1.6"/>
+        <circle cx="8"   cy="-6"  r="1.5"/>
+        <circle cx="14"  cy="22"  r="1.3"/>
+      </g>
+    </g>
+    <text x="85" y="116" text-anchor="middle" class="small">1600 E + 400 I  ·  p=0.1 recurrent</text>
+  </g>
+
+  <line x1="860" y1="180" x2="890" y2="180" stroke="#7aa2ff" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ================== Stage 6: Decode ================== -->
+  <g transform="translate(900,120)">
+    <rect width="160" height="120" rx="14" fill="url(#block)" stroke="rgba(255,255,255,0.08)"/>
+    <text x="80" y="20" text-anchor="middle" class="badge">DECODE</text>
+    <text x="80" y="60" text-anchor="middle" class="header">kWTA + dict</text>
+    <text x="80" y="82" text-anchor="middle" class="small">strict · top-k · contextual</text>
+    <text x="80" y="100" text-anchor="middle" class="small">→ "rust memory safety"</text>
+    <text x="80" y="116" text-anchor="middle" class="annot">~96% fewer tokens</text>
+  </g>
+
+  <!-- =============== Plasticity annotations bar bottom =============== -->
+  <g transform="translate(60,290)">
+    <text x="0" y="0" class="badge">PLASTICITY</text>
+    <line x1="0" y1="10" x2="980" y2="10" stroke="rgba(122,162,255,0.2)" stroke-width="1"/>
+
+    <g transform="translate(0,30)">
+      <text x="0"   y="0" class="header">E-STDP</text>
+      <text x="0"   y="18" class="small">Hebbian: pre-before-post → LTP</text>
+    </g>
+    <g transform="translate(220,30)">
+      <text x="0"   y="0" class="header">iSTDP</text>
+      <text x="0"   y="18" class="small">heterosynaptic E↔I selectivity</text>
+    </g>
+    <g transform="translate(440,30)">
+      <text x="0"   y="0" class="header">Homeostasis</text>
+      <text x="0"   y="18" class="small">asymmetric scale-only-down</text>
+    </g>
+    <g transform="translate(660,30)">
+      <text x="0"   y="0" class="header">BTSP</text>
+      <text x="0"   y="18" class="small">soft bounds Δw·(w_max−w)</text>
+    </g>
+    <g transform="translate(840,30)">
+      <text x="0"   y="0" class="header">Contextual</text>
+      <text x="0"   y="18" class="small">sentence-level engrams</text>
+    </g>
+  </g>
+</svg>
