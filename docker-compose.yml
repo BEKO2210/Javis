@@ -32,6 +32,10 @@ services:
     environment:
       RUST_LOG: info
       JAVIS_LOG_FORMAT: json
+      # Override on the host shell to raise the concurrent-session cap
+      # for load testing, e.g.
+      #   JAVIS_MAX_CONCURRENT_SESSIONS=200 docker compose up
+      JAVIS_MAX_CONCURRENT_SESSIONS: "${JAVIS_MAX_CONCURRENT_SESSIONS:-32}"
       # Optional: set to a real key to exercise the LLM path.
       # ANTHROPIC_API_KEY: ""
     volumes:

@@ -4,7 +4,52 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 19 (snapshot schema versioning)
+## Unreleased — Iteration 20 (read-only recall: 2.5× throughput)
+
+### Added (`snn-core`)
+- `NetworkState` and `Network::step_immutable(&self, &mut state,
+  external)` — read-only step path that does the same LIF / synaptic
+  delivery math as `Network::step` but never mutates synapses,
+  ignores plasticity unconditionally, and writes every transient
+  buffer to the caller-provided `state`.
+- `BrainState` and `Brain::step_immutable(&self, &mut state,
+  externals)` — same pattern at the multi-region orchestration
+  layer; per-region `NetworkState`s and a per-recall `PendingQueue`
+  live in the state argument.
+- `Network::fresh_state()` and `Brain::fresh_state()` constructors.
+- Four equivalence tests in
+  `crates/snn-core/tests/immutable_step_equivalence.rs` proving
+  spike-bit-identity with `Network::step` / `Brain::step` when
+  plasticity is off, and that the read-only path leaves the brain's
+  weights/clock untouched.
+
+### Changed (`viz`)
+- `AppState.inner` switched from `Mutex<Inner>` to `RwLock<Inner>`.
+  Train / reset / snapshot-load take the write lock; recall, stats,
+  snapshot-save take the read lock. Multiple concurrent recalls now
+  proceed in parallel.
+- `run_recall` builds a per-call `BrainState` and runs through
+  `Brain::step_immutable` against the shared brain.
+- The `disable_stdp_all() / disable_istdp_all() /
+  disable_homeostasis_all()` voodoo at the start of recall is gone
+  — the read-only step ignores plasticity unconditionally.
+
+### Verified (notes/38)
+Re-running `scripts/load_test.py --levels 1,10,50,100` against the
+docker stack:
+
+| concurrency | throughput | p99 client | server-mean |
+| ---: | ---: | ---: | ---: |
+| 1 | 112 ops/s | 11 ms | 7 ms |
+| 10 | 357 ops/s | 48 ms | 9 ms |
+| 50 | 359 ops/s | 244 ms | 9 ms |
+| 100 | 358 ops/s | 564 ms | 9 ms |
+
+Throughput 2.5× the Mutex-bottlenecked baseline; server-side latency
+constant ~9 ms across all concurrency levels (was 7→68→346→685 ms).
+The remaining client-side queueing is tokio runtime, not Brain.
+
+## Iteration 19 — snapshot schema versioning
 
 ### Added
 - Snapshot schema bumped to v2; new mandatory `metadata` block

@@ -9,7 +9,7 @@
 [![Rust edition 2021](https://img.shields.io/badge/rust-edition%202021-CE422B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3a86ff)](#license)
 [![CI](https://img.shields.io/github/actions/workflow/status/BEKO2210/Javis/ci.yml?branch=main&label=ci&logo=github)](.github/workflows/ci.yml)
-[![Tests 104/104](https://img.shields.io/badge/tests-104%2F104%20passing-3fb950)](#tests)
+[![Tests 108/108](https://img.shields.io/badge/tests-108%2F108%20passing-3fb950)](#tests)
 [![Clippy clean](https://img.shields.io/badge/clippy-0%20warnings-3fb950)](#tests)
 [![MSRV 1.86](https://img.shields.io/badge/MSRV-1.86-CE422B?logo=rust&logoColor=white)](#tests)
 [![Token reduction 96.7%25](https://img.shields.io/badge/token%20reduction-96.7%25-ffd166)](#token-efficiency)
@@ -224,18 +224,20 @@ What separates Javis from a typical research demo:
 | `encode_sentence` (18 words) | 21 µs |
 | `decode_strict` (vocab 1 000) | 253 µs |
 
-**End-to-end load profile** (note 35, against `docker compose` stack)
+**End-to-end load profile** (note 38, against `docker compose` stack)
 
-| Concurrent WS clients | Throughput | p50 / p99 latency |
-| ---: | ---: | ---: |
-| 1 | 116 ops/s | 8.5 / 11 ms |
-| 10 | 142 ops/s | 70 / 84 ms |
-| 50 | 142 ops/s | 352 / 397 ms |
-| 100 | 141 ops/s | 700 / 771 ms |
+| Concurrent WS clients | Throughput | p50 / p99 latency | Server-mean |
+| ---: | ---: | ---: | ---: |
+| 1 | 112 ops/s | 8.8 / 11 ms | 7 ms |
+| 10 | 357 ops/s | 27 / 48 ms | 9 ms |
+| 50 | 359 ops/s | 141 / 244 ms | 9 ms |
+| 100 | 358 ops/s | 270 / 564 ms | 9 ms |
 
-Recall is `tokio::Mutex`-serialised on a single Brain instance, so
-throughput plateaus at ~141 ops/sec and latency grows linearly with
-concurrency. No errors / drops / memory leak across 8 277 recalls.
+Recall runs against an `Arc<RwLock<Inner>>` with a per-call
+`BrainState`, so multiple recalls proceed in parallel. Server-side
+latency stays flat at ~9 ms regardless of concurrency; remaining
+client-side p99 growth is tokio-runtime queueing of TCP connections.
+Bound is now CPU cores, not Mutex serialisation.
 
 CI runs eight jobs on every push: `fmt`, `clippy -D warnings`,
 `test`, `doc-tests`, `deny`, `msrv`, `docs`, `benches` (compile-only).
@@ -252,7 +254,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 37 research notes — every decision documented
+├── notes/          ─ 38 research notes — every decision documented
 ├── scripts/        ─ End-to-end sanity check + load test (Python)
 ├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
@@ -268,13 +270,13 @@ cargo test --release
 
 | Suite | Tests | Validates |
 | --- | ---: | --- |
-| `snn-core` | 50 | LIF dynamics, STDP & iSTDP, homeostasis, BTSP soft bounds, E/I balance, multi-region routing, snapshot serde, assembly formation, bounds-checked APIs, heap pending queue, AMPA/NMDA/GABA channels |
+| `snn-core` | 54 | LIF dynamics, STDP & iSTDP, homeostasis, BTSP soft bounds, E/I balance, multi-region routing, snapshot serde, assembly formation, bounds-checked APIs, heap pending queue, AMPA/NMDA/GABA channels, read-only step equivalence |
 | `encoders` | 22 | SDR union/overlap, hash determinism, top-k decode, injection, full pattern completion |
 | `eval` | 12 | RAG-vs-Javis token efficiency, Wikipedia scaling, intra-topic recall, contextual mode |
 | `llm` | 3 | Anthropic adapter mock contract, token heuristic |
 | `viz` | 16 | WebSocket smoke, train+recall, ask both, snapshot round-trip, `/health` + `/ready`, `/metrics`, concurrency cap, snapshot schema migration (v1→v2) |
 | Doc-tests | 3 | Public quick-start examples in `snn-core` and `encoders` |
-| **Total** | **104** | with **zero clippy warnings** workspace-wide |
+| **Total** | **108** | with **zero clippy warnings** workspace-wide |
 
 ---
 
@@ -323,6 +325,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 35 | Load test: ~141 recalls/sec sustained, Mutex-serialised, no leak |
 | 36 | Concurrency cap: Semaphore + 503/Retry-After, `JAVIS_MAX_CONCURRENT_SESSIONS` |
 | 37 | Snapshot schema versioning: v2 with metadata, migration chain, v1 backward-compat |
+| 38 | Read-only recall: `Brain::step_immutable` + `RwLock`, 2.5× throughput |
 
 ---
 

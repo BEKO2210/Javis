@@ -11,10 +11,10 @@ use std::time::Instant;
 
 use encoders::{EngramDictionary, TextEncoder};
 use snn_core::{
-    Brain, HomeostasisParams, IStdpParams, LifNeuron, LifParams, NeuronKind, Region, Rng,
-    StdpParams,
+    Brain, BrainState, HomeostasisParams, IStdpParams, LifNeuron, LifParams, NeuronKind, Region,
+    Rng, StdpParams,
 };
-use tokio::sync::{mpsc::Sender, Mutex, Semaphore};
+use tokio::sync::{mpsc::Sender, RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 use std::path::Path;
@@ -240,6 +240,62 @@ async fn run_with_cue_streaming(
     counts
 }
 
+/// Read-only variant of [`run_with_cue_streaming`] for the recall
+/// path. Same dynamics (plasticity is off either way during recall),
+/// but the brain is read-only — every concurrent caller drives its
+/// own [`BrainState`] against the same shared `Brain`. This is what
+/// frees the recall path from the `RwLock` write-side bottleneck.
+async fn run_with_cue_streaming_immutable(
+    brain: &Brain,
+    state: &mut BrainState,
+    drive: &[u32],
+    duration_ms: f32,
+    tx: &Sender<Event>,
+) -> Vec<u32> {
+    let r2_e_set = r2_excitatory_indices(brain);
+    let r2_size = brain.regions[1].num_neurons();
+    let mut counts = vec![0u32; r2_size];
+
+    let mut ext1 = vec![0.0_f32; R1_N];
+    for &idx in drive {
+        if (idx as usize) < R1_N {
+            ext1[idx as usize] = DRIVE_NA;
+        }
+    }
+    let ext2 = vec![0.0_f32; R2_N];
+    let externals = vec![ext1, ext2];
+
+    let total_steps = (duration_ms / DT) as usize;
+    let batch_steps = (BATCH_MS / DT) as usize;
+    let mut batch_r1: Vec<u32> = Vec::new();
+    let mut batch_r2: Vec<u32> = Vec::new();
+    let mut t_ms: f32 = 0.0;
+
+    for step in 0..total_steps {
+        let spikes = brain.step_immutable(state, &externals);
+        for &id in &spikes[0] {
+            batch_r1.push(id as u32);
+        }
+        for &id in &spikes[1] {
+            batch_r2.push(id as u32);
+            if r2_e_set.contains(&id) {
+                counts[id] += 1;
+            }
+        }
+        if (step + 1) % batch_steps == 0 || step + 1 == total_steps {
+            t_ms += BATCH_MS;
+            let _ = tx
+                .send(Event::Step {
+                    t_ms,
+                    r1: std::mem::take(&mut batch_r1),
+                    r2: std::mem::take(&mut batch_r2),
+                })
+                .await;
+        }
+    }
+    counts
+}
+
 fn run_with_cue_counts(brain: &mut Brain, drive: &[u32], duration_ms: f32) -> Vec<u32> {
     let r2_e_set = r2_excitatory_indices(brain);
     let r2_size = brain.regions[1].num_neurons();
@@ -285,7 +341,13 @@ fn top_k(counts: &[u32], k: usize) -> Vec<u32> {
 // ----------------------------------------------------------------------
 
 pub struct AppState {
-    inner: Arc<Mutex<Inner>>,
+    /// Inner state behind a `RwLock`: train / reset / load take the
+    /// write lock; recall, stats, snapshot save take the read lock
+    /// so they run concurrently. The plasticity-free recall path uses
+    /// [`snn_core::Brain::step_immutable`] with a per-task
+    /// [`BrainState`] so multiple readers can drive simulations on
+    /// the same shared `Brain` without contention.
+    inner: Arc<RwLock<Inner>>,
     llm: Arc<LlmClient>,
     /// Bounded WebSocket-session counter. Each session acquires one
     /// permit on accept and releases it on close. When the cap is
@@ -448,7 +510,7 @@ impl AppState {
             trained_sentences: Vec::new(),
         };
         Self {
-            inner: Arc::new(Mutex::new(inner)),
+            inner: Arc::new(RwLock::new(inner)),
             llm: Arc::new(LlmClient::from_env()),
             sessions: Arc::new(Semaphore::new(cap)),
         }
@@ -483,7 +545,7 @@ impl AppState {
 
     /// Reset to a freshly-initialised brain. Loses every learnt engram.
     pub async fn reset(&self) {
-        let mut g = self.inner.lock().await;
+        let mut g = self.inner.write().await;
         let dropped_sentences = g.trained_sentences.len();
         let dropped_words = g.known_words.len();
         g.brain = fresh_brain();
@@ -512,7 +574,7 @@ impl AppState {
     pub async fn run_train(&self, sentence: String, tx: Option<Sender<Event>>) {
         let started = Instant::now();
         let sentence_len = sentence.len();
-        let mut g = self.inner.lock().await;
+        let mut g = self.inner.write().await;
 
         if let Some(tx) = &tx {
             let (r1, r2_e, r2_i) = count_neurons(&g.brain);
@@ -633,7 +695,11 @@ impl AppState {
     /// the final Decoded event.
     pub async fn run_recall(&self, query: String, tx: Sender<Event>) {
         let started = Instant::now();
-        let mut g = self.inner.lock().await;
+        // Recall takes only a read lock — multiple concurrent recalls
+        // may proceed in parallel. Each one drives its own
+        // `BrainState`, so the heavy LIF / synapse-delivery work never
+        // serialises against the others.
+        let g = self.inner.read().await;
 
         let (r1, r2_e, r2_i) = count_neurons(&g.brain);
         let _ = tx
@@ -651,10 +717,10 @@ impl AppState {
             })
             .await;
 
-        // Plasticity stays frozen for recall.
-        g.brain.disable_stdp_all();
-        g.brain.disable_istdp_all();
-        g.brain.disable_homeostasis_all();
+        // Note: `step_immutable` ignores plasticity unconditionally, so
+        // we no longer need to reach in and `disable_*_all()` before
+        // running. The brain's plasticity configuration stays exactly
+        // as the most recent `run_train` left it.
 
         let sdr = g.encoder.encode(&query);
         if sdr.indices.is_empty() {
@@ -662,8 +728,10 @@ impl AppState {
             let _ = tx.send(Event::Done).await;
             return;
         }
-        g.brain.reset_state();
-        let counts = run_with_cue_streaming(&mut g.brain, &sdr.indices, RECALL_MS, &tx).await;
+        let mut state = g.brain.fresh_state();
+        let counts =
+            run_with_cue_streaming_immutable(&g.brain, &mut state, &sdr.indices, RECALL_MS, &tx)
+                .await;
         let recall_indices = top_k(&counts, KWTA_K);
 
         let candidates = g.dict.decode(&recall_indices, DECODE_THRESHOLD);
@@ -726,7 +794,7 @@ impl AppState {
     /// Snapshot for the UI: how many sentences / concepts have been
     /// learnt so far.
     pub async fn stats(&self) -> (usize, usize) {
-        let g = self.inner.lock().await;
+        let g = self.inner.read().await;
         (g.trained_sentences.len(), g.known_words.len())
     }
 
@@ -737,7 +805,7 @@ impl AppState {
     pub async fn save_to_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
         let started = Instant::now();
         let path_ref = path.as_ref().to_path_buf();
-        let g = self.inner.lock().await;
+        let g = self.inner.read().await;
         let snap = Snapshot {
             version: SNAPSHOT_VERSION,
             metadata: SnapshotMetadata {
@@ -805,7 +873,7 @@ impl AppState {
         let sentences = snap.trained_sentences.len();
         let words = snap.known_words.len();
 
-        let mut g = self.inner.lock().await;
+        let mut g = self.inner.write().await;
         g.brain = snap.brain;
         g.dict = snap.dict;
         g.encoder = snap.encoder;
