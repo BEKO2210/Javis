@@ -1,5 +1,14 @@
 //! Leaky Integrate-and-Fire neuron with Dale's-principle E/I labelling.
 //!
+//! The neuron struct holds *only* configuration — `params` and `kind`.
+//! Transient state (membrane potential, refractory clock, last-spike
+//! timestamp, homeostatic activity trace) lives in parallel `Vec<f32>`
+//! buffers on the parent [`crate::Network`], so the integration loop
+//! iterates contiguous SoA slices that the autovectoriser can pack
+//! into AVX/AVX-512 lanes. The pre-iteration-22 layout had every
+//! transient field embedded in this struct (AoS); see notes/41 for
+//! the migration rationale and bench numbers.
+//!
 //! Membrane dynamics:  τ_m · dV/dt = -(V - V_rest) + R_m · I(t)
 //! Discretised with forward Euler at timestep `dt` (ms). The neuron's
 //! `kind` (Excitatory or Inhibitory) determines the *sign* with which
@@ -35,30 +44,14 @@ impl Default for LifParams {
     }
 }
 
+/// Configuration of a single LIF neuron. Carries the integration
+/// parameters and Dale-principle kind only — *no* transient state.
+/// 32 bytes after padding (kind is `u8` + 3B alignment + 24B params),
+/// so two neurons share a 64 B cache line during the LIF inner loop.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct LifNeuron {
     pub params: LifParams,
     pub kind: NeuronKind,
-    /// Membrane potential. Transient — not persisted across snapshots.
-    #[serde(skip, default = "f32_zero")]
-    pub v: f32,
-    /// Refractory clock. Transient.
-    #[serde(skip, default = "f32_neg_inf")]
-    pub refractory_until: f32,
-    /// Last spike time. Transient.
-    #[serde(skip, default = "f32_neg_inf")]
-    pub last_spike: f32,
-    /// Exponentially-decaying spike counter used by homeostatic synaptic
-    /// scaling. Transient (rebuilds within a few simulated seconds).
-    #[serde(skip, default = "f32_zero")]
-    pub activity_trace: f32,
-}
-
-fn f32_zero() -> f32 {
-    0.0
-}
-fn f32_neg_inf() -> f32 {
-    f32::NEG_INFINITY
 }
 
 impl LifNeuron {
@@ -75,32 +68,6 @@ impl LifNeuron {
     }
 
     pub fn with_kind(params: LifParams, kind: NeuronKind) -> Self {
-        Self {
-            v: params.v_rest,
-            refractory_until: f32::NEG_INFINITY,
-            last_spike: f32::NEG_INFINITY,
-            activity_trace: 0.0,
-            kind,
-            params,
-        }
-    }
-
-    /// Advance one timestep with input current `i_input` (nA).
-    /// Returns `true` if the neuron emitted a spike on this step.
-    pub fn step(&mut self, t: f32, dt: f32, i_input: f32) -> bool {
-        if t < self.refractory_until {
-            self.v = self.params.v_reset;
-            return false;
-        }
-        let p = &self.params;
-        let dv = dt / p.tau_m * (-(self.v - p.v_rest) + p.r_m * i_input);
-        self.v += dv;
-        if self.v >= p.v_threshold {
-            self.v = p.v_reset;
-            self.refractory_until = t + p.refractory;
-            self.last_spike = t;
-            return true;
-        }
-        false
+        Self { params, kind }
     }
 }

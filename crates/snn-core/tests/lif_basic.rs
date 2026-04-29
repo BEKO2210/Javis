@@ -8,23 +8,27 @@
 //! With defaults (τ_m=20, V_rest=−70, V_reset=−75, V_th=−55, R=10, ref=2)
 //! and I=2 nA: V_ss=−50, ratio=0.2, ISI ≈ 32.19 + 2 = 34.19 ms,
 //! so ≈ 29 spikes in 1000 ms.
+//!
+//! The pre-iteration-22 layout had transient state inside `LifNeuron`
+//! and exposed `LifNeuron::step`; iteration 22 moved that state into
+//! parallel `Vec<f32>` buffers on `Network` for SoA / autovec wins.
+//! These tests now drive a single-neuron `Network` to verify the same
+//! single-cell dynamics through the canonical `Network::step` path.
 
-use snn_core::{LifNeuron, LifParams};
+use snn_core::{LifNeuron, LifParams, Network};
 
 #[test]
 fn single_neuron_fires_at_expected_rate() {
-    let mut n = LifNeuron::new(LifParams::default());
     let dt = 0.1_f32;
-    let duration = 1000.0_f32;
-    let i_input = 2.0_f32;
+    let mut net = Network::new(dt);
+    net.add_neuron(LifNeuron::new(LifParams::default()));
 
-    let mut t = 0.0;
+    let i_input = 2.0_f32;
+    let external = vec![i_input];
+    let duration_steps = (1000.0 / dt) as usize;
     let mut spikes = 0usize;
-    while t < duration {
-        if n.step(t, dt, i_input) {
-            spikes += 1;
-        }
-        t += dt;
+    for _ in 0..duration_steps {
+        spikes += net.step(&external).len();
     }
 
     // Expected ~29 spikes. Allow generous tolerance for Euler integration.
@@ -36,24 +40,25 @@ fn single_neuron_fires_at_expected_rate() {
 
 #[test]
 fn subthreshold_input_does_not_fire() {
-    let mut n = LifNeuron::new(LifParams::default());
     let dt = 0.1_f32;
+    let mut net = Network::new(dt);
+    net.add_neuron(LifNeuron::new(LifParams::default()));
 
     // Rheobase = (V_th − V_rest) / R_m = 15 / 10 = 1.5 nA.
     // 1.0 nA is sub-threshold → V settles at −60 mV, never reaches −55.
+    let external = vec![1.0_f32];
     let mut spiked = false;
-    let mut t = 0.0;
-    while t < 500.0 {
-        if n.step(t, dt, 1.0) {
+    let duration_steps = (500.0 / dt) as usize;
+    for _ in 0..duration_steps {
+        if !net.step(&external).is_empty() {
             spiked = true;
             break;
         }
-        t += dt;
     }
     assert!(!spiked, "neuron should not fire below rheobase");
+    let v = net.v[0];
     assert!(
-        n.v < -59.0 && n.v > -61.0,
-        "V should approach −60 mV, got {}",
-        n.v
+        (-61.0..=-59.0).contains(&v),
+        "V should approach −60 mV, got {v}",
     );
 }

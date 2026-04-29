@@ -30,10 +30,32 @@ fn default_tau_gaba_ms() -> f32 {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Network {
+    /// Per-neuron *configuration* — parameters and Dale-principle
+    /// kind. Indexed parallel to all of the per-neuron transient
+    /// state vectors below. The transient state lives outside
+    /// `LifNeuron` so the LIF integration loop iterates SoA slices
+    /// (autovectoriser-friendly, ~75 % of recall pipeline time).
     pub neurons: Vec<LifNeuron>,
     pub synapses: Vec<Synapse>,
     pub outgoing: Vec<Vec<u32>>,
     pub incoming: Vec<Vec<u32>>,
+    /// Membrane potential per neuron — transient, parallel to
+    /// `neurons`. Initialised to `v_rest` on `add_neuron` and on
+    /// `reset_state`.
+    #[serde(skip, default)]
+    pub v: Vec<f32>,
+    /// Per-neuron refractory clock; the neuron is refractory while
+    /// `time < refractory_until[i]`. Defaults to `f32::NEG_INFINITY`
+    /// (always past).
+    #[serde(skip, default)]
+    pub refractory_until: Vec<f32>,
+    /// Last spike timestamp per neuron — transient.
+    #[serde(skip, default)]
+    pub last_spike: Vec<f32>,
+    /// Exponentially-decaying spike counter used by homeostatic
+    /// synaptic scaling — transient.
+    #[serde(skip, default)]
+    pub activity_trace: Vec<f32>,
     /// AMPA synaptic current channel — transient, rebuilt on first
     /// step after a snapshot load. The default channel; `Brain` and
     /// most existing code only ever touch this one.
@@ -86,6 +108,10 @@ impl Network {
             synapses: Vec::new(),
             outgoing: Vec::new(),
             incoming: Vec::new(),
+            v: Vec::new(),
+            refractory_until: Vec::new(),
+            last_spike: Vec::new(),
+            activity_trace: Vec::new(),
             i_syn: Vec::new(),
             i_syn_nmda: Vec::new(),
             i_syn_gaba: Vec::new(),
@@ -106,6 +132,13 @@ impl Network {
 
     pub fn add_neuron(&mut self, n: LifNeuron) -> usize {
         let id = self.neurons.len();
+        // Per-neuron transient state defaults match the pre-iter-22
+        // `LifNeuron` field defaults: v at rest, refr/last at -inf,
+        // activity trace at zero. Pushed in lock-step with `neurons`.
+        self.v.push(n.params.v_rest);
+        self.refractory_until.push(f32::NEG_INFINITY);
+        self.last_spike.push(f32::NEG_INFINITY);
+        self.activity_trace.push(0.0);
         self.neurons.push(n);
         self.outgoing.push(Vec::new());
         self.incoming.push(Vec::new());
@@ -174,6 +207,20 @@ impl Network {
     /// AMPA-only networks.
     pub fn ensure_transient_state(&mut self) {
         let n = self.neurons.len();
+        // Per-neuron LIF state. Defaults match `add_neuron`: rest /
+        // -inf / -inf / 0.
+        if self.v.len() != n {
+            self.v = self.neurons.iter().map(|nu| nu.params.v_rest).collect();
+        }
+        if self.refractory_until.len() != n {
+            self.refractory_until = vec![f32::NEG_INFINITY; n];
+        }
+        if self.last_spike.len() != n {
+            self.last_spike = vec![f32::NEG_INFINITY; n];
+        }
+        if self.activity_trace.len() != n {
+            self.activity_trace = vec![0.0; n];
+        }
         if self.i_syn.len() != n {
             self.i_syn = vec![0.0; n];
         }
@@ -245,11 +292,11 @@ impl Network {
     /// time, step counter, event counter). Synapse weights and network
     /// topology are preserved.
     pub fn reset_state(&mut self) {
-        for (idx, n) in self.neurons.iter_mut().enumerate() {
-            n.v = n.params.v_rest;
-            n.refractory_until = f32::NEG_INFINITY;
-            n.last_spike = f32::NEG_INFINITY;
-            n.activity_trace = 0.0;
+        for (idx, n) in self.neurons.iter().enumerate() {
+            self.v[idx] = n.params.v_rest;
+            self.refractory_until[idx] = f32::NEG_INFINITY;
+            self.last_spike[idx] = f32::NEG_INFINITY;
+            self.activity_trace[idx] = 0.0;
             self.i_syn[idx] = 0.0;
             if idx < self.i_syn_nmda.len() {
                 self.i_syn_nmda[idx] = 0.0;
@@ -317,14 +364,18 @@ impl Network {
         // 2b) Decay homeostatic activity traces (long time constant).
         if let Some(h) = self.homeostasis {
             let decay = (-dt / h.tau_homeo_ms).exp();
-            for n in self.neurons.iter_mut() {
-                n.activity_trace *= decay;
+            for x in self.activity_trace.iter_mut() {
+                *x *= decay;
             }
         }
 
-        // 3) Step every LIF, recording spikes.
+        // 3) Step every LIF, recording spikes. SoA layout: per-neuron
+        //    transient state lives in parallel `Vec<f32>` slices on
+        //    `self`; the inner loop is a single straight-line walk
+        //    over indices, autovectoriser-friendly.
         let mut fired: Vec<usize> = Vec::new();
-        for (idx, n) in self.neurons.iter_mut().enumerate() {
+        let n = self.neurons.len();
+        for idx in 0..n {
             let ext = external.get(idx).copied().unwrap_or(0.0);
             // Sum across every active receptor channel.
             let mut total = ext + self.i_syn[idx];
@@ -334,7 +385,22 @@ impl Network {
             if let Some(v) = self.i_syn_gaba.get(idx) {
                 total += *v;
             }
-            if n.step(t, dt, total) {
+            // Inline LIF math, parallel-Vec form. Identical to the
+            // pre-iter-22 `LifNeuron::step` body — same forward-Euler
+            // discretisation, same threshold-and-reset semantics.
+            let p = &self.neurons[idx].params;
+            let v = &mut self.v[idx];
+            let refr = &mut self.refractory_until[idx];
+            if t < *refr {
+                *v = p.v_reset;
+                continue;
+            }
+            let dv = dt / p.tau_m * (-(*v - p.v_rest) + p.r_m * total);
+            *v += dv;
+            if *v >= p.v_threshold {
+                *v = p.v_reset;
+                *refr = t + p.refractory;
+                self.last_spike[idx] = t;
                 fired.push(idx);
             }
         }
@@ -352,7 +418,7 @@ impl Network {
                 self.post_trace[src] += 1.0;
             }
             if homeo_active {
-                self.neurons[src].activity_trace += 1.0;
+                self.activity_trace[src] += 1.0;
             }
             let src_kind = self.neurons[src].kind;
             let sign: f32 = match src_kind {
@@ -622,7 +688,7 @@ impl Network {
 
         let n = self.neurons.len();
         for post in 0..n {
-            let trace = self.neurons[post].activity_trace;
+            let trace = self.activity_trace[post];
             // Guard against very hyperactive neurons producing a negative
             // `factor` — that would push w * factor below zero and the
             // clamp to [w_min, …] would zero out *all* of the post's

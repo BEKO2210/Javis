@@ -277,6 +277,7 @@ async fn run_with_cue_streaming_immutable(
     // profile script can break the SNN-compute number down further.
     let mut compute_s: f64 = 0.0;
     let mut stream_s: f64 = 0.0;
+    let mut dropped_step_events: u64 = 0;
 
     for step in 0..total_steps {
         let t0 = Instant::now();
@@ -295,13 +296,25 @@ async fn run_with_cue_streaming_immutable(
         if (step + 1) % batch_steps == 0 || step + 1 == total_steps {
             t_ms += BATCH_MS;
             let t1 = Instant::now();
-            let _ = tx
-                .send(Event::Step {
-                    t_ms,
-                    r1: std::mem::take(&mut batch_r1),
-                    r2: std::mem::take(&mut batch_r2),
-                })
-                .await;
+            // Fire-and-forget: `Event::Step` is a visualisation
+            // breadcrumb. If the WS consumer is behind we drop the
+            // event rather than awaiting backpressure into the
+            // simulation loop. The non-async `try_send` removes the
+            // tokio yield that was costing ~6.5 % of the recall
+            // pipeline (notes/40); the trade-off is that a slow
+            // browser may miss step batches, which the frontend
+            // handles gracefully because each batch is independent.
+            match tx.try_send(Event::Step {
+                t_ms,
+                r1: std::mem::take(&mut batch_r1),
+                r2: std::mem::take(&mut batch_r2),
+            }) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    dropped_step_events += 1;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            }
             stream_s += t1.elapsed().as_secs_f64();
         }
     }
@@ -309,6 +322,9 @@ async fn run_with_cue_streaming_immutable(
     metrics::histogram!("javis_recall_subphase_seconds", "phase" => "brain_compute")
         .record(compute_s);
     metrics::histogram!("javis_recall_subphase_seconds", "phase" => "ws_stream").record(stream_s);
+    if dropped_step_events > 0 {
+        metrics::counter!("javis_ws_step_dropped_total").increment(dropped_step_events);
+    }
 
     counts
 }

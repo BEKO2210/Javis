@@ -58,7 +58,7 @@ fn homeostasis_scales_down_hyperactive_neuron() {
     run_steps(&mut net, &external, 50_000); // 5 simulated seconds
 
     let final_w = net.synapses[eid].weight;
-    let trace = net.neurons[post].activity_trace;
+    let trace = net.activity_trace[post];
 
     eprintln!("scale-down: w {initial_w} -> {final_w}, post.activity_trace = {trace}");
 
