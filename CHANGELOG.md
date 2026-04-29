@@ -4,7 +4,32 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 15 (container & deploy)
+## Unreleased — Iteration 16 (end-to-end sanity)
+
+### Fixed
+- Grafana dashboard panels referenced datasource `uid: "Prometheus"`
+  but the auto-provisioning let Grafana hash a fresh UID, so every
+  panel showed "Datasource not found" in the UI. Pinned
+  `uid: prometheus` in the datasource provisioning and updated all
+  five dashboard panels to match.
+
+### Added
+- `scripts/sanity_check.py` — reproducible end-to-end smoke test
+  that drives `train` / `recall` / `ask` / parallel-recall flows
+  over the WebSocket interface, then asserts on `/ready` deltas
+  and `/metrics` counter values. Exits 0 on full pass; 1 on the
+  first failed expectation. Targets `localhost:7777` by default,
+  override via `JAVIS_HOST`.
+
+### Verified live (notes/34)
+- Train → recall → ask → 5 parallel recalls completed cleanly
+  against `docker compose up`.
+- Snapshot persistence in the live flow: train a new sentence,
+  `docker compose restart javis-viz`, then recall both bootstrap
+  and live-trained words still works (both ≥ 86 % token reduction).
+- Lifetime token saving across the test run: 92.6 %.
+
+## Iteration 15 — container & deploy
 
 ### Added
 - Multi-stage `Dockerfile` (builder on `rust:1.86-bookworm`, runtime

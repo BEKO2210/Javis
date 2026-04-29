@@ -239,7 +239,8 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 33 research notes — every decision documented
+├── notes/          ─ 34 research notes — every decision documented
+├── scripts/        ─ End-to-end sanity check (Python)
 ├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
 ```
@@ -305,6 +306,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 31 | Criterion benchmarks for `Network::step`, `Brain::step`, encode/decode |
 | 32 | Container & deploy: Dockerfile + docker-compose with Prometheus + Grafana |
 | 33 | Docker stack verified end-to-end + snapshot volume |
+| 34 | End-to-end sanity script + Grafana datasource UID fix |
 
 ---
 

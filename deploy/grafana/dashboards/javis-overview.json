@@ -12,7 +12,7 @@
       "id": 1,
       "type": "stat",
       "title": "Brain — sentences",
-      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
       "targets": [
         { "refId": "A", "expr": "javis_brain_sentences" }
@@ -23,7 +23,7 @@
       "id": 2,
       "type": "stat",
       "title": "Brain — words",
-      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
       "targets": [
         { "refId": "A", "expr": "javis_brain_words" }
@@ -34,7 +34,7 @@
       "id": 3,
       "type": "stat",
       "title": "Token saving (lifetime, %)",
-      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 4, "w": 12, "x": 12, "y": 0 },
       "targets": [
         {
@@ -48,7 +48,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "WebSocket sessions / sec by action",
-      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
       "targets": [
         {
@@ -62,7 +62,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "p95 operation latency",
-      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
       "targets": [
         {
