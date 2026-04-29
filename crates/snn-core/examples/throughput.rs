@@ -63,10 +63,18 @@ fn build(n: usize, seed: u64) -> Network {
 fn run_size(n: usize) {
     let mut net = build(n, 2026);
     let synapses = net.synapses.len();
-    let n_exc = net.neurons.iter().filter(|x| x.kind == NeuronKind::Excitatory).count();
+    let n_exc = net
+        .neurons
+        .iter()
+        .filter(|x| x.kind == NeuronKind::Excitatory)
+        .count();
     let n_inh = net.neurons.len() - n_exc;
     let gens: Vec<PoissonInput> = (0..n)
-        .map(|i| PoissonInput { target: i, rate_hz: 50.0, current_per_spike: 80.0 })
+        .map(|i| PoissonInput {
+            target: i,
+            rate_hz: 50.0,
+            current_per_spike: 80.0,
+        })
         .collect();
 
     let mut rng = Rng::new(11);

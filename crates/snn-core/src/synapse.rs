@@ -14,7 +14,9 @@
 
 /// Synaptic-receptor kind. Determines which `Network` τ governs the
 /// decay of the post-synaptic current contribution.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum SynapseKind {
     /// Fast excitatory. Default — uses `Network::tau_syn_ms`.
     #[default]
@@ -43,11 +45,21 @@ pub struct Synapse {
 impl Synapse {
     /// Create an AMPA synapse (default fast excitatory).
     pub fn new(pre: usize, post: usize, weight: f32) -> Self {
-        Self { pre, post, weight, kind: SynapseKind::Ampa }
+        Self {
+            pre,
+            post,
+            weight,
+            kind: SynapseKind::Ampa,
+        }
     }
 
     /// Create a synapse with an explicit receptor kind.
     pub fn with_kind(pre: usize, post: usize, weight: f32, kind: SynapseKind) -> Self {
-        Self { pre, post, weight, kind }
+        Self {
+            pre,
+            post,
+            weight,
+            kind,
+        }
     }
 }

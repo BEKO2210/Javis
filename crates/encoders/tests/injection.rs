@@ -87,6 +87,9 @@ fn weak_drive_only_depolarises() {
     for &idx in &sdr.indices {
         let v = net.neurons[idx as usize].v;
         assert!(v > v_rest + 0.1, "neuron {idx} not depolarised: V={v}");
-        assert!(v < v_th, "neuron {idx} should not have crossed threshold: V={v}");
+        assert!(
+            v < v_th,
+            "neuron {idx} should not have crossed threshold: V={v}"
+        );
     }
 }

@@ -13,10 +13,10 @@ const DT: f32 = 0.1;
 
 fn aggressive_homeostasis() -> HomeostasisParams {
     HomeostasisParams {
-        eta_scale: 0.01,        // 1% of the gap per scaling pass
-        a_target: 1.0,          // very low — easy to overshoot
-        tau_homeo_ms: 500.0,    // shorter than default so the test runs fast
-        apply_every: 100,       // every 10 ms
+        eta_scale: 0.01,     // 1% of the gap per scaling pass
+        a_target: 1.0,       // very low — easy to overshoot
+        tau_homeo_ms: 500.0, // shorter than default so the test runs fast
+        apply_every: 100,    // every 10 ms
         ..HomeostasisParams::default()
     }
 }
@@ -70,10 +70,7 @@ fn homeostasis_scales_down_hyperactive_neuron() {
         final_w < initial_w * 0.5,
         "weight did not scale down enough: {initial_w} -> {final_w}",
     );
-    assert!(
-        final_w > 0.0,
-        "weight collapsed to zero — scaling overshot",
-    );
+    assert!(final_w > 0.0, "weight collapsed to zero — scaling overshot",);
 }
 
 #[test]

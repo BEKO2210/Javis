@@ -384,8 +384,7 @@ impl Network {
                             let new_w = if p.soft_bounds {
                                 w - p.a_minus * self.post_trace[post] * (w - p.w_min)
                             } else {
-                                (w - p.a_minus * self.post_trace[post])
-                                    .clamp(p.w_min, p.w_max)
+                                (w - p.a_minus * self.post_trace[post]).clamp(p.w_min, p.w_max)
                             };
                             self.synapses[eid].weight = new_w;
                         }

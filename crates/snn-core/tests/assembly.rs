@@ -73,7 +73,11 @@ fn drive_and_count(
 ) -> (usize, usize) {
     let gens: Vec<PoissonInput> = drive
         .clone()
-        .map(|i| PoissonInput { target: i, rate_hz, current_per_spike })
+        .map(|i| PoissonInput {
+            target: i,
+            rate_hz,
+            current_per_spike,
+        })
         .collect();
     let steps = (duration_ms / net.dt) as usize;
     let n = net.neurons.len();
@@ -100,10 +104,18 @@ fn drive_and_count(
 /// STDP must be enabled on the caller side.
 fn training_trial(net: &mut Network, rng: &mut Rng) {
     let a_gen: Vec<PoissonInput> = PATTERN_A
-        .map(|i| PoissonInput { target: i, rate_hz: 500.0, current_per_spike: 80.0 })
+        .map(|i| PoissonInput {
+            target: i,
+            rate_hz: 500.0,
+            current_per_spike: 80.0,
+        })
         .collect();
     let b_gen: Vec<PoissonInput> = PATTERN_B
-        .map(|i| PoissonInput { target: i, rate_hz: 500.0, current_per_spike: 80.0 })
+        .map(|i| PoissonInput {
+            target: i,
+            rate_hz: 500.0,
+            current_per_spike: 80.0,
+        })
         .collect();
 
     let n = net.neurons.len();
@@ -140,27 +152,13 @@ fn pattern_b_recalls_after_training_via_pattern_a() {
 
     // 1) Pre-test recall.
     net.reset_state();
-    let (pre_a_drv, pre_a_b) = drive_and_count(
-        &mut net,
-        PATTERN_A,
-        PATTERN_B,
-        &mut rng,
-        50.0,
-        500.0,
-        80.0,
-    );
+    let (pre_a_drv, pre_a_b) =
+        drive_and_count(&mut net, PATTERN_A, PATTERN_B, &mut rng, 50.0, 500.0, 80.0);
 
     // 2) Pre-test control (different pattern → B).
     net.reset_state();
-    let (pre_c_drv, pre_c_b) = drive_and_count(
-        &mut net,
-        PATTERN_C,
-        PATTERN_B,
-        &mut rng,
-        50.0,
-        500.0,
-        80.0,
-    );
+    let (pre_c_drv, pre_c_b) =
+        drive_and_count(&mut net, PATTERN_C, PATTERN_B, &mut rng, 50.0, 500.0, 80.0);
 
     // 3) Train.
     net.enable_stdp(StdpParams {
@@ -176,34 +174,16 @@ fn pattern_b_recalls_after_training_via_pattern_a() {
 
     // 4) Post-test recall.
     net.reset_state();
-    let (post_a_drv, post_a_b) = drive_and_count(
-        &mut net,
-        PATTERN_A,
-        PATTERN_B,
-        &mut rng,
-        50.0,
-        500.0,
-        80.0,
-    );
+    let (post_a_drv, post_a_b) =
+        drive_and_count(&mut net, PATTERN_A, PATTERN_B, &mut rng, 50.0, 500.0, 80.0);
 
     // 5) Post-test control.
     net.reset_state();
-    let (post_c_drv, post_c_b) = drive_and_count(
-        &mut net,
-        PATTERN_C,
-        PATTERN_B,
-        &mut rng,
-        50.0,
-        500.0,
-        80.0,
-    );
+    let (post_c_drv, post_c_b) =
+        drive_and_count(&mut net, PATTERN_C, PATTERN_B, &mut rng, 50.0, 500.0, 80.0);
 
-    eprintln!(
-        "drive  pre_A={pre_a_drv} pre_C={pre_c_drv} post_A={post_a_drv} post_C={post_c_drv}",
-    );
-    eprintln!(
-        "B-out  pre_A={pre_a_b}  pre_C={pre_c_b}  post_A={post_a_b}  post_C={post_c_b}",
-    );
+    eprintln!("drive  pre_A={pre_a_drv} pre_C={pre_c_drv} post_A={post_a_drv} post_C={post_c_drv}",);
+    eprintln!("B-out  pre_A={pre_a_b}  pre_C={pre_c_b}  post_A={post_a_b}  post_C={post_c_b}",);
 
     assert!(
         post_a_b >= pre_a_b + 5,

@@ -8,8 +8,8 @@
 //! words contribute zero bits to any SDR, which keeps shared "noise" out
 //! of downstream assemblies.
 
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 use crate::sdr::Sdr;
@@ -25,7 +25,11 @@ impl TextEncoder {
     pub fn new(n: u32, k: u32) -> Self {
         assert!(k > 0, "k must be > 0");
         assert!(n > k * 4, "n must be much larger than k for sparsity");
-        Self { n, k, stopwords: HashSet::new() }
+        Self {
+            n,
+            k,
+            stopwords: HashSet::new(),
+        }
     }
 
     pub fn with_stopwords<S, I>(n: u32, k: u32, words: I) -> Self
@@ -96,4 +100,3 @@ impl TextEncoder {
         sdr
     }
 }
-

@@ -52,7 +52,11 @@ fn balanced_network_stays_below_runaway() {
     let mut net = build(2026);
 
     let gens: Vec<PoissonInput> = (0..N)
-        .map(|i| PoissonInput { target: i, rate_hz: 50.0, current_per_spike: 80.0 })
+        .map(|i| PoissonInput {
+            target: i,
+            rate_hz: 50.0,
+            current_per_spike: 80.0,
+        })
         .collect();
 
     let mut rng = Rng::new(11);
@@ -75,7 +79,11 @@ fn balanced_network_stays_below_runaway() {
         }
     }
 
-    let n_exc = net.neurons.iter().filter(|x| x.kind == NeuronKind::Excitatory).count() as f32;
+    let n_exc = net
+        .neurons
+        .iter()
+        .filter(|x| x.kind == NeuronKind::Excitatory)
+        .count() as f32;
     let n_inh = (N as f32) - n_exc;
     let rate_e = spikes_e as f32 / n_exc / (sim_ms / 1000.0);
     let rate_i = spikes_i as f32 / n_inh / (sim_ms / 1000.0);

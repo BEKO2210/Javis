@@ -4,9 +4,7 @@
 //! `tau_syn_ms`, bounds checks on `Network::connect` and
 //! `Brain::connect`, and snapshot-compatible defaults.
 
-use snn_core::{
-    Brain, LifNeuron, LifParams, Network, NeuronKind, Region,
-};
+use snn_core::{Brain, LifNeuron, LifParams, Network, NeuronKind, Region};
 
 // ----------------------------------------------------------------------
 // tau_syn_ms — moved from Synapse to Network
@@ -39,7 +37,10 @@ fn tau_syn_setter_changes_psc_decay() {
     let slow = residual_after_ten_ms(20.0);
 
     eprintln!("residual after 10ms: τ_syn=5 → {fast:.4}  τ_syn=20 → {slow:.4}");
-    assert!(slow > fast, "longer τ_syn must decay slower (got {fast} vs {slow})");
+    assert!(
+        slow > fast,
+        "longer τ_syn must decay slower (got {fast} vs {slow})"
+    );
     // Analytical sanity: with τ=20 ms, residual after 10 ms ≈ exp(-0.5) ≈ 0.607.
     assert!((slow - (-0.5_f32).exp()).abs() < 0.05);
     assert!((fast - (-2.0_f32).exp()).abs() < 0.05);
@@ -106,11 +107,13 @@ fn build_two_regions() -> Brain {
     let mut brain = Brain::new(0.1);
     let mut r1 = Region::new("R1", 0.1);
     for _ in 0..3 {
-        r1.network.add_neuron(LifNeuron::excitatory(LifParams::default()));
+        r1.network
+            .add_neuron(LifNeuron::excitatory(LifParams::default()));
     }
     let mut r2 = Region::new("R2", 0.1);
     for _ in 0..5 {
-        r2.network.add_neuron(LifNeuron::excitatory(LifParams::default()));
+        r2.network
+            .add_neuron(LifNeuron::excitatory(LifParams::default()));
     }
     brain.add_region(r1);
     brain.add_region(r2);

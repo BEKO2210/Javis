@@ -8,9 +8,11 @@
 
 [![Rust edition 2021](https://img.shields.io/badge/rust-edition%202021-CE422B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3a86ff)](#license)
-[![Tests 63/63](https://img.shields.io/badge/tests-63%2F63%20passing-3fb950)](#tests)
+[![CI](https://img.shields.io/github/actions/workflow/status/BEKO2210/Javis/ci.yml?branch=main&label=ci&logo=github)](.github/workflows/ci.yml)
+[![Tests 91/91](https://img.shields.io/badge/tests-91%2F91%20passing-3fb950)](#tests)
+[![Clippy clean](https://img.shields.io/badge/clippy-0%20warnings-3fb950)](#tests)
 [![Crates 5](https://img.shields.io/badge/crates-5-7aa2ff)](#project-structure)
-[![Token reduction 96.6%25](https://img.shields.io/badge/token%20reduction-96.6%25-ffd166)](#token-efficiency)
+[![Token reduction 96.7%25](https://img.shields.io/badge/token%20reduction-96.7%25-ffd166)](#token-efficiency)
 [![Live demo](https://img.shields.io/badge/live%20demo-3D%20brain-ff5c8a)](#live-3d-brain)
 [![Bio inspired](https://img.shields.io/badge/bio--inspired-LIF%20%C2%B7%20STDP%20%C2%B7%20iSTDP%20%C2%B7%20BTSP-62d6ff)](#plasticity)
 
@@ -74,8 +76,11 @@ Every box on the diagram corresponds to a real Rust module:
 # build everything
 cargo build --release
 
-# run the full test suite (63/63 should pass)
+# run the full test suite (91/91 should pass)
 cargo test --release
+
+# minimal 30-line demo printing RAG vs Javis token saving
+cargo run --release -p eval --example hello_javis
 
 # fire up the live 3D brain in a browser
 cargo run -p viz --release --bin javis-viz
@@ -160,7 +165,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 20 research notes — every decision documented
+├── notes/          ─ 23 research notes — every decision documented
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
 ```
 
@@ -174,12 +179,13 @@ cargo test --release
 
 | Suite | Tests | Validates |
 | --- | ---: | --- |
-| `snn-core` | 22 | LIF dynamics, STDP & iSTDP, homeostasis, BTSP soft bounds, E/I balance, multi-region routing, snapshot serde, assembly formation |
+| `snn-core` | 50 | LIF dynamics, STDP & iSTDP, homeostasis, BTSP soft bounds, E/I balance, multi-region routing, snapshot serde, assembly formation, bounds-checked APIs, heap pending queue, AMPA/NMDA/GABA channels |
 | `encoders` | 22 | SDR union/overlap, hash determinism, top-k decode, injection, full pattern completion |
 | `eval` | 12 | RAG-vs-Javis token efficiency, Wikipedia scaling, intra-topic recall, contextual mode |
 | `llm` | 3 | Anthropic adapter mock contract, token heuristic |
 | `viz` | 4 | WebSocket smoke, train+recall, ask both, snapshot round-trip |
-| **Total** | **63** | |
+| Doc-tests | 3 | Public quick-start examples in `snn-core` and `encoders` |
+| **Total** | **91** | with **zero clippy warnings** workspace-wide |
 
 ---
 
@@ -211,6 +217,9 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 18 | Wikipedia scaling |
 | 19 | Two decode modes |
 | 20 | Bio-inspired optimisations: contextual engrams + BTSP |
+| 21 | Architecture hardening: dead code, bounds checks, lints |
+| 22 | Min-heap pending queue, AMPA/NMDA/GABA channels, zero lints |
+| 23 | Production polish: CI, doc-tests, examples, CHANGELOG |
 
 ---
 

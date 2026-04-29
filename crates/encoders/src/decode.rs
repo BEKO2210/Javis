@@ -23,7 +23,9 @@ pub struct EngramDictionary {
 
 impl EngramDictionary {
     pub fn new() -> Self {
-        Self { entries: HashMap::new() }
+        Self {
+            entries: HashMap::new(),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -105,9 +107,7 @@ impl EngramDictionary {
                 results.push((word.clone(), ratio));
             }
         }
-        results.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         results
     }
 }
@@ -175,8 +175,8 @@ mod tests {
     fn results_are_sorted_descending() {
         let mut d = EngramDictionary::new();
         d.learn_concept("a", &[1, 2, 3, 4]); // 4 bits
-        d.learn_concept("b", &[1, 2]);        // 2 bits
-        d.learn_concept("c", &[1, 2, 3]);     // 3 bits
+        d.learn_concept("b", &[1, 2]); // 2 bits
+        d.learn_concept("c", &[1, 2, 3]); // 3 bits
 
         let active = vec![1, 2, 3, 4];
         let out = d.decode(&active, 0.0);
@@ -184,9 +184,9 @@ mod tests {
         // a: 4/4=1.0   c: 3/3=1.0   b: 2/2=1.0  — all perfect; only need
         // a stable order. Build something with distinguishable scores:
         let mut d = EngramDictionary::new();
-        d.learn_concept("a", &[1, 2, 3, 4]);                  // 4/4 = 1.0
-        d.learn_concept("b", &[1, 2, 3, 99]);                  // 3/4 = 0.75
-        d.learn_concept("c", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);// 4/10 = 0.4
+        d.learn_concept("a", &[1, 2, 3, 4]); // 4/4 = 1.0
+        d.learn_concept("b", &[1, 2, 3, 99]); // 3/4 = 0.75
+        d.learn_concept("c", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]); // 4/10 = 0.4
         let out = d.decode(&active, 0.0);
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].0, "a");
@@ -207,9 +207,9 @@ mod tests {
     #[test]
     fn decode_top_returns_k_best_results() {
         let mut d = EngramDictionary::new();
-        d.learn_concept("strong", &[1, 2, 3, 4]);              // 4/4 = 1.00
-        d.learn_concept("medium", &[1, 2, 3, 99]);             // 3/4 = 0.75
-        d.learn_concept("weak", &[1, 2, 3, 4, 5, 6, 7, 8]);    // 4/8 = 0.50
+        d.learn_concept("strong", &[1, 2, 3, 4]); // 4/4 = 1.00
+        d.learn_concept("medium", &[1, 2, 3, 99]); // 3/4 = 0.75
+        d.learn_concept("weak", &[1, 2, 3, 4, 5, 6, 7, 8]); // 4/8 = 0.50
 
         let active = vec![1, 2, 3, 4];
         let top1 = d.decode_top(&active, 1);

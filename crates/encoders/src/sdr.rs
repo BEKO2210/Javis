@@ -9,7 +9,10 @@ pub struct Sdr {
 
 impl Sdr {
     pub fn new(n: u32) -> Self {
-        Self { n, indices: Vec::new() }
+        Self {
+            n,
+            indices: Vec::new(),
+        }
     }
 
     /// Build an SDR from raw indices; sorts and dedups in place.
@@ -29,7 +32,11 @@ impl Sdr {
     }
 
     pub fn density(&self) -> f32 {
-        if self.n == 0 { 0.0 } else { self.indices.len() as f32 / self.n as f32 }
+        if self.n == 0 {
+            0.0
+        } else {
+            self.indices.len() as f32 / self.n as f32
+        }
     }
 
     /// Set-union, returning a new SDR. Both inputs must share `n`.
@@ -54,7 +61,10 @@ impl Sdr {
         }
         out.extend_from_slice(&self.indices[i..]);
         out.extend_from_slice(&other.indices[j..]);
-        Sdr { n: self.n, indices: out }
+        Sdr {
+            n: self.n,
+            indices: out,
+        }
     }
 
     /// Cardinality of the intersection — the standard SDR similarity score.

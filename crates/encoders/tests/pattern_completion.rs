@@ -204,12 +204,8 @@ fn r2_completes_partial_cue_after_training() {
     // Phase 2 — training with the full cue, STDP on inside R2.
     brain.regions[1].network.enable_stdp(r2_stdp());
     brain.reset_state();
-    let target_assembly = run_with_cue(
-        &mut brain,
-        &cue_full.indices,
-        TRAINING_MS,
-        TARGET_WINDOW_MS,
-    );
+    let target_assembly =
+        run_with_cue(&mut brain, &cue_full.indices, TRAINING_MS, TARGET_WINDOW_MS);
     idle(&mut brain, COOLDOWN_MS);
 
     // Phase 3 — post-recall with the partial cue, STDP frozen, fresh state.
