@@ -16,8 +16,8 @@
 //!   Plasticity (BTSP, Bittner et al. 2017; Milstein et al. 2024
 //!   PLOS Comp Bio):
 //!
-//!     `Δw_LTP =   a_plus  * pre_trace  * (w_max - w)`
-//!     `Δw_LTD =   a_minus * post_trace * (w - w_min)`
+//!   `Δw_LTP =   a_plus  * pre_trace  * (w_max - w)`
+//!   `Δw_LTD =   a_minus * post_trace * (w - w_min)`
 //!
 //!   The factors `(w_max - w)` and `(w - w_min)` make the update
 //!   shrink as `w` approaches the bound — weights settle into a

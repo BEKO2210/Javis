@@ -16,7 +16,7 @@ impl Sdr {
     pub fn from_indices(n: u32, mut indices: Vec<u32>) -> Self {
         indices.sort_unstable();
         indices.dedup();
-        debug_assert!(indices.last().map_or(true, |&v| v < n));
+        debug_assert!(indices.last().is_none_or(|&v| v < n));
         Self { n, indices }
     }
 

@@ -18,6 +18,10 @@ use crate::neuron::{LifNeuron, NeuronKind};
 use crate::stdp::StdpParams;
 use crate::synapse::Synapse;
 
+fn default_tau_syn_ms() -> f32 {
+    5.0
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Network {
     pub neurons: Vec<LifNeuron>,
@@ -38,6 +42,11 @@ pub struct Network {
     #[serde(skip, default)]
     pub time: f32,
     pub dt: f32,
+    /// Synaptic decay time constant (ms). Default 5 ms — biologically
+    /// in the AMPA range. Settable via [`Network::set_tau_syn_ms`].
+    /// Older snapshots without this field deserialise with the default.
+    #[serde(default = "default_tau_syn_ms")]
+    pub tau_syn_ms: f32,
     pub stdp: Option<StdpParams>,
     pub istdp: Option<IStdpParams>,
     pub homeostasis: Option<HomeostasisParams>,
@@ -62,6 +71,7 @@ impl Network {
             post_trace: Vec::new(),
             time: 0.0,
             dt,
+            tau_syn_ms: default_tau_syn_ms(),
             stdp: None,
             istdp: None,
             homeostasis: None,
@@ -81,8 +91,28 @@ impl Network {
         id
     }
 
+    /// Wire a synapse from `pre` to `post` with the given weight. Both
+    /// indices must reference existing neurons; weight must be finite.
+    /// Self-loops are allowed but rare in cortical wiring.
     pub fn connect(&mut self, pre: usize, post: usize, weight: f32) -> usize {
+        let n = self.neurons.len();
+        assert!(
+            pre < n,
+            "Network::connect: pre {pre} out of bounds (only {n} neurons)",
+        );
+        assert!(
+            post < n,
+            "Network::connect: post {post} out of bounds (only {n} neurons)",
+        );
+        assert!(
+            weight.is_finite(),
+            "Network::connect: weight must be finite, got {weight}",
+        );
         let id = self.synapses.len();
+        assert!(
+            id < u32::MAX as usize,
+            "Network::connect: synapse count exceeds u32 capacity",
+        );
         self.synapses.push(Synapse::new(pre, post, weight));
         self.outgoing[pre].push(id as u32);
         self.incoming[post].push(id as u32);
@@ -103,6 +133,15 @@ impl Network {
         if self.post_trace.len() != n {
             self.post_trace = vec![0.0; n];
         }
+    }
+
+    /// Set the synaptic decay time constant (ms). Must be positive.
+    pub fn set_tau_syn_ms(&mut self, tau_syn_ms: f32) {
+        assert!(
+            tau_syn_ms > 0.0 && tau_syn_ms.is_finite(),
+            "tau_syn_ms must be positive and finite, got {tau_syn_ms}",
+        );
+        self.tau_syn_ms = tau_syn_ms;
     }
 
     pub fn enable_stdp(&mut self, params: StdpParams) {
@@ -156,7 +195,7 @@ impl Network {
         let t = self.time;
 
         // 1) Decay synaptic currents (fixed τ_syn = 5 ms for now).
-        let decay_psc = (-dt / 5.0_f32).exp();
+        let decay_psc = (-dt / self.tau_syn_ms.max(1e-3)).exp();
         for x in self.i_syn.iter_mut() {
             *x *= decay_psc;
         }
@@ -291,7 +330,7 @@ impl Network {
         if let Some(h) = self.homeostasis {
             if h.eta_scale != 0.0
                 && h.apply_every > 0
-                && self.step_counter % h.apply_every as u64 == 0
+                && self.step_counter.is_multiple_of(h.apply_every as u64)
             {
                 self.apply_synaptic_scaling(&h);
             }

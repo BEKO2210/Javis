@@ -138,6 +138,10 @@ impl Brain {
         }
     }
 
+    /// Wire an inter-region axon from `(src_region, src_neuron)` to
+    /// `(dst_region, dst_neuron)`. Bounds-checks every index, the
+    /// weight (finite) and the delay (positive, finite). Panics with
+    /// a clear message on violation rather than corrupting silently.
     pub fn connect(
         &mut self,
         src_region: usize,
@@ -147,8 +151,39 @@ impl Brain {
         weight: f32,
         delay_ms: f32,
     ) -> usize {
+        let n_regions = self.regions.len();
+        assert!(
+            src_region < n_regions,
+            "Brain::connect: src_region {src_region} out of bounds ({n_regions} regions)",
+        );
+        assert!(
+            dst_region < n_regions,
+            "Brain::connect: dst_region {dst_region} out of bounds ({n_regions} regions)",
+        );
+        let n_src = self.regions[src_region].num_neurons();
+        let n_dst = self.regions[dst_region].num_neurons();
+        assert!(
+            src_neuron < n_src,
+            "Brain::connect: src_neuron {src_neuron} out of bounds in region {src_region} ({n_src} neurons)",
+        );
+        assert!(
+            dst_neuron < n_dst,
+            "Brain::connect: dst_neuron {dst_neuron} out of bounds in region {dst_region} ({n_dst} neurons)",
+        );
+        assert!(
+            weight.is_finite(),
+            "Brain::connect: weight must be finite, got {weight}",
+        );
+        assert!(
+            delay_ms > 0.0 && delay_ms.is_finite(),
+            "Brain::connect: delay_ms must be positive and finite, got {delay_ms}",
+        );
         self.ensure_outgoing_capacity(src_region);
         let id = self.inter_edges.len();
+        assert!(
+            id < u32::MAX as usize,
+            "Brain::connect: inter_edge count exceeds u32 capacity",
+        );
         self.inter_edges.push(InterEdge {
             src_region: src_region as u32,
             src_neuron: src_neuron as u32,

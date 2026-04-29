@@ -97,11 +97,12 @@ const KWTA_K: usize = 220;
 const CONTEXT_KWTA_K: usize = 60;
 
 fn r2_stdp() -> StdpParams {
-    let mut s = StdpParams::default();
-    s.a_plus = 0.015;
-    s.a_minus = 0.012;
-    s.w_max = 0.8;
-    s
+    StdpParams {
+        a_plus: 0.015,
+        a_minus: 0.012,
+        w_max: 0.8,
+        ..StdpParams::default()
+    }
 }
 
 fn r2_istdp() -> IStdpParams {
@@ -351,16 +352,11 @@ pub fn run_javis_pipeline_with_threshold(
 ///   literature (Tonegawa, Frankland) and unlocks intra-topic
 ///   associative recall — `magma` brings `volcano`, `lava`, `tectonic`
 ///   along with it because they share the engram of their sentence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FingerprintMode {
+    #[default]
     Forward,
     Contextual,
-}
-
-impl Default for FingerprintMode {
-    fn default() -> Self {
-        FingerprintMode::Forward
-    }
 }
 
 /// Like [`run_javis_pipeline_with_threshold`] but with the contextual

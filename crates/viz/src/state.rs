@@ -63,11 +63,12 @@ pub fn default_corpus() -> Vec<&'static str> {
 }
 
 fn stdp() -> StdpParams {
-    let mut s = StdpParams::default();
-    s.a_plus = 0.015;
-    s.a_minus = 0.012;
-    s.w_max = 0.8;
-    s
+    StdpParams {
+        a_plus: 0.015,
+        a_minus: 0.012,
+        w_max: 0.8,
+        ..StdpParams::default()
+    }
 }
 
 fn istdp() -> IStdpParams {
@@ -425,7 +426,7 @@ impl AppState {
             let _ = tx
                 .send(Event::Phase {
                     name: "fingerprint".into(),
-                    detail: format!("learning new vocabulary"),
+                    detail: "learning new vocabulary".into(),
                 })
                 .await;
         }
@@ -612,9 +613,9 @@ impl AppState {
             .send(Event::Phase {
                 name: "asking".into(),
                 detail: if self.llm.is_real() {
-                    format!("calling Claude (real) with both payloads")
+                    "calling Claude (real) with both payloads".into()
                 } else {
-                    format!("calling Claude (mock) with both payloads")
+                    "calling Claude (mock) with both payloads".into()
                 },
             })
             .await;
