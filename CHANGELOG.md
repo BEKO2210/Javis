@@ -4,7 +4,42 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 23 (AoS → SoA + WS fire-and-forget, 1.4× pipeline)
+## Unreleased — Iteration 24 (validation at scale, honest limits)
+
+### Added
+- `crates/eval/src/scale_corpus.rs` — deterministic
+  template-driven corpus generator across 8 knowledge domains.
+  Reproducible from a `(seed, n_sentences)` pair, no external
+  dataset; ground-truth co-occurrence map is recorded by
+  construction so precision/recall/FP/FN can be measured against
+  a real reference.
+- `crates/eval/src/scale_bench.rs` — `ScaleBrain` train-once /
+  query-many harness. Per-query metrics: token reduction,
+  decoder latency, has-self, false positives (cross-domain
+  bleed), false negatives (missed co-occurrences). Aggregated to
+  a `ScaleSummary` and rendered as Markdown via
+  `ScaleReport::render_markdown()`.
+- `crates/eval/examples/scale_benchmark.rs` — CLI runner with
+  `--sentences`, `--queries`, `--decode-k`, `--seed` flags.
+- `crates/eval/tests/scale_bench_smoke.rs` — small-scale
+  regression test (16 sentences, ~8 s) wired into CI.
+
+### Verified (notes/42)
+| n_sentences | precision | recall | mean reduction | FP / 6 | mean decode |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 1.000 | 0.022 | 34.9 % | 4.75 | 383 µs |
+| 100 | 1.000 | 0.021 | 40.6 % | 4.70 | 603 µs |
+
+Honest publication-grade story (notes/42): the headline
+"96.7 % token reduction" was on a 5-paragraph corpus and is not
+reproducible at scale. On a 100-sentence corpus with 286 unique
+vocabulary words Javis hits 100 % self-recall and ~40 % token
+reduction, but associative-recall drops to ~2 % and
+cross-domain bleed dominates the decoded output. Engram
+capacity at the current R2 size (2000 neurons, KWTA_K=220) is
+the next architectural wall.
+
+## Iteration 23 — AoS → SoA + WS fire-and-forget, 1.4× pipeline
 
 ### Changed (`snn-core`)
 - **AoS → SoA refactor.** `LifNeuron` now holds *only* `params` and

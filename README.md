@@ -255,7 +255,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 41 research notes — every decision documented
+├── notes/          ─ 42 research notes — every decision documented
 ├── scripts/        ─ End-to-end sanity check + load test (Python)
 ├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
@@ -330,6 +330,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 39 | Profile-driven LIF rewrite: pre-summed channel buffer, 1.5× faster step |
 | 40 | Pipeline profile: brain compute is 77 % of recall — not Amdahl-bound yet |
 | 41 | AoS → SoA refactor + WS fire-and-forget: 1.40× pipeline, 2× LIF total |
+| 42 | Validation-at-scale: honest 100-sentence benchmark, FP/FN/recall metrics |
 
 ---
 
