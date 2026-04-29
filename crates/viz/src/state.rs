@@ -29,7 +29,12 @@ use llm::LlmClient;
 // ----------------------------------------------------------------------
 
 pub const DT: f32 = 0.1;
-pub const R1_N: usize = 1000;
+// Iter 26: R1 / encoder bumped 1 000 → 4 000. Same K=20 fingerprint
+// drops the encoder sparsity from 2 % to 0.5 %, which lets a 286-word
+// vocabulary land 5 720 active bits across 4 000 neurons (1.4 ×
+// oversubscription) instead of 1 000 neurons (5.7 × oversubscription).
+// See notes/44 for the cross-bleed measurement that motivated this.
+pub const R1_N: usize = 4000;
 pub const R2_N: usize = 2000;
 pub const R2_INH_FRAC: f32 = 0.20;
 pub const R2_P_CONNECT: f32 = 0.10;
@@ -138,13 +143,59 @@ fn build_memory_region(seed: u64) -> Region {
     region
 }
 
+/// Balanced-distinct R1 → R2 forward wiring (iter 26).
+///
+/// Replaces the previous `random with replacement` scheme. Every R1
+/// neuron now has *exactly* FAN_OUT *distinct* R2 targets, and R2's
+/// per-neuron in-degree is held within ±1 of the ideal (R1_N ·
+/// FAN_OUT / R2_N). Eliminates the "hub R2 neurons" that the
+/// random-uniform scheme produces and that were a likely cause of
+/// the cross-bleed measured in notes/42.
 fn wire_forward(brain: &mut Brain, seed: u64) {
     let mut rng = Rng::new(seed);
     let r2_size = brain.regions[1].num_neurons();
+    let target_in_degree = (R1_N * FAN_OUT) / r2_size;
+    let mut in_degree = vec![0u32; r2_size];
+    let mut taken = vec![false; r2_size];
+
     for src in 0..R1_N {
-        for _ in 0..FAN_OUT {
+        // Reset per-source "taken" mask so each R1 neuron picks
+        // FAN_OUT distinct R2 destinations.
+        for slot in taken.iter_mut() {
+            *slot = false;
+        }
+
+        let mut picked = 0;
+        let mut attempts = 0;
+        // Attempt phase: prefer R2 targets that are still under the
+        // ideal in-degree cap. Bound the loop so a particularly
+        // unlucky RNG doesn't spin.
+        let attempt_cap = FAN_OUT * 32;
+        let cap = target_in_degree as u32 + 1;
+        while picked < FAN_OUT && attempts < attempt_cap {
             let dst = (rng.next_u64() as usize) % r2_size;
-            brain.connect(0, src, 1, dst, INTER_WEIGHT, INTER_DELAY_MS);
+            if !taken[dst] && in_degree[dst] < cap {
+                taken[dst] = true;
+                in_degree[dst] += 1;
+                brain.connect(0, src, 1, dst, INTER_WEIGHT, INTER_DELAY_MS);
+                picked += 1;
+            }
+            attempts += 1;
+        }
+        // Fallback phase: linear scan to top up if the random phase
+        // could not find enough under-capacity targets.
+        if picked < FAN_OUT {
+            for dst in 0..r2_size {
+                if picked >= FAN_OUT {
+                    break;
+                }
+                if !taken[dst] {
+                    taken[dst] = true;
+                    in_degree[dst] += 1;
+                    brain.connect(0, src, 1, dst, INTER_WEIGHT, INTER_DELAY_MS);
+                    picked += 1;
+                }
+            }
         }
     }
 }

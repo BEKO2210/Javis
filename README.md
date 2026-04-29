@@ -323,7 +323,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 43 research notes — every decision documented
+├── notes/          ─ 44 research notes — every decision documented
 ├── scripts/        ─ End-to-end sanity check + load test (Python)
 ├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
@@ -399,7 +399,8 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 40 | Pipeline profile: brain compute is 77 % of recall — not Amdahl-bound yet |
 | 41 | AoS → SoA refactor + WS fire-and-forget: 1.40× pipeline, 2× LIF total |
 | 42 | Validation-at-scale: honest 100-sentence benchmark, FP/FN/recall metrics |
-| 43 | Topology scaling: R2 2 000→10 000, sparser connectivity, retuned iSTDP |
+| 43 | Topology scaling experiment + revert: R2 5× did not fix cross-bleed |
+| 44 | Encoder grown 1 000→4 000 + balanced forward wiring (kept, cost-neutral) |
 
 ---
 

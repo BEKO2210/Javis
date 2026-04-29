@@ -65,7 +65,9 @@ pub fn naive_rag_lookup(corpus: &[&str], query: &str) -> Option<String> {
 // ----------------------------------------------------------------------
 
 const DT: f32 = 0.1;
-const R1_N: usize = 1000;
+// Iter 26: R1 / encoder grown 1 000 → 4 000 to drop SDR sparsity from
+// 2 % to 0.5 % — fixes encoder-collision side of cross-bleed.
+const R1_N: usize = 4000;
 const R2_N: usize = 2000;
 const R2_INH_FRAC: f32 = 0.20;
 const R2_P_CONNECT: f32 = 0.10;
@@ -171,13 +173,45 @@ fn build_memory_region(seed: u64) -> Region {
     region
 }
 
+/// Balanced-distinct R1 → R2 forward wiring (iter 26). Mirrors
+/// [`viz::state::wire_forward`] — see notes/44.
 fn wire_forward(brain: &mut Brain, seed: u64) {
     let mut rng = Rng::new(seed);
     let r2_size = brain.regions[1].num_neurons();
+    let target_in_degree = (R1_N * FAN_OUT) / r2_size;
+    let mut in_degree = vec![0u32; r2_size];
+    let mut taken = vec![false; r2_size];
+    let cap = target_in_degree as u32 + 1;
+    let attempt_cap = FAN_OUT * 32;
+
     for src in 0..R1_N {
-        for _ in 0..FAN_OUT {
+        for slot in taken.iter_mut() {
+            *slot = false;
+        }
+        let mut picked = 0;
+        let mut attempts = 0;
+        while picked < FAN_OUT && attempts < attempt_cap {
             let dst = (rng.next_u64() as usize) % r2_size;
-            brain.connect(0, src, 1, dst, INTER_WEIGHT, INTER_DELAY_MS);
+            if !taken[dst] && in_degree[dst] < cap {
+                taken[dst] = true;
+                in_degree[dst] += 1;
+                brain.connect(0, src, 1, dst, INTER_WEIGHT, INTER_DELAY_MS);
+                picked += 1;
+            }
+            attempts += 1;
+        }
+        if picked < FAN_OUT {
+            for dst in 0..r2_size {
+                if picked >= FAN_OUT {
+                    break;
+                }
+                if !taken[dst] {
+                    taken[dst] = true;
+                    in_degree[dst] += 1;
+                    brain.connect(0, src, 1, dst, INTER_WEIGHT, INTER_DELAY_MS);
+                    picked += 1;
+                }
+            }
         }
     }
 }

@@ -4,7 +4,52 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 25 (topology-scaling experiment, reverted)
+## Unreleased — Iteration 26 (encoder + forward-wiring upgrade, kept)
+
+Hypothesis: cross-bleed comes from upstream of R2 — encoder hash-
+oversubscription and random-uniform forward wiring. Tested both
+fixes; quality numbers turned out identical to iter 25 (i.e.,
+not a quality breakthrough), but iter 26 is **cost-neutral** and
+the structural changes are cleaner regardless.
+
+### Changed
+- `R1_N` and `ENC_N`: 1 000 → **4 000**. SDR sparsity drops from
+  2 % to 0.5 %; a 286-word vocabulary now lands at 1.4× bit-
+  oversubscription instead of 5.7×.
+- `wire_forward` (in `viz::state`, `eval::token_efficiency`,
+  `eval::scale_bench`): random-with-replacement →
+  **balanced-distinct**. Each R1 neuron has exactly FAN_OUT
+  *distinct* R2 targets; per-R2 in-degree is held at the ideal
+  (R1_N · FAN_OUT / R2_N) ± 1. Eliminates the "hub R2 neurons"
+  produced by the Poisson-distributed in-degrees of the
+  random-uniform scheme.
+
+### Verified
+| metric | iter 24 baseline | iter 25 (R2=10k) | iter 26 (this iter) |
+| --- | ---: | ---: | ---: |
+| Token reduction | 40.6 % | 40.6 % | 40.6 % |
+| Self-recall | 1.000 | 1.000 | 1.000 |
+| Associative recall | 0.021 | 0.017 | 0.017 |
+| Mean FP / 6 decoded | 4.70 | 4.77 | 4.77 |
+| Wall-time (100 sentences) | 73 s | 577 s | **70 s** |
+
+Three structurally very different topology interventions all
+produce bit-identical quality outcomes. That is a strong
+datapoint: the ~2 % associative-recall ceiling is not a
+topology pathology — it's a property of the
+`FingerprintMode::Forward` algorithm. Per-word fingerprinting
+discards the training-time co-activity context. The next
+iteration should test `FingerprintMode::Contextual` (which
+already exists in `token_efficiency.rs`) in the scale benchmark.
+
+### Decision
+Unlike iter 25, iter 26 is **kept**. The new constants and
+wiring are cost-neutral (70 s vs 73 s baseline), give a 4×
+larger encoder space (forward-compatible with bigger vocabs),
+and produce a load-balanced forward graph (no hub R2 neurons).
+113 / 113 tests still pass.
+
+## Iteration 25 — topology-scaling experiment, reverted
 
 Hypothesis: scale R2 from 2 000 → 10 000 neurons + drop sparsity
 from 11 % → 1 % + retune iSTDP to attack the cross-bleed wall
