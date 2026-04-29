@@ -4,7 +4,31 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 18 (concurrency cap)
+## Unreleased — Iteration 19 (snapshot schema versioning)
+
+### Added
+- Snapshot schema bumped to v2; new mandatory `metadata` block
+  records `created_at_unix` and `javis_version` for ops triage.
+- Migration framework: a `MIGRATIONS: &[(u32, MigrationFn)]` table
+  walks the chain on load, so a snapshot at version `N` is parsed
+  as `N`, transformed into `N+1`, … into the current version
+  before the canonical struct is deserialised. Adding v3 later
+  needs only one new entry in the table.
+- `migrate_v1_to_v2` injects the synthesised metadata
+  (`created_at_unix: 0`, `javis_version: "migrated-from-v1"`) so
+  pre-v2 snapshots load on a v2 build.
+- Refusing future versions with a clear error message — we cannot
+  downgrade safely.
+- Four new tests in `crates/viz/tests/snapshot_migration.rs`:
+  current-version round-trip, v1-loads-through-migration,
+  future-version-rejected, missing-version-field-rejected.
+
+### Changed
+- `load_from_file` now logs the schema migration explicitly when
+  it happens (`from_version`, `to_version` fields), so operators
+  see in their logs that an old snapshot was upgraded.
+
+## Iteration 18 — concurrency cap
 
 ### Added
 - `Semaphore`-based cap on simultaneous WebSocket sessions, default

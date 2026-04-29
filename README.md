@@ -9,7 +9,7 @@
 [![Rust edition 2021](https://img.shields.io/badge/rust-edition%202021-CE422B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3a86ff)](#license)
 [![CI](https://img.shields.io/github/actions/workflow/status/BEKO2210/Javis/ci.yml?branch=main&label=ci&logo=github)](.github/workflows/ci.yml)
-[![Tests 100/100](https://img.shields.io/badge/tests-100%2F100%20passing-3fb950)](#tests)
+[![Tests 104/104](https://img.shields.io/badge/tests-104%2F104%20passing-3fb950)](#tests)
 [![Clippy clean](https://img.shields.io/badge/clippy-0%20warnings-3fb950)](#tests)
 [![MSRV 1.86](https://img.shields.io/badge/MSRV-1.86-CE422B?logo=rust&logoColor=white)](#tests)
 [![Token reduction 96.7%25](https://img.shields.io/badge/token%20reduction-96.7%25-ffd166)](#token-efficiency)
@@ -252,7 +252,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 36 research notes — every decision documented
+├── notes/          ─ 37 research notes — every decision documented
 ├── scripts/        ─ End-to-end sanity check + load test (Python)
 ├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
@@ -272,9 +272,9 @@ cargo test --release
 | `encoders` | 22 | SDR union/overlap, hash determinism, top-k decode, injection, full pattern completion |
 | `eval` | 12 | RAG-vs-Javis token efficiency, Wikipedia scaling, intra-topic recall, contextual mode |
 | `llm` | 3 | Anthropic adapter mock contract, token heuristic |
-| `viz` | 12 | WebSocket smoke, train+recall, ask both, snapshot round-trip, `/health` + `/ready` probes, `/metrics` exposition, concurrency cap (503 + Retry-After) |
+| `viz` | 16 | WebSocket smoke, train+recall, ask both, snapshot round-trip, `/health` + `/ready`, `/metrics`, concurrency cap, snapshot schema migration (v1→v2) |
 | Doc-tests | 3 | Public quick-start examples in `snn-core` and `encoders` |
-| **Total** | **100** | with **zero clippy warnings** workspace-wide |
+| **Total** | **104** | with **zero clippy warnings** workspace-wide |
 
 ---
 
@@ -322,6 +322,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 34 | End-to-end sanity script + Grafana datasource UID fix |
 | 35 | Load test: ~141 recalls/sec sustained, Mutex-serialised, no leak |
 | 36 | Concurrency cap: Semaphore + 503/Retry-After, `JAVIS_MAX_CONCURRENT_SESSIONS` |
+| 37 | Snapshot schema versioning: v2 with metadata, migration chain, v1 backward-compat |
 
 ---
 

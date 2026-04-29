@@ -331,14 +331,20 @@ struct Inner {
     trained_sentences: Vec<String>,
 }
 
-/// On-disk wire format for an Javis snapshot. Matches `Inner` exactly
-/// so the round-trip is just `serde_json::{from,to}_writer`. Schema is
-/// versioned so a future format change can fail loudly rather than
-/// silently reading stale data.
+/// On-disk wire format for an Javis snapshot. Matches `Inner` plus a
+/// small block of metadata so a future operator can tell when and by
+/// which build a snapshot was written. The schema is explicitly
+/// versioned; older formats are upgraded through the migration chain
+/// in [`migrate_snapshot`] before deserialisation.
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
-    /// Bumped any time the schema becomes incompatible.
+    /// Bumped any time the schema becomes incompatible. Loading a
+    /// snapshot with `version != SNAPSHOT_VERSION` triggers the
+    /// migration chain; loading a snapshot with `version >
+    /// SNAPSHOT_VERSION` is a hard error (we cannot downgrade).
     version: u32,
+    /// Provenance information; introduced in v2.
+    metadata: SnapshotMetadata,
     brain: Brain,
     dict: EngramDictionary,
     encoder: TextEncoder,
@@ -346,7 +352,85 @@ struct Snapshot {
     trained_sentences: Vec<String>,
 }
 
-const SNAPSHOT_VERSION: u32 = 1;
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SnapshotMetadata {
+    /// UNIX seconds at which the snapshot was first written; 0 means
+    /// the snapshot was migrated from a pre-v2 file that did not
+    /// record this.
+    pub created_at_unix: u64,
+    /// Free-form identifier of the Javis build that wrote the
+    /// snapshot. For migrated snapshots this is the literal string
+    /// `"migrated-from-v1"`.
+    pub javis_version: String,
+}
+
+/// Current schema version. Incremented in lock-step with the
+/// migration table in [`migrate_snapshot`].
+pub const SNAPSHOT_VERSION: u32 = 2;
+
+/// Type-erased migration step. Takes a `Value` describing a snapshot
+/// at version `N` and returns the same logical snapshot at version
+/// `N+1`. Failing with `String` keeps error reporting cheap; the
+/// caller wraps it in an `io::Error` for the load API.
+type MigrationFn = fn(serde_json::Value) -> Result<serde_json::Value, String>;
+
+/// Migration registry. Each entry is `(from_version, fn)`. The chain
+/// is walked top-to-bottom by [`migrate_snapshot`], applying each
+/// step exactly once until the value is at [`SNAPSHOT_VERSION`]. To
+/// add a v3 schema later, append `(2, migrate_v2_to_v3)` and bump
+/// `SNAPSHOT_VERSION` to 3.
+const MIGRATIONS: &[(u32, MigrationFn)] = &[(1, migrate_v1_to_v2)];
+
+/// Walk the migration chain on `value` from `from_version` up to
+/// [`SNAPSHOT_VERSION`]. Returns the migrated value or a string
+/// describing the first failure.
+fn migrate_snapshot(
+    mut value: serde_json::Value,
+    from_version: u32,
+) -> Result<serde_json::Value, String> {
+    if from_version > SNAPSHOT_VERSION {
+        return Err(format!(
+            "snapshot version {from_version} is newer than this build supports \
+             (max {SNAPSHOT_VERSION}); refusing to downgrade",
+        ));
+    }
+    let mut current = from_version;
+    while current < SNAPSHOT_VERSION {
+        let step = MIGRATIONS
+            .iter()
+            .find(|(from, _)| *from == current)
+            .map(|(_, f)| f)
+            .ok_or_else(|| format!("no migration registered for version {current}"))?;
+        value = step(value)?;
+        current += 1;
+        // Bump the embedded version so the post-loop deserialise sees
+        // a self-consistent document.
+        if let serde_json::Value::Object(ref mut map) = value {
+            map.insert("version".into(), serde_json::Value::from(current));
+        }
+    }
+    Ok(value)
+}
+
+/// v1 → v2: introduce the mandatory `metadata` block.
+///
+/// v1 had no metadata; we backfill `created_at_unix = 0` and
+/// `javis_version = "migrated-from-v1"` so an operator can spot in
+/// `/ready` (or by inspecting the file) that this snapshot did not
+/// originate from a v2-or-later writer.
+fn migrate_v1_to_v2(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let map = value
+        .as_object_mut()
+        .ok_or_else(|| "v1 snapshot root is not a JSON object".to_string())?;
+    map.insert(
+        "metadata".into(),
+        serde_json::json!({
+            "created_at_unix": 0,
+            "javis_version": "migrated-from-v1",
+        }),
+    );
+    Ok(value)
+}
 
 impl AppState {
     pub fn new() -> Self {
@@ -656,6 +740,13 @@ impl AppState {
         let g = self.inner.lock().await;
         let snap = Snapshot {
             version: SNAPSHOT_VERSION,
+            metadata: SnapshotMetadata {
+                created_at_unix: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                javis_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
             brain: clone_brain(&g.brain),
             dict: g.dict.clone(),
             encoder: g.encoder.clone(),
@@ -685,16 +776,30 @@ impl AppState {
         let path_ref = path.as_ref().to_path_buf();
         let bytes = tokio::fs::read(&path_ref).await?;
         let bytes_len = bytes.len();
-        let mut snap: Snapshot = serde_json::from_slice(&bytes).map_err(io_err)?;
-        if snap.version != SNAPSHOT_VERSION {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "snapshot version {} unsupported (expected {})",
-                    snap.version, SNAPSHOT_VERSION
-                ),
-            ));
-        }
+
+        // Two-step parse: first into a generic Value so we can read
+        // the version field without binding the schema, then through
+        // the migration chain, then into the canonical Snapshot
+        // struct. This is what lets a v1 file load on a v2 build.
+        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(io_err)?;
+        let from_version = value
+            .get("version")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "snapshot is missing required `version` field",
+                )
+            })?;
+        let migrated_from_version = if from_version != SNAPSHOT_VERSION {
+            Some(from_version)
+        } else {
+            None
+        };
+        let value = migrate_snapshot(value, from_version)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let mut snap: Snapshot = serde_json::from_value(value).map_err(io_err)?;
         snap.brain.ensure_transient_state();
 
         let sentences = snap.trained_sentences.len();
@@ -713,14 +818,27 @@ impl AppState {
         metrics::gauge!("javis_brain_sentences").set(sentences as f64);
         metrics::gauge!("javis_brain_words").set(words as f64);
 
-        info!(
-            path = %path_ref.display(),
-            bytes = bytes_len,
-            sentences,
-            words,
-            elapsed_ms = elapsed.as_secs_f32() * 1000.0,
-            "snapshot loaded",
-        );
+        if let Some(from) = migrated_from_version {
+            info!(
+                path = %path_ref.display(),
+                from_version = from,
+                to_version = SNAPSHOT_VERSION,
+                bytes = bytes_len,
+                sentences,
+                words,
+                elapsed_ms = elapsed.as_secs_f32() * 1000.0,
+                "snapshot loaded after schema migration",
+            );
+        } else {
+            info!(
+                path = %path_ref.display(),
+                bytes = bytes_len,
+                sentences,
+                words,
+                elapsed_ms = elapsed.as_secs_f32() * 1000.0,
+                "snapshot loaded",
+            );
+        }
         Ok(())
     }
 
