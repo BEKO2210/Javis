@@ -4,7 +4,75 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 23 (AoS → SoA + WS fire-and-forget, 1.4× pipeline)
+## Unreleased — Iteration 25 (topology scaling: R2 → 10 000)
+
+### Changed
+- `R2_N`: 2 000 → **10 000** (5× more orthogonal space).
+- `R2_P_CONNECT`: 0.10 → **0.03** (sparser recurrent; keeps
+  synapse count manageable at 3 M instead of 10 M).
+- `KWTA_K`: 220 → **100** (1 % sparsity instead of 11 %; baseline
+  random-overlap probability drops by an order of magnitude).
+- `CONTEXT_KWTA_K`: 60 → 30 (proportional).
+- `FAN_OUT` (R1→R2): 10 → 30 (preserves forward drive density).
+- `IStdpParams.a_plus`: 0.05 → 0.10 ; `a_minus`: 0.55 → 1.10 ;
+  `w_max`: 5 → 8. More aggressive LTD on co-active E-targets so
+  inhibitory plasticity can build separating walls in the
+  larger pool.
+- Same constant set propagated to `viz::state`, `eval::token_efficiency`,
+  `eval::scale_bench`.
+
+### Verified
+All 113 existing tests still pass at the new topology without
+threshold adjustments. `wiki_benchmark` (5-paragraph corpus)
+preserves its ≥ 70 % token-reduction guarantee on the larger
+brain. Re-run of the 100-sentence scale benchmark
+(notes/43): metrics will be appended once the run completes.
+
+### Caveats
+- Single-region snapshot file size grows from ~30 MB to
+  ~120-150 MB at this topology. Snapshot compression is a
+  follow-up if it becomes a deploy issue.
+- Brain-step wall-time at R2=10 000 is ~5× the iter-24 baseline.
+  Pipeline profile and load-test numbers (notes/40, /41) are
+  iter-24 baselines and will need re-running on the new
+  topology.
+
+## Iteration 24 — validation at scale, honest limits
+
+### Added
+- `crates/eval/src/scale_corpus.rs` — deterministic
+  template-driven corpus generator across 8 knowledge domains.
+  Reproducible from a `(seed, n_sentences)` pair, no external
+  dataset; ground-truth co-occurrence map is recorded by
+  construction so precision/recall/FP/FN can be measured against
+  a real reference.
+- `crates/eval/src/scale_bench.rs` — `ScaleBrain` train-once /
+  query-many harness. Per-query metrics: token reduction,
+  decoder latency, has-self, false positives (cross-domain
+  bleed), false negatives (missed co-occurrences). Aggregated to
+  a `ScaleSummary` and rendered as Markdown via
+  `ScaleReport::render_markdown()`.
+- `crates/eval/examples/scale_benchmark.rs` — CLI runner with
+  `--sentences`, `--queries`, `--decode-k`, `--seed` flags.
+- `crates/eval/tests/scale_bench_smoke.rs` — small-scale
+  regression test (16 sentences, ~8 s) wired into CI.
+
+### Verified (notes/42)
+| n_sentences | precision | recall | mean reduction | FP / 6 | mean decode |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 1.000 | 0.022 | 34.9 % | 4.75 | 383 µs |
+| 100 | 1.000 | 0.021 | 40.6 % | 4.70 | 603 µs |
+
+Honest publication-grade story (notes/42): the headline
+"96.7 % token reduction" was on a 5-paragraph corpus and is not
+reproducible at scale. On a 100-sentence corpus with 286 unique
+vocabulary words Javis hits 100 % self-recall and ~40 % token
+reduction, but associative-recall drops to ~2 % and
+cross-domain bleed dominates the decoded output. Engram
+capacity at the current R2 size (2000 neurons, KWTA_K=220) is
+the next architectural wall.
+
+## Iteration 23 — AoS → SoA + WS fire-and-forget, 1.4× pipeline
 
 ### Changed (`snn-core`)
 - **AoS → SoA refactor.** `LifNeuron` now holds *only* `params` and

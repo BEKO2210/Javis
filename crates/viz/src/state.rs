@@ -30,10 +30,19 @@ use llm::LlmClient;
 
 pub const DT: f32 = 0.1;
 pub const R1_N: usize = 1000;
-pub const R2_N: usize = 2000;
+/// R2 layer size — bumped from 2000 (iter ≤24) to 10 000 (iter 25)
+/// to give engrams a much larger orthogonal space. See notes/43 for
+/// the cross-bleed problem this addresses.
+pub const R2_N: usize = 10_000;
 pub const R2_INH_FRAC: f32 = 0.20;
-pub const R2_P_CONNECT: f32 = 0.10;
-pub const FAN_OUT: usize = 10;
+/// Sparser recurrent connectivity (was 0.10). Keeps the synapse
+/// count under control at the new R2 size: 10_000² × 0.03 = 3 M
+/// synapses, vs 10_000² × 0.10 = 10 M which would dominate memory
+/// and snapshot file size.
+pub const R2_P_CONNECT: f32 = 0.03;
+/// Forward fan-out R1 → R2. Bumped from 10 (iter ≤24) so the input
+/// drive still excites a ≥ 1 % slice of the new R2.
+pub const FAN_OUT: usize = 30;
 pub const INTER_WEIGHT: f32 = 2.0;
 pub const INTER_DELAY_MS: f32 = 2.0;
 pub const ENC_N: u32 = R1_N as u32;
@@ -42,7 +51,11 @@ pub const DRIVE_NA: f32 = 200.0;
 pub const TRAINING_MS: f32 = 150.0;
 pub const COOLDOWN_MS: f32 = 50.0;
 pub const RECALL_MS: f32 = 30.0;
-pub const KWTA_K: usize = 220;
+/// kWTA cap for engram fingerprints. 100 / 10 000 = 1 % sparsity,
+/// down from 11 % (220 / 2000) — engrams are now mathematically
+/// far less likely to overlap by chance, which is the whole point
+/// of this iteration.
+pub const KWTA_K: usize = 100;
 pub const DECODE_THRESHOLD: f32 = 0.50;
 
 const BATCH_MS: f32 = 1.0;
@@ -73,12 +86,18 @@ fn stdp() -> StdpParams {
 }
 
 fn istdp() -> IStdpParams {
+    // Aggressive LTD on co-active E-targets: with R2 = 10 000 and
+    // K = 100 the inhibitory layer has to silence a much larger sea
+    // of neurons that should *not* be part of the engram. a_minus
+    // bumped from 0.55 (iter ≤24) to 1.10; a_plus also raised so
+    // pairs of (silent E, firing I) carve baseline-suppressing
+    // weights faster.
     IStdpParams {
-        a_plus: 0.05,
-        a_minus: 0.55,
+        a_plus: 0.10,
+        a_minus: 1.10,
         tau_minus: 30.0,
         w_min: 0.0,
-        w_max: 5.0,
+        w_max: 8.0,
     }
 }
 

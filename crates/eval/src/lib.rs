@@ -6,9 +6,13 @@
 //! would each system actually send to a downstream LLM for a given
 //! query?
 
+pub mod scale_bench;
+pub mod scale_corpus;
 pub mod token_efficiency;
 pub mod wiki_corpus;
 
+pub use scale_bench::{ScaleBrain, ScaleQueryResult, ScaleReport, ScaleSummary};
+pub use scale_corpus::{build_scale_corpus, ScaleCorpus};
 pub use wiki_corpus::{wiki_corpus, wiki_queries};
 
 /// Crude token estimate. Modern BPE tokenisers (GPT, Claude) average

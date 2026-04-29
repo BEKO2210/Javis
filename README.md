@@ -4,15 +4,20 @@
 
 <br/>
 
-**A token-efficient memory layer for LLM agents, built as a spiking neural network in Rust.**
+**An associative SNN memory co-processor for LLM agents, built in Rust.**
+
+A spiking neural network that stores knowledge as emergent cell assemblies and
+retrieves it through pattern completion. Sits between your retrieval layer and
+your LLM, returning a few decoded concepts instead of full document chunks.
 
 [![Rust edition 2021](https://img.shields.io/badge/rust-edition%202021-CE422B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3a86ff)](#license)
 [![CI](https://img.shields.io/github/actions/workflow/status/BEKO2210/Javis/ci.yml?branch=main&label=ci&logo=github)](.github/workflows/ci.yml)
-[![Tests 108/108](https://img.shields.io/badge/tests-108%2F108%20passing-3fb950)](#tests)
+[![Tests 113/113](https://img.shields.io/badge/tests-113%2F113%20passing-3fb950)](#tests)
 [![Clippy clean](https://img.shields.io/badge/clippy-0%20warnings-3fb950)](#tests)
 [![MSRV 1.86](https://img.shields.io/badge/MSRV-1.86-CE422B?logo=rust&logoColor=white)](#tests)
-[![Token reduction 96.7%25](https://img.shields.io/badge/token%20reduction-96.7%25-ffd166)](#token-efficiency)
+[![Self-recall 100%25](https://img.shields.io/badge/self--recall-100%25-3fb950)](#performance-profile)
+[![Token reduction 35-45%25](https://img.shields.io/badge/token%20reduction-35--45%25-ffd166)](#performance-profile)
 [![Observability](https://img.shields.io/badge/observability-tracing%20%C2%B7%20Prometheus-7aa2ff)](#production-readiness)
 [![Container](https://img.shields.io/badge/container-Docker%20%2B%20Compose-2496ed?logo=docker&logoColor=white)](#run-with-docker)
 [![Bio inspired](https://img.shields.io/badge/bio--inspired-LIF%20%C2%B7%20STDP%20%C2%B7%20iSTDP%20%C2%B7%20BTSP-62d6ff)](#plasticity)
@@ -37,11 +42,66 @@ Naive RAG:   "Rust is a systems programming language focused on memory
               safety and ownership; the borrow checker prevents data races
               at compile time."                                       63 tokens
 Javis:       "rust"                                                    2 tokens
-                                                                     ─ 96.8% ─
 ```
 
-Numbers verified by an integration test on a 5-topic Wikipedia-shaped corpus
-(see [`crates/eval/tests/wiki_benchmark.rs`](crates/eval/tests/wiki_benchmark.rs)).
+That gap is the whole pitch. Whether it holds at scale — and where it stops
+holding — is reported below in plain numbers, not slogans.
+
+---
+
+## Performance profile
+
+Measured on a deterministic 100-sentence / 286-vocabulary benchmark
+(`cargo run --release -p eval --example scale_benchmark -- --sentences 100`).
+Reproducible from a single `--seed`; no external dataset, no network.
+
+### What survives
+
+| Property | Value |
+| --- | ---: |
+| **Self-recall** (query concept always retrievable) | **100 %** |
+| **Token reduction** vs naïve-RAG baseline | **35 – 45 %** |
+| **Decoder latency** at vocab ≤ 300 | sub-millisecond |
+| **Self-recall test suite** | 113 / 113 passing |
+
+The first row is the architectural claim that Javis stands behind: train a
+concept once, recall it deterministically. The second row is the headline
+number — modest but real, on a non-toy corpus. The third row makes Javis
+practical as a co-processor in front of an LLM.
+
+### Known limits (iter ≤24 baseline)
+
+These are the failure modes a senior reviewer would find on day one. Better
+to publish them than have someone tweet them.
+
+| Limit | Measured value | Mechanism |
+| --- | ---: | --- |
+| **Associative recall** | ≈ 2 % | Of every word that genuinely co-occurs with the query in the corpus, only ~ 2 % is decoded. Javis returns the query plus 5 noise words, not the expected 5–10 related concepts. |
+| **Cross-domain bleed** | 4.7 / 6 decoded words | At N > 50 distinct concepts the R2 layer (2 000 neurons, K=220, 11 % sparsity) saturates; iSTDP can no longer build separating walls between engrams, so unrelated domains leak into each other. |
+| **Engram capacity** | ≈ 50 concepts | Geometric upper bound from R2_size / KWTA_K = 2 000 / 220 ≈ 9 fully-orthogonal engrams; with overlap-tolerance about 50 work cleanly before interference dominates. |
+
+### What changes in iter 25 (this branch)
+
+R2 was scaled from 2 000 → 10 000 neurons, recurrent connectivity sparsened
+from p=0.10 → p=0.03, KWTA from 220 → 100 (1 % sparsity), iSTDP retuned for
+aggressive LTD on co-active E-targets. The 113 existing tests still pass at
+the new topology. Updated cross-bleed and recall numbers are in
+[`notes/43-topology-scaling.md`](notes/43-topology-scaling.md) once the
+benchmark run completes.
+
+### Reproducibility
+
+```sh
+# Train + evaluate on 100 sentences. ~5 min wall on R2=10 000.
+cargo run --release -p eval --example scale_benchmark \
+    -- --sentences 100 --queries 30 --decode-k 6 --seed 42
+
+# Smaller smoke run for CI / quick checks (~30 s):
+cargo run --release -p eval --example scale_benchmark -- --sentences 32
+```
+
+The benchmark prints a Markdown summary table; redirect stdout to capture it
+verbatim into a release note.
 
 ---
 
@@ -164,16 +224,21 @@ the trade-offs are documented in [`notes/`](notes).
 
 ---
 
-## Token efficiency
+## Token efficiency — the small-corpus picture
 
-Two integration tests measure Javis against a naive RAG baseline:
+Two integration tests measure Javis against a naïve RAG baseline on small,
+hand-curated corpora. The numbers here are favourable to Javis (each query
+returns a single decoded concept, full RAG returns the whole paragraph) and
+are the *floor* of the architecture's reach, not its ceiling:
 
 | Corpus | Mean RAG | Mean Javis | Mean reduction |
 | --- | ---: | ---: | ---: |
-| 3 paragraphs about programming languages | 27 tok | 2.3 tok | **91.3 %** |
-| 5 Wikipedia-shaped paragraphs (geology, transport, biology, …) | 60 tok | 2.0 tok | **96.6 %** |
+| 3 paragraphs about programming languages | 27 tok | 2.3 tok | 91.3 % |
+| 5 Wikipedia-shaped paragraphs (geology, transport, biology, …) | 60 tok | 2.0 tok | 96.6 % |
 
-Run them yourself:
+These are the *ideal-conditions* numbers. For the benchmark that includes
+every realistic failure mode — cross-bleed, missed co-occurrences, decoder
+saturation — read [Performance profile](#performance-profile) above.
 
 ```sh
 cargo test -p eval --release token_efficiency  -- --nocapture
@@ -255,7 +320,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 41 research notes — every decision documented
+├── notes/          ─ 43 research notes — every decision documented
 ├── scripts/        ─ End-to-end sanity check + load test (Python)
 ├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
@@ -273,11 +338,11 @@ cargo test --release
 | --- | ---: | --- |
 | `snn-core` | 54 | LIF dynamics, STDP & iSTDP, homeostasis, BTSP soft bounds, E/I balance, multi-region routing, snapshot serde, assembly formation, bounds-checked APIs, heap pending queue, AMPA/NMDA/GABA channels, read-only step equivalence |
 | `encoders` | 22 | SDR union/overlap, hash determinism, top-k decode, injection, full pattern completion |
-| `eval` | 12 | RAG-vs-Javis token efficiency, Wikipedia scaling, intra-topic recall, contextual mode |
+| `eval` | 13 | RAG-vs-Javis token efficiency, Wikipedia scaling, intra-topic recall, contextual mode, scale-bench smoke |
 | `llm` | 3 | Anthropic adapter mock contract, token heuristic |
 | `viz` | 16 | WebSocket smoke, train+recall, ask both, snapshot round-trip, `/health` + `/ready`, `/metrics`, concurrency cap, snapshot schema migration (v1→v2) |
 | Doc-tests | 3 | Public quick-start examples in `snn-core` and `encoders` |
-| **Total** | **108** | with **zero clippy warnings** workspace-wide |
+| **Total** | **113** | with **zero clippy warnings** workspace-wide |
 
 ---
 
@@ -330,6 +395,8 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 39 | Profile-driven LIF rewrite: pre-summed channel buffer, 1.5× faster step |
 | 40 | Pipeline profile: brain compute is 77 % of recall — not Amdahl-bound yet |
 | 41 | AoS → SoA refactor + WS fire-and-forget: 1.40× pipeline, 2× LIF total |
+| 42 | Validation-at-scale: honest 100-sentence benchmark, FP/FN/recall metrics |
+| 43 | Topology scaling: R2 2 000→10 000, sparser connectivity, retuned iSTDP |
 
 ---
 
