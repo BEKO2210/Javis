@@ -13,6 +13,9 @@
 //! `&[Vec<f32>]`; an empty/short slot means zero external input for that
 //! region.
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
 use crate::neuron::NeuronKind;
 use crate::region::Region;
 
@@ -34,6 +37,104 @@ pub struct PendingEvent {
     pub weight: f32,
 }
 
+/// Internal heap entry. Keeps the original `f32 arrive_at` so the
+/// `<=` check matches the previous `Vec`-based code's float
+/// comparison bit-for-bit (no rounding drift). Total order comes
+/// from `f32::total_cmp`. A monotonic `sequence` breaks ties so older
+/// events pop first when their arrival times are exactly equal,
+/// preserving the original FIFO-on-tie semantics.
+#[derive(Debug, Clone, Copy)]
+struct HeapEntry {
+    sequence: u64,
+    event: PendingEvent,
+}
+
+impl PartialEq for HeapEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.event.arrive_at.total_cmp(&other.event.arrive_at) == Ordering::Equal
+            && self.sequence == other.sequence
+    }
+}
+impl Eq for HeapEntry {}
+impl Ord for HeapEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reverse on arrive_at (min-heap), then reverse on sequence.
+        other
+            .event
+            .arrive_at
+            .total_cmp(&self.event.arrive_at)
+            .then(other.sequence.cmp(&self.sequence))
+    }
+}
+impl PartialOrd for HeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Priority queue of inter-region spike events sorted by arrival time.
+/// `push` is `O(log P)`, `drain_due` pops everything with `arrive_at <= t`
+/// in `O(k log P)` where `k` is the number of due events. The previous
+/// `Vec`-based implementation was `O(P)` per step regardless of due
+/// volume — fine for sparse traffic, slow for dense brains.
+#[derive(Debug, Clone, Default)]
+pub struct PendingQueue {
+    heap: BinaryHeap<HeapEntry>,
+    next_sequence: u64,
+}
+
+impl PendingQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.heap.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.heap.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.heap.clear();
+        self.next_sequence = 0;
+    }
+
+    pub fn push(&mut self, ev: PendingEvent) {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        self.heap.push(HeapEntry { sequence, event: ev });
+    }
+
+    /// Iterate over every event whose arrival time is at or before `t`
+    /// (in milliseconds), in chronological order. Removes them from
+    /// the queue as it goes. Uses the same `f32 <=` comparison as the
+    /// previous `Vec`-based code so behaviour is bit-identical.
+    pub fn drain_due(&mut self, t_ms: f32) -> DrainDue<'_> {
+        DrainDue { heap: &mut self.heap, cutoff: t_ms }
+    }
+}
+
+/// Iterator returned by [`PendingQueue::drain_due`]. Pops only the
+/// events that are due, leaving future events on the heap.
+pub struct DrainDue<'a> {
+    heap: &'a mut BinaryHeap<HeapEntry>,
+    cutoff: f32,
+}
+
+impl<'a> Iterator for DrainDue<'a> {
+    type Item = PendingEvent;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.heap.peek() {
+            Some(top) if top.event.arrive_at <= self.cutoff => {
+                Some(self.heap.pop().expect("just peeked").event)
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Brain {
     pub regions: Vec<Region>,
@@ -41,9 +142,10 @@ pub struct Brain {
     /// `outgoing[region][neuron]` → indices into `inter_edges`.
     pub outgoing: Vec<Vec<Vec<u32>>>,
     /// Scheduled inter-region spike events — transient, rebuilt as
-    /// neurons fire after a snapshot load.
+    /// neurons fire after a snapshot load. Backed by a min-heap on
+    /// arrival time so delivery is `O(log P)` per due event.
     #[serde(skip, default)]
-    pub pending: Vec<PendingEvent>,
+    pub pending: PendingQueue,
     /// Simulation clock — transient.
     #[serde(skip, default)]
     pub time: f32,
@@ -59,7 +161,7 @@ impl Brain {
             regions: Vec::new(),
             inter_edges: Vec::new(),
             outgoing: Vec::new(),
-            pending: Vec::new(),
+            pending: PendingQueue::new(),
             time: 0.0,
             dt,
             events_delivered: 0,
@@ -202,23 +304,18 @@ impl Brain {
     pub fn step(&mut self, externals: &[Vec<f32>]) -> Vec<Vec<usize>> {
         let t = self.time;
 
-        // 1) Deliver all pending events whose arrival time has passed.
-        //    This is O(P); tolerable for sparse long-range traffic. A
-        //    BinaryHeap can replace this once event volume justifies it.
-        let mut keep: Vec<PendingEvent> = Vec::with_capacity(self.pending.len());
-        for ev in self.pending.drain(..) {
-            if ev.arrive_at <= t {
-                let net = &mut self.regions[ev.dst_region as usize].network;
-                let idx = ev.dst_neuron as usize;
-                if let Some(slot) = net.i_syn.get_mut(idx) {
-                    *slot += ev.weight;
-                }
-                self.events_delivered += 1;
-            } else {
-                keep.push(ev);
+        // 1) Deliver every event whose arrival time has passed. The
+        //    min-heap pops them in chronological order in
+        //    O(k log P), where k = due events this step.
+        let due: Vec<PendingEvent> = self.pending.drain_due(t).collect();
+        for ev in due {
+            let net = &mut self.regions[ev.dst_region as usize].network;
+            let idx = ev.dst_neuron as usize;
+            if let Some(slot) = net.i_syn.get_mut(idx) {
+                *slot += ev.weight;
             }
+            self.events_delivered += 1;
         }
-        self.pending = keep;
 
         // 2) Step each region's local dynamics with its own externals.
         let mut spikes: Vec<Vec<usize>> = Vec::with_capacity(self.regions.len());

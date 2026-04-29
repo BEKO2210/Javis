@@ -12,12 +12,13 @@ use snn_core::{HomeostasisParams, LifNeuron, LifParams, Network};
 const DT: f32 = 0.1;
 
 fn aggressive_homeostasis() -> HomeostasisParams {
-    let mut h = HomeostasisParams::default();
-    h.eta_scale = 0.01;        // 1% of the gap per scaling pass
-    h.a_target = 1.0;          // very low — easy to overshoot
-    h.tau_homeo_ms = 500.0;    // shorter than default so the test runs fast
-    h.apply_every = 100;       // every 10 ms
-    h
+    HomeostasisParams {
+        eta_scale: 0.01,        // 1% of the gap per scaling pass
+        a_target: 1.0,          // very low — easy to overshoot
+        tau_homeo_ms: 500.0,    // shorter than default so the test runs fast
+        apply_every: 100,       // every 10 ms
+        ..HomeostasisParams::default()
+    }
 }
 
 /// Smaller `eta_scale` so the multiplicative factor stays clearly above

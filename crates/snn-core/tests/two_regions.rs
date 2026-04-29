@@ -40,10 +40,11 @@ fn build_region(name: &str, seed: u64) -> Region {
     let mut region = Region::new(name, DT);
     let net = &mut region.network;
 
-    let mut stdp = StdpParams::default();
-    stdp.a_plus = 0.05;
-    stdp.a_minus = 0.025;
-    net.enable_stdp(stdp);
+    net.enable_stdp(StdpParams {
+        a_plus: 0.05,
+        a_minus: 0.025,
+        ..StdpParams::default()
+    });
 
     let n_inh = (N as f32 * INH_FRACTION) as usize;
     let n_exc = N - n_inh;
@@ -98,8 +99,7 @@ fn build_brain(seed: u64, wire_inter: bool) -> Brain {
         let r2_exc = excitatory_indices(&brain.regions[1]);
 
         let n_proj = (r1_exc.len() as f32 * PROJ_FRACTION).max(1.0) as usize;
-        for k in 0..n_proj {
-            let src = r1_exc[k];
+        for &src in &r1_exc[..n_proj] {
             for _ in 0..FAN_OUT {
                 let pick = (rng.next_u64() as usize) % r2_exc.len();
                 let dst = r2_exc[pick];
@@ -166,7 +166,7 @@ fn signal_transfers_between_regions_without_runaway() {
     let mut brain = build_brain(2026, true);
     let (r1e, r1i, r2e, r2i) = run(&mut brain, 11);
 
-    let n_exc = (N as f32 * (1.0 - INH_FRACTION)) as f32;
+    let n_exc = N as f32 * (1.0 - INH_FRACTION);
     let n_inh = N as f32 - n_exc;
 
     let rate_r1e = r1e as f32 / n_exc / (SIM_MS / 1000.0);

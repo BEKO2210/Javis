@@ -163,10 +163,11 @@ fn pattern_b_recalls_after_training_via_pattern_a() {
     );
 
     // 3) Train.
-    let mut stdp = StdpParams::default();
-    stdp.a_plus = 0.05;
-    stdp.a_minus = 0.025;
-    net.enable_stdp(stdp);
+    net.enable_stdp(StdpParams {
+        a_plus: 0.05,
+        a_minus: 0.025,
+        ..StdpParams::default()
+    });
     net.reset_state();
     for _ in 0..100 {
         training_trial(&mut net, &mut rng);
