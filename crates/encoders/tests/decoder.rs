@@ -165,10 +165,7 @@ fn idle(brain: &mut Brain, duration_ms: f32) {
     }
 }
 
-fn record_fingerprint(
-    brain: &mut Brain,
-    cue_indices: &[u32],
-) -> Vec<u32> {
+fn record_fingerprint(brain: &mut Brain, cue_indices: &[u32]) -> Vec<u32> {
     brain.disable_stdp_all();
     brain.disable_homeostasis_all();
     brain.reset_state();
@@ -218,14 +215,12 @@ fn decoder_retrieves_completed_pattern() {
     // STDP shapes the joint engram, asymmetric homeostasis stops
     // bleeding (parameters validated in notes/08).
     brain.regions[1].network.enable_stdp(r2_stdp());
-    brain.regions[1].network.enable_homeostasis(r2_homeostasis());
+    brain.regions[1]
+        .network
+        .enable_homeostasis(r2_homeostasis());
     brain.reset_state();
-    let _target_assembly = run_with_cue(
-        &mut brain,
-        &cue_full.indices,
-        TRAINING_MS,
-        TARGET_WINDOW_MS,
-    );
+    let _target_assembly =
+        run_with_cue(&mut brain, &cue_full.indices, TRAINING_MS, TARGET_WINDOW_MS);
     idle(&mut brain, COOLDOWN_MS);
 
     // Phase 3 — partial-cue recall. Both forms of plasticity frozen.
@@ -435,7 +430,9 @@ fn multiple_overlapping_concepts_coexist() {
     // state between sentences but leaves synapse weights, so each
     // round builds on (rather than replaces) the previous.
     brain.regions[1].network.enable_stdp(r2_stdp_multi());
-    brain.regions[1].network.enable_homeostasis(r2_homeostasis_multi());
+    brain.regions[1]
+        .network
+        .enable_homeostasis(r2_homeostasis_multi());
     brain.regions[1].network.enable_istdp(r2_istdp_multi());
 
     // One interleaved pair. With moderate STDP rates a single round
@@ -522,7 +519,9 @@ fn multiple_overlapping_concepts_coexist() {
     assert!(
         s_rust_rust >= 0.95 && s_world_world >= 0.95 && s_hello_hello >= 0.95,
         "direct retrieval too weak: rust={:.2} world={:.2} hello={:.2}",
-        s_rust_rust, s_world_world, s_hello_hello,
+        s_rust_rust,
+        s_world_world,
+        s_hello_hello,
     );
 
     // Hub-recall: cueing the shared hub "hello" must pull both

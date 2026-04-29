@@ -51,5 +51,9 @@ fn subthreshold_input_does_not_fire() {
         t += dt;
     }
     assert!(!spiked, "neuron should not fire below rheobase");
-    assert!(n.v < -59.0 && n.v > -61.0, "V should approach −60 mV, got {}", n.v);
+    assert!(
+        n.v < -59.0 && n.v > -61.0,
+        "V should approach −60 mV, got {}",
+        n.v
+    );
 }

@@ -15,7 +15,10 @@ pub struct Region {
 
 impl Region {
     pub fn new(name: impl Into<String>, dt: f32) -> Self {
-        Self { name: name.into(), network: Network::new(dt) }
+        Self {
+            name: name.into(),
+            network: Network::new(dt),
+        }
     }
 
     pub fn num_neurons(&self) -> usize {

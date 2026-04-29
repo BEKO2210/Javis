@@ -19,9 +19,7 @@
 //!    (< 30 Hz), proving its internal inhibition contains the imported
 //!    activity rather than going into runaway.
 
-use snn_core::{
-    Brain, LifNeuron, LifParams, NeuronKind, PoissonInput, Region, Rng, StdpParams,
-};
+use snn_core::{Brain, LifNeuron, LifParams, NeuronKind, PoissonInput, Region, Rng, StdpParams};
 
 const DT: f32 = 0.1;
 const N: usize = 1000;
@@ -118,7 +116,11 @@ fn run(brain: &mut Brain, drive_rng_seed: u64) -> (u64, u64, u64, u64) {
 
     // Region 1 gets a Poisson background; region 2 gets nothing.
     let r1_gens: Vec<PoissonInput> = (0..r1_n)
-        .map(|i| PoissonInput { target: i, rate_hz: 80.0, current_per_spike: 80.0 })
+        .map(|i| PoissonInput {
+            target: i,
+            rate_hz: 80.0,
+            current_per_spike: 80.0,
+        })
         .collect();
 
     let mut rng = Rng::new(drive_rng_seed);

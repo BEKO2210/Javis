@@ -48,7 +48,9 @@ impl LlmClient {
     /// Build a client. Reads `ANTHROPIC_API_KEY` from the environment
     /// — present means real calls, absent means mock.
     pub fn from_env() -> Self {
-        let api_key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty());
+        let api_key = std::env::var("ANTHROPIC_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty());
         Self {
             api_key,
             model: std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
@@ -213,10 +215,7 @@ async fn call_anthropic(
         .await
         .map_err(|e| format!("request: {e}"))?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| format!("body: {e}"))?;
+    let body = response.text().await.map_err(|e| format!("body: {e}"))?;
     if !status.is_success() {
         return Err(format!("HTTP {status}: {body}"));
     }

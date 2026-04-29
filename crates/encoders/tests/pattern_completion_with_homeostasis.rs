@@ -211,14 +211,12 @@ fn pattern_completion_with_homeostasis() {
 
     // Phase 2 — training. STDP and homeostasis run inside R2.
     brain.regions[1].network.enable_stdp(r2_stdp());
-    brain.regions[1].network.enable_homeostasis(r2_homeostasis());
+    brain.regions[1]
+        .network
+        .enable_homeostasis(r2_homeostasis());
     brain.reset_state();
-    let target_assembly = run_with_cue(
-        &mut brain,
-        &cue_full.indices,
-        TRAINING_MS,
-        TARGET_WINDOW_MS,
-    );
+    let target_assembly =
+        run_with_cue(&mut brain, &cue_full.indices, TRAINING_MS, TARGET_WINDOW_MS);
     idle(&mut brain, COOLDOWN_MS);
 
     // Phase 3 — post-recall, both forms of plasticity frozen.

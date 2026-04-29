@@ -35,13 +35,20 @@ async fn train_then_recall_streams_decoded() {
     let candidates = d.get("candidates").and_then(|v| v.as_array()).unwrap();
     let words: Vec<String> = candidates
         .iter()
-        .filter_map(|c| c.get("word").and_then(|w| w.as_str()).map(|s| s.to_string()))
+        .filter_map(|c| {
+            c.get("word")
+                .and_then(|w| w.as_str())
+                .map(|s| s.to_string())
+        })
         .collect();
     assert!(
         words.iter().any(|w| w == "rust"),
         "decoded candidates did not include 'rust': {words:?}",
     );
-    let reduction = d.get("reduction_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let reduction = d
+        .get("reduction_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     assert!(
         reduction >= 70.0,
         "expected ≥ 70 % token reduction over the wire, got {reduction:.1}%",
@@ -88,7 +95,11 @@ async fn ask_returns_both_answers_in_mock_mode() {
     let rag = a.get("rag").unwrap();
     let javis = a.get("javis").unwrap();
     assert!(!rag.get("text").and_then(|t| t.as_str()).unwrap().is_empty());
-    assert!(!javis.get("text").and_then(|t| t.as_str()).unwrap().is_empty());
+    assert!(!javis
+        .get("text")
+        .and_then(|t| t.as_str())
+        .unwrap()
+        .is_empty());
     assert_eq!(rag.get("real").and_then(|v| v.as_bool()), Some(false));
     assert_eq!(javis.get("real").and_then(|v| v.as_bool()), Some(false));
     let rag_in = rag.get("input_tokens").and_then(|v| v.as_u64()).unwrap();
@@ -106,20 +117,14 @@ async fn snapshot_round_trip_preserves_recall() {
     // 1) Train on a sentence, recall it, capture the candidate set.
     let state_a = Arc::new(viz::AppState::new_with_mock_llm());
     state_a
-        .run_train(
-            "Lava is liquid molten rock from a volcano.".into(),
-            None,
-        )
+        .run_train("Lava is liquid molten rock from a volcano.".into(), None)
         .await;
     let (s_before, w_before) = state_a.stats().await;
     assert!(s_before == 1 && w_before > 0);
 
     // 2) Save to a temp file.
     let tmp_dir = std::env::temp_dir();
-    let path = tmp_dir.join(format!(
-        "javis-snapshot-{}.json",
-        std::process::id()
-    ));
+    let path = tmp_dir.join(format!("javis-snapshot-{}.json", std::process::id()));
     state_a.save_to_file(&path).await.unwrap();
     assert!(path.exists());
 

@@ -46,9 +46,8 @@ pub const DECODE_THRESHOLD: f32 = 0.50;
 const BATCH_MS: f32 = 1.0;
 
 const STOPWORDS: &[&str] = &[
-    "is", "a", "the", "an", "on", "at", "of", "in", "to", "and", "or",
-    "for", "with", "by", "from", "but", "as", "it", "its", "this", "that",
-    "these", "those", "be", "are", "was", "were", "like",
+    "is", "a", "the", "an", "on", "at", "of", "in", "to", "and", "or", "for", "with", "by", "from",
+    "but", "as", "it", "its", "this", "that", "these", "those", "be", "are", "was", "were", "like",
 ];
 
 pub fn default_corpus() -> Vec<&'static str> {
@@ -627,10 +626,10 @@ impl AppState {
         let ctx_rag = rag_payload.clone();
         let ctx_jvs = javis_payload.clone();
 
-        let (rag_ans, jvs_ans) = tokio::join!(
-            async move { llm.ask(&q1, &ctx_rag).await },
-            async move { llm_b.ask(&q2, &ctx_jvs).await },
-        );
+        let (rag_ans, jvs_ans) =
+            tokio::join!(async move { llm.ask(&q1, &ctx_rag).await }, async move {
+                llm_b.ask(&q2, &ctx_jvs).await
+            },);
 
         let _ = tx
             .send(Event::Asked {

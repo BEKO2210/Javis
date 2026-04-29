@@ -47,11 +47,13 @@ fn brain_roundtrips_with_inter_region_edges() {
 
     let mut r1 = Region::new("R1", 0.1);
     for _ in 0..5 {
-        r1.network.add_neuron(LifNeuron::excitatory(LifParams::default()));
+        r1.network
+            .add_neuron(LifNeuron::excitatory(LifParams::default()));
     }
     let mut r2 = Region::new("R2", 0.1);
     for _ in 0..7 {
-        r2.network.add_neuron(LifNeuron::excitatory(LifParams::default()));
+        r2.network
+            .add_neuron(LifNeuron::excitatory(LifParams::default()));
     }
     brain.add_region(r1);
     brain.add_region(r2);

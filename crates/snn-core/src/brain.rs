@@ -104,7 +104,10 @@ impl PendingQueue {
     pub fn push(&mut self, ev: PendingEvent) {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1);
-        self.heap.push(HeapEntry { sequence, event: ev });
+        self.heap.push(HeapEntry {
+            sequence,
+            event: ev,
+        });
     }
 
     /// Iterate over every event whose arrival time is at or before `t`
@@ -112,7 +115,10 @@ impl PendingQueue {
     /// the queue as it goes. Uses the same `f32 <=` comparison as the
     /// previous `Vec`-based code so behaviour is bit-identical.
     pub fn drain_due(&mut self, t_ms: f32) -> DrainDue<'_> {
-        DrainDue { heap: &mut self.heap, cutoff: t_ms }
+        DrainDue {
+            heap: &mut self.heap,
+            cutoff: t_ms,
+        }
     }
 }
 

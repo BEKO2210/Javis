@@ -14,8 +14,8 @@ use std::collections::HashSet;
 
 use encoders::{inject_sdr, EngramDictionary, TextEncoder};
 use snn_core::{
-    poisson, Brain, HomeostasisParams, IStdpParams, LifNeuron, LifParams, NeuronKind,
-    PoissonInput, Region, Rng, StdpParams,
+    poisson, Brain, HomeostasisParams, IStdpParams, LifNeuron, LifParams, NeuronKind, PoissonInput,
+    Region, Rng, StdpParams,
 };
 
 use crate::count_tokens;
@@ -39,9 +39,8 @@ pub fn corpus() -> Vec<&'static str> {
 }
 
 const STOPWORDS: &[&str] = &[
-    "is", "a", "the", "an", "on", "at", "of", "in", "to", "and", "or",
-    "for", "with", "by", "from", "but", "as", "it", "its", "this", "that",
-    "these", "those", "be", "are", "was", "were", "like",
+    "is", "a", "the", "an", "on", "at", "of", "in", "to", "and", "or", "for", "with", "by", "from",
+    "but", "as", "it", "its", "this", "that", "these", "those", "be", "are", "was", "were", "like",
 ];
 
 // ----------------------------------------------------------------------
@@ -314,11 +313,7 @@ pub fn run_javis_pipeline(corpus: &[&str], query: &str) -> DecodedWords {
 /// Like [`run_javis_pipeline`] but returns the top-`k` engrams instead
 /// of everything above a threshold. Robust when the right cut-off
 /// varies per query — the top-k cap removes the threshold guesswork.
-pub fn run_javis_pipeline_top_k(
-    corpus: &[&str],
-    query: &str,
-    k: usize,
-) -> DecodedWords {
+pub fn run_javis_pipeline_top_k(corpus: &[&str], query: &str, k: usize) -> DecodedWords {
     let (recall_indices, dict) = run_javis_recall_inner(corpus, query);
     dict.decode_top(&recall_indices, k)
 }
@@ -361,22 +356,14 @@ pub enum FingerprintMode {
 
 /// Like [`run_javis_pipeline_with_threshold`] but with the contextual
 /// fingerprinting mode enabled. Returns the same `(word, score)` shape.
-pub fn run_javis_pipeline_contextual(
-    corpus: &[&str],
-    query: &str,
-    threshold: f32,
-) -> DecodedWords {
+pub fn run_javis_pipeline_contextual(corpus: &[&str], query: &str, threshold: f32) -> DecodedWords {
     let (recall_indices, dict) =
         run_javis_recall_inner_modes(corpus, query, FingerprintMode::Contextual);
     dict.decode(&recall_indices, threshold)
 }
 
 /// Top-k variant of the contextual pipeline.
-pub fn run_javis_pipeline_contextual_top_k(
-    corpus: &[&str],
-    query: &str,
-    k: usize,
-) -> DecodedWords {
+pub fn run_javis_pipeline_contextual_top_k(corpus: &[&str], query: &str, k: usize) -> DecodedWords {
     let (recall_indices, dict) =
         run_javis_recall_inner_modes(corpus, query, FingerprintMode::Contextual);
     dict.decode_top(&recall_indices, k)
@@ -409,7 +396,9 @@ fn run_javis_recall_inner_modes(
     // -------- Phase 1: training --------
     brain.regions[1].network.enable_stdp(r2_stdp());
     brain.regions[1].network.enable_istdp(r2_istdp());
-    brain.regions[1].network.enable_homeostasis(r2_homeostasis());
+    brain.regions[1]
+        .network
+        .enable_homeostasis(r2_homeostasis());
 
     // Per-sentence kWTA captured during training. Used by the
     // contextual mode to assign sentence-level engrams.

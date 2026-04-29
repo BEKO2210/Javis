@@ -73,7 +73,10 @@ fn javis_scales_to_a_five_topic_wiki_corpus() {
         .fold(0.0_f32, f32::max);
     eprintln!(
         "\naggregate: mean={:.1}%  min={:.1}%  max={:.1}%  ({} queries)",
-        mean, min, max, results.len()
+        mean,
+        min,
+        max,
+        results.len()
     );
     // Aggregate contract: even the worst query saves ≥ 70 % over RAG,
     // and the average saving is high.
@@ -95,8 +98,7 @@ fn engrams_remain_separable_after_five_topic_training() {
     let mut violations = Vec::<String>::new();
     for (topic, query) in queries {
         let r = run_benchmark_on(corpus, query);
-        let decoded_words: Vec<&str> =
-            r.javis_words.iter().map(|(w, _)| w.as_str()).collect();
+        let decoded_words: Vec<&str> = r.javis_words.iter().map(|(w, _)| w.as_str()).collect();
         // Are any *other* topic keywords leaking in?
         for other in &topic_keywords {
             if other == topic {

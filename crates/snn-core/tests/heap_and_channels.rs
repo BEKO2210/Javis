@@ -89,9 +89,11 @@ fn brain_uses_heap_pending_queue_underneath() {
     // Smoke test that the queue change didn't break Brain wiring.
     let mut brain = Brain::new(0.1);
     let mut r1 = Region::new("R1", 0.1);
-    r1.network.add_neuron(LifNeuron::excitatory(LifParams::default()));
+    r1.network
+        .add_neuron(LifNeuron::excitatory(LifParams::default()));
     let mut r2 = Region::new("R2", 0.1);
-    r2.network.add_neuron(LifNeuron::excitatory(LifParams::default()));
+    r2.network
+        .add_neuron(LifNeuron::excitatory(LifParams::default()));
     brain.add_region(r1);
     brain.add_region(r2);
 
@@ -155,7 +157,10 @@ fn nmda_channel_decays_slower_than_ampa() {
     // NMDA τ=100 ms → exp(-0.1) ≈ 0.905
     // GABA τ=10 ms  → exp(-1.0) ≈ 0.368
     // AMPA τ=5 ms   → exp(-2.0) ≈ 0.135
-    assert!(nmda > gaba && gaba > ampa, "ordering must be NMDA > GABA > AMPA");
+    assert!(
+        nmda > gaba && gaba > ampa,
+        "ordering must be NMDA > GABA > AMPA"
+    );
     assert!((nmda - (-0.1_f32).exp()).abs() < 0.05);
     assert!((gaba - (-1.0_f32).exp()).abs() < 0.05);
     assert!((ampa - (-2.0_f32).exp()).abs() < 0.05);
@@ -166,8 +171,12 @@ fn nmda_synapse_routes_to_nmda_channel() {
     let mut net = Network::new(0.1);
     let pre = net.add_neuron(LifNeuron::excitatory(LifParams::default()));
     let post = net.add_neuron(LifNeuron::excitatory(LifParams::default()));
-    net.synapses
-        .push(snn_core::Synapse::with_kind(pre, post, 0.5, SynapseKind::Nmda));
+    net.synapses.push(snn_core::Synapse::with_kind(
+        pre,
+        post,
+        0.5,
+        SynapseKind::Nmda,
+    ));
     let id = (net.synapses.len() - 1) as u32;
     net.outgoing[pre].push(id);
     net.incoming[post].push(id);

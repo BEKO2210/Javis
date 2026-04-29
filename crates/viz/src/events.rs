@@ -17,10 +17,7 @@ pub enum Event {
         r2_inhibitory: u32,
     },
     /// A new phase of the demo started (training / cooldown / recall / decode).
-    Phase {
-        name: String,
-        detail: String,
-    },
+    Phase { name: String, detail: String },
     /// One simulated millisecond's worth of spikes, batched.
     /// `r1` and `r2` carry neuron indices that fired during the batch.
     Step {

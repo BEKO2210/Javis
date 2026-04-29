@@ -70,7 +70,11 @@ fn top_k_payload_still_beats_rag() {
         rag_total += count_tokens(&naive_rag_lookup(corpus, query).unwrap_or_default());
 
         let unique: HashSet<&str> = decoded.iter().map(|(w, _)| w.as_str()).collect();
-        assert_eq!(unique.len(), decoded.len(), "duplicate words in decode output");
+        assert_eq!(
+            unique.len(),
+            decoded.len(),
+            "duplicate words in decode output"
+        );
     }
 
     let saving = if rag_total > 0 {
@@ -167,10 +171,7 @@ fn contextual_mode_brings_multiple_words_per_query() {
         let words: Vec<&str> = decoded.iter().map(|(w, _)| w.as_str()).collect();
         eprintln!("  '{query}' → {} words", words.len());
         // The cue itself must be reachable.
-        assert!(
-            !words.is_empty(),
-            "no decoded for '{query}'",
-        );
+        assert!(!words.is_empty(), "no decoded for '{query}'",);
         total_words += words.len();
     }
     let mean = total_words as f32 / wiki_queries().len() as f32;
