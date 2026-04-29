@@ -38,6 +38,7 @@ use viz::AppState;
 #[tokio::main]
 async fn main() {
     init_tracing();
+    viz::metrics::init();
 
     let static_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static");
 

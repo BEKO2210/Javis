@@ -165,7 +165,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 25 research notes — every decision documented
+├── notes/          ─ 26 research notes — every decision documented
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
 ```
 
@@ -183,9 +183,9 @@ cargo test --release
 | `encoders` | 22 | SDR union/overlap, hash determinism, top-k decode, injection, full pattern completion |
 | `eval` | 12 | RAG-vs-Javis token efficiency, Wikipedia scaling, intra-topic recall, contextual mode |
 | `llm` | 3 | Anthropic adapter mock contract, token heuristic |
-| `viz` | 7 | WebSocket smoke, train+recall, ask both, snapshot round-trip, `/health` + `/ready` probes |
+| `viz` | 10 | WebSocket smoke, train+recall, ask both, snapshot round-trip, `/health` + `/ready` probes, `/metrics` Prometheus exposition |
 | Doc-tests | 3 | Public quick-start examples in `snn-core` and `encoders` |
-| **Total** | **95** | with **zero clippy warnings** workspace-wide |
+| **Total** | **98** | with **zero clippy warnings** workspace-wide |
 
 ---
 
@@ -222,6 +222,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 23 | Production polish: CI, doc-tests, examples, CHANGELOG |
 | 24 | Structured logging via `tracing` (RUST_LOG, JSON mode, session spans) |
 | 25 | `/health` (liveness) + `/ready` (readiness with brain stats) |
+| 26 | Prometheus metrics: `/metrics` endpoint, counters/histograms/gauges |
 
 ---
 

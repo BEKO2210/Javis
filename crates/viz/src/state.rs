@@ -357,6 +357,8 @@ impl AppState {
         g.dict = EngramDictionary::new();
         g.known_words.clear();
         g.trained_sentences.clear();
+        metrics::gauge!("javis_brain_sentences").set(0.0);
+        metrics::gauge!("javis_brain_words").set(0.0);
         info!(
             dropped_sentences,
             dropped_words, "brain reset to fresh state",
@@ -466,7 +468,8 @@ impl AppState {
         let total_sentences = g.trained_sentences.len();
         let total_words = g.known_words.len();
         let new_words_count = new_words.len();
-        let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
+        let elapsed = started.elapsed();
+        let elapsed_ms = elapsed.as_secs_f32() * 1000.0;
 
         if let Some(tx) = &tx {
             let _ = tx
@@ -477,6 +480,10 @@ impl AppState {
                 .await;
             let _ = tx.send(Event::Done).await;
         }
+
+        metrics::histogram!("javis_train_duration_seconds").record(elapsed.as_secs_f64());
+        metrics::gauge!("javis_brain_sentences").set(total_sentences as f64);
+        metrics::gauge!("javis_brain_words").set(total_words as f64);
 
         info!(
             sentence_len,
@@ -551,7 +558,11 @@ impl AppState {
         };
 
         let candidate_count = candidates.len();
-        let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
+        let elapsed = started.elapsed();
+        let elapsed_ms = elapsed.as_secs_f32() * 1000.0;
+        metrics::histogram!("javis_recall_duration_seconds").record(elapsed.as_secs_f64());
+        metrics::counter!("javis_recall_tokens_rag_total").increment(rag_tokens as u64);
+        metrics::counter!("javis_recall_tokens_javis_total").increment(javis_tokens as u64);
         info!(
             %query,
             candidates = candidate_count,
@@ -605,10 +616,13 @@ impl AppState {
         let bytes = serde_json::to_vec(&snap).map_err(io_err)?;
         let bytes_len = bytes.len();
         tokio::fs::write(path, bytes).await?;
+        let elapsed = started.elapsed();
+        metrics::histogram!("javis_snapshot_duration_seconds", "op" => "save")
+            .record(elapsed.as_secs_f64());
         info!(
             path = %path_ref.display(),
             bytes = bytes_len,
-            elapsed_ms = started.elapsed().as_secs_f32() * 1000.0,
+            elapsed_ms = elapsed.as_secs_f32() * 1000.0,
             "snapshot saved",
         );
         Ok(())
@@ -644,12 +658,18 @@ impl AppState {
         g.known_words = snap.known_words;
         g.trained_sentences = snap.trained_sentences;
 
+        let elapsed = started.elapsed();
+        metrics::histogram!("javis_snapshot_duration_seconds", "op" => "load")
+            .record(elapsed.as_secs_f64());
+        metrics::gauge!("javis_brain_sentences").set(sentences as f64);
+        metrics::gauge!("javis_brain_words").set(words as f64);
+
         info!(
             path = %path_ref.display(),
             bytes = bytes_len,
             sentences,
             words,
-            elapsed_ms = started.elapsed().as_secs_f32() * 1000.0,
+            elapsed_ms = elapsed.as_secs_f32() * 1000.0,
             "snapshot loaded",
         );
         Ok(())
@@ -697,7 +717,13 @@ impl AppState {
                 llm_b.ask(&q2, &ctx_jvs).await
             },);
 
-        let elapsed_ms = started.elapsed().as_secs_f32() * 1000.0;
+        let elapsed = started.elapsed();
+        let elapsed_ms = elapsed.as_secs_f32() * 1000.0;
+        metrics::histogram!(
+            "javis_ask_duration_seconds",
+            "real" => if real { "true" } else { "false" },
+        )
+        .record(elapsed.as_secs_f64());
         info!(
             real,
             rag_input_tokens = rag_ans.input_tokens,

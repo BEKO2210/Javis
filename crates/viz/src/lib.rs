@@ -5,6 +5,7 @@
 //! the same building blocks the binary uses.
 
 pub mod events;
+pub mod metrics;
 pub mod server;
 pub mod state;
 

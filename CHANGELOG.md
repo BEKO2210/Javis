@@ -4,7 +4,22 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 12 (operational hardening, parts A + B)
+## Unreleased — Iteration 12 (operational hardening, parts A + B + C)
+
+### Added (part C — Prometheus metrics)
+- `GET /metrics` — Prometheus exposition endpoint. Returns the global
+  recorder snapshot in `text/plain; version=0.0.4` format.
+- `viz::metrics::init()` — idempotent, installs a `metrics-exporter-
+  prometheus` recorder once per process, configured with histogram
+  buckets covering our 5 ms – 30 s operation range.
+- Counters: `javis_ws_sessions_total{action}`,
+  `javis_recall_tokens_rag_total`, `javis_recall_tokens_javis_total`
+  (the difference is total token saving over server lifetime).
+- Histograms: `javis_train_duration_seconds`,
+  `javis_recall_duration_seconds`, `javis_ask_duration_seconds{real}`,
+  `javis_snapshot_duration_seconds{op}`.
+- Gauges: `javis_brain_sentences`, `javis_brain_words`.
+- Three new tests in `crates/viz/tests/metrics_endpoint.rs`.
 
 ### Added (part B — health/readiness probes)
 - `GET /health` — liveness probe. Returns `200 ok` as long as the

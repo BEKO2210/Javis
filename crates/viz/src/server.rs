@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, info_span, warn, Instrument};
 
 use crate::events::Event;
+use crate::metrics as viz_metrics;
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -64,12 +65,13 @@ pub struct WsParams {
 }
 
 /// Build the full router (static-file fallback + `/ws` endpoint +
-/// `/health` and `/ready` probes).
+/// `/health` / `/ready` probes + `/metrics` Prometheus exposition).
 pub fn router(state: Arc<AppState>, static_dir: PathBuf) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
+        .route("/metrics", get(metrics_handler))
         .with_state(state)
         .fallback_service(tower_http::services::ServeDir::new(static_dir))
 }
@@ -80,6 +82,7 @@ pub fn router_no_static(state: Arc<AppState>) -> Router {
         .route("/ws", get(ws_handler))
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
+        .route("/metrics", get(metrics_handler))
         .with_state(state)
 }
 
@@ -121,6 +124,22 @@ struct ReadyBody {
     llm: &'static str,
 }
 
+/// Prometheus exposition endpoint.
+///
+/// Renders the current state of every counter / histogram / gauge in
+/// the global recorder. If the recorder hasn't been installed (e.g.
+/// during a unit test that never calls `metrics::init()`) the body
+/// is empty but the status code is still 200 — Prometheus treats an
+/// empty scrape as "no metrics yet", not a failure.
+async fn metrics_handler() -> impl IntoResponse {
+    let body = viz_metrics::render();
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        body,
+    )
+}
+
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
@@ -148,6 +167,11 @@ pub async fn run_session(socket: WebSocket, state: Arc<AppState>, params: WsPara
 
 async fn run_session_inner(mut socket: WebSocket, state: Arc<AppState>, params: WsParams) {
     info!("session started");
+    metrics::counter!(
+        "javis_ws_sessions_total",
+        "action" => params.action.as_str(),
+    )
+    .increment(1);
 
     let (tx, mut rx) = mpsc::channel::<Event>(1024);
 
