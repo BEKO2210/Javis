@@ -4,7 +4,17 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 13 (supply-chain hygiene, parts A + B)
+## Unreleased — Iteration 13 (supply-chain hygiene, parts A + B + C)
+
+### Added (part C — Dependabot)
+- `.github/dependabot.yml` tracks `cargo` (root + every crate) and
+  `github-actions` (every workflow file) on a weekly schedule.
+- Grouped updates: minor/patch bumps batched into one PR per
+  ecosystem; the tracing stack and the tokio/tower/axum/hyper stack
+  each have their own group so co-versioned crates stay in sync.
+- Major bumps stay solo so they get individual review.
+- PR commit prefixes `deps:` (cargo) / `ci:` (actions); open-PR
+  caps at 5 and 3 respectively.
 
 ### Added (part B — MSRV)
 - `[workspace.package].rust-version = "1.86"` — explicit MSRV
