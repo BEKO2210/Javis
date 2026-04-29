@@ -78,6 +78,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps --all-features
 
+  benches:
+    name: bench compile-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Only verify the benches *compile*. Running them on a shared
+      # GitHub runner produces too much variance to be useful for
+      # regression detection — that's why bench numbers in
+      # notes/31-* came from local hardware. The compile-check still
+      # catches API drift the moment a bench function references a
+      # symbol that was renamed or removed.
+      - run: cargo bench --workspace --no-run
+
   deny:
     name: cargo-deny (licenses, advisories, bans, sources)
     runs-on: ubuntu-latest

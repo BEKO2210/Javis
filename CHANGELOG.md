@@ -4,7 +4,25 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 13 (supply-chain hygiene, parts A + B + C + D)
+## Unreleased — Iteration 14 (performance benchmarks)
+
+### Added
+- Three Criterion benchmark files: `crates/snn-core/benches/
+  network_step.rs`, `crates/snn-core/benches/brain_step.rs`,
+  `crates/encoders/benches/encode_decode.rs`. Seven separate bench
+  functions covering passive vs. STDP-enabled `Network::step`,
+  multi-region `Brain::step` (heap-backed inter-region delivery),
+  and the encoder/decoder per-request hot paths.
+- `criterion = "0.8"` as a dev-dependency on `snn-core` and
+  `encoders`. `default-features = false` keeps the dep tree slim.
+- New `benches` CI job runs `cargo bench --workspace --no-run` to
+  catch API drift in the bench code without trying to extract real
+  perf numbers from a shared GitHub runner.
+- Baseline numbers documented in `notes/31-criterion-benchmarks.md`
+  (e.g. `network_step_passive/1000` ≈ 3.2 µs,
+  `decode_strict/vocab_1000` ≈ 253 µs on local x86_64).
+
+## Iteration 13 — supply-chain hygiene (parts A + B + C + D)
 
 ### Added (part D — rustdoc warnings as errors)
 - New `docs` CI job runs `cargo doc --workspace --no-deps

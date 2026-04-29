@@ -165,7 +165,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 30 research notes — every decision documented
+├── notes/          ─ 31 research notes — every decision documented
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
 ```
 
@@ -227,6 +227,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 28 | MSRV pinned to Rust 1.86, dedicated CI job |
 | 29 | Dependabot (cargo + github-actions, grouped weekly updates) |
 | 30 | `cargo doc -D warnings` as CI gate |
+| 31 | Criterion benchmarks for `Network::step`, `Brain::step`, encode/decode |
 
 ---
 
