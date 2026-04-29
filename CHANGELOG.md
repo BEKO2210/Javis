@@ -4,7 +4,36 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 14 (performance benchmarks)
+## Unreleased — Iteration 15 (container & deploy)
+
+### Added
+- Multi-stage `Dockerfile` (builder on `rust:1.86-bookworm`, runtime
+  on `debian:bookworm-slim`). Final image runs as non-root user
+  `javis` (uid 1000) with `tini` as PID 1 and a `curl /health`
+  HEALTHCHECK. Layer-cache trick stubs the workspace so `cargo
+  fetch` only re-runs on manifest changes.
+- `.dockerignore` keeps the build context lean (no `target/`,
+  `.git/`, `notes/`, etc.).
+- `docker-compose.yml` brings up three services: javis-viz,
+  Prometheus 3.0 (scrapes `/metrics` every 15 s), Grafana 11 with
+  anonymous-admin access for local demo.
+- `deploy/prometheus.yml` — single scrape job for the
+  `javis-viz:7777/metrics` endpoint.
+- `deploy/grafana/provisioning/` auto-wires Prometheus as the
+  default datasource and registers a dashboard provider.
+- `deploy/grafana/dashboards/javis-overview.json` — 5-panel
+  dashboard: brain sentence/word gauges, lifetime token-saving %,
+  WS-sessions-per-action rate, and p95 latency timeseries for
+  train/recall/ask.
+
+### Changed
+- `viz/src/main.rs` resolves the static-asset directory and bind
+  address at runtime via `JAVIS_STATIC_DIR` / `JAVIS_BIND_ADDR` env
+  vars. Defaults stay at the source-tree `static/` and `127.0.0.1:7777`
+  so `cargo run` keeps working unchanged; the Docker image sets both
+  to container-friendly values (`/app/static`, `0.0.0.0:7777`).
+
+## Iteration 14 — performance benchmarks
 
 ### Added
 - Three Criterion benchmark files: `crates/snn-core/benches/

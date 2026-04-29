@@ -101,6 +101,28 @@ ANTHROPIC_API_KEY=sk-ant-... cargo run -p viz --release
 # the "send both to Claude" button now fires real calls
 ```
 
+### Run with Docker
+
+A multi-stage `Dockerfile` plus a `docker-compose.yml` brings up the
+full observability stack — Javis, Prometheus, and Grafana — in one
+command:
+
+```sh
+docker compose up --build
+```
+
+| URL | What |
+| --- | --- |
+| http://localhost:7777 | Javis 3D brain (WebSocket + frontend) |
+| http://localhost:7777/metrics | Prometheus exposition |
+| http://localhost:9090 | Prometheus UI (already scraping Javis) |
+| http://localhost:3000 | Grafana, Javis dashboard pre-provisioned |
+
+The Grafana instance runs anonymous-admin and the Prometheus
+datasource is auto-wired — meant for local-dev only, see
+`docker-compose.yml` for the relevant `GF_AUTH_*` flags before
+exposing it anywhere.
+
 ---
 
 ## Live 3D brain
@@ -165,7 +187,8 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 31 research notes — every decision documented
+├── notes/          ─ 32 research notes — every decision documented
+├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
 ```
 
@@ -228,6 +251,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 29 | Dependabot (cargo + github-actions, grouped weekly updates) |
 | 30 | `cargo doc -D warnings` as CI gate |
 | 31 | Criterion benchmarks for `Network::step`, `Brain::step`, encode/decode |
+| 32 | Container & deploy: Dockerfile + docker-compose with Prometheus + Grafana |
 
 ---
 

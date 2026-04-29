@@ -1,0 +1,13 @@
+# Auto-provision the Prometheus datasource so the user does not have
+# to click through the UI on first start. Maps to the in-network
+# hostname of the prometheus service in docker-compose.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

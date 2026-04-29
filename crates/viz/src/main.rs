@@ -40,7 +40,7 @@ async fn main() {
     init_tracing();
     viz::metrics::init();
 
-    let static_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static");
+    let static_dir: PathBuf = resolve_static_dir();
 
     let snapshot_path = parse_snapshot_arg();
     let state = Arc::new(AppState::new());
@@ -82,7 +82,7 @@ async fn main() {
     info!(sentences, words, "brain ready");
 
     let app = router(state.clone(), static_dir);
-    let addr: SocketAddr = "127.0.0.1:7777".parse().unwrap();
+    let addr: SocketAddr = resolve_bind_addr();
     info!(%addr, "javis-viz listening");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
@@ -101,6 +101,33 @@ async fn main() {
             ),
         }
     }
+}
+
+/// Resolve the directory holding the frontend assets.
+///
+/// `JAVIS_STATIC_DIR` env var wins if set — required for any build
+/// where `CARGO_MANIFEST_DIR` no longer exists at runtime (Docker
+/// images, system-installed binaries, etc.). Otherwise we fall back
+/// to the source-tree location so `cargo run` keeps working.
+fn resolve_static_dir() -> PathBuf {
+    if let Ok(p) = std::env::var("JAVIS_STATIC_DIR") {
+        return PathBuf::from(p);
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static")
+}
+
+/// Resolve the listen address.
+///
+/// `JAVIS_BIND_ADDR` env var wins if set (typical container value:
+/// `0.0.0.0:7777`). Default is loopback for local dev — never
+/// surprise-expose the demo on a LAN.
+fn resolve_bind_addr() -> SocketAddr {
+    if let Ok(s) = std::env::var("JAVIS_BIND_ADDR") {
+        return s
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid JAVIS_BIND_ADDR={s:?}: {e}"));
+    }
+    "127.0.0.1:7777".parse().unwrap()
 }
 
 /// Initialise the `tracing` subscriber.

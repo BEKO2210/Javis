@@ -1,0 +1,18 @@
+# Prometheus scrape configuration for the local docker-compose stack.
+# Single target — the javis-viz service — scraped every 15 s.
+# Production deployments would add label_selector-based service
+# discovery; for the dev/demo stack the static target is enough.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: javis-viz
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - javis-viz:7777
+        labels:
+          service: javis-viz
+          env: local

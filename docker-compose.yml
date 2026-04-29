@@ -1,0 +1,72 @@
+# Local-development stack: javis-viz + Prometheus + Grafana, all
+# wired together so you can scrape `/metrics` and see live charts on
+# http://localhost:3000 (Grafana, anonymous-admin login).
+#
+# Bring it up:
+#   docker compose up --build
+# Tear it down (preserves volumes):
+#   docker compose down
+# Wipe volumes too (start fresh):
+#   docker compose down -v
+
+services:
+  javis-viz:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: javis-viz:local
+    container_name: javis-viz
+    restart: unless-stopped
+    ports:
+      - "7777:7777"
+    environment:
+      RUST_LOG: info
+      JAVIS_LOG_FORMAT: json
+      # Optional: set to a real key to exercise the LLM path.
+      # ANTHROPIC_API_KEY: ""
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:7777/health"]
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: javis-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=24h
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - javis-viz
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: javis-grafana
+    restart: unless-stopped
+    environment:
+      # Anonymous access for local-dev convenience. Do NOT use these
+      # settings in any externally-reachable deployment.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+  grafana-data:
