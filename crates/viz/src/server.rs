@@ -14,11 +14,11 @@ use std::sync::Arc;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tracing::{debug, info, info_span, warn, Instrument};
 
 use crate::events::Event;
@@ -144,8 +144,36 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     Query(params): Query<WsParams>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| run_session(socket, state, params))
+) -> Response {
+    // Bound the live-session count: try to claim one permit; if the
+    // pool is empty, refuse the upgrade with a `Retry-After` so a
+    // well-behaved client backs off rather than burning the loop on
+    // 503-then-retry. The permit stays alive inside `run_session`
+    // for the duration of the session and is dropped on close.
+    let permit = match state.sessions().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            metrics::counter!(
+                "javis_ws_rejected_total",
+                "action" => params.action.as_str(),
+                "reason" => "concurrency_cap",
+            )
+            .increment(1);
+            warn!(
+                action = params.action.as_str(),
+                "rejecting WebSocket upgrade: session concurrency cap reached",
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::RETRY_AFTER, "1")],
+                "javis: concurrency cap reached, retry shortly\n",
+            )
+                .into_response();
+        }
+    };
+
+    ws.on_upgrade(move |socket| run_session(socket, state, params, permit))
+        .into_response()
 }
 
 /// Monotonic per-process WebSocket session counter. Embedded in every
@@ -153,19 +181,29 @@ async fn ws_handler(
 /// disambiguated in aggregated output.
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub async fn run_session(socket: WebSocket, state: Arc<AppState>, params: WsParams) {
+pub async fn run_session(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    params: WsParams,
+    permit: OwnedSemaphorePermit,
+) {
     let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
     let span = info_span!(
         "ws_session",
         session = session_id,
         action = params.action.as_str(),
     );
-    run_session_inner(socket, state, params)
+    run_session_inner(socket, state, params, permit)
         .instrument(span)
         .await;
 }
 
-async fn run_session_inner(mut socket: WebSocket, state: Arc<AppState>, params: WsParams) {
+async fn run_session_inner(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    params: WsParams,
+    permit: OwnedSemaphorePermit,
+) {
     info!("session started");
     metrics::counter!(
         "javis_ws_sessions_total",
@@ -253,4 +291,9 @@ async fn run_session_inner(mut socket: WebSocket, state: Arc<AppState>, params: 
     let _ = socket.close().await;
     let _ = handle.await;
     info!(events_sent, "session ended");
+    // Permit is owned by this future; dropping it here releases the
+    // slot back to the semaphore so the next queued client can
+    // upgrade. Spelt out so a future refactor doesn't accidentally
+    // drop the permit early.
+    drop(permit);
 }

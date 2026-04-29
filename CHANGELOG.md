@@ -4,7 +4,24 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 17 (load test)
+## Unreleased — Iteration 18 (concurrency cap)
+
+### Added
+- `Semaphore`-based cap on simultaneous WebSocket sessions, default
+  32. Configurable via `JAVIS_MAX_CONCURRENT_SESSIONS`.
+- When the cap is reached, the upgrade handler responds with
+  `503 Service Unavailable` + `Retry-After: 1` instead of letting
+  the request queue indefinitely on the inner brain Mutex.
+- New counter `javis_ws_rejected_total{action,reason}` tracks
+  rejections; a single `reason="concurrency_cap"` label today,
+  extensible for future rejection paths.
+- `AppState::with_session_cap(cap)` constructor for tests that need
+  to exercise the rejection path.
+- Two new integration tests in `crates/viz/tests/concurrency_cap.rs`
+  speaking raw HTTP/1.1 to observe the 503 response (the WS client
+  hides non-101 statuses as handshake errors).
+
+## Iteration 17 — load test
 
 ### Added
 - `scripts/load_test.py` — drives N concurrent WebSocket recall

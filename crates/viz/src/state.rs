@@ -14,7 +14,7 @@ use snn_core::{
     Brain, HomeostasisParams, IStdpParams, LifNeuron, LifParams, NeuronKind, Region, Rng,
     StdpParams,
 };
-use tokio::sync::{mpsc::Sender, Mutex};
+use tokio::sync::{mpsc::Sender, Mutex, Semaphore};
 use tracing::{debug, info, warn};
 
 use std::path::Path;
@@ -287,6 +287,40 @@ fn top_k(counts: &[u32], k: usize) -> Vec<u32> {
 pub struct AppState {
     inner: Arc<Mutex<Inner>>,
     llm: Arc<LlmClient>,
+    /// Bounded WebSocket-session counter. Each session acquires one
+    /// permit on accept and releases it on close. When the cap is
+    /// reached the upgrade handler rejects new connections with
+    /// `503 Service Unavailable + Retry-After`. Configurable via
+    /// `JAVIS_MAX_CONCURRENT_SESSIONS` (default 32).
+    sessions: Arc<Semaphore>,
+}
+
+/// Default ceiling on simultaneous WebSocket sessions. Chosen by
+/// reading `notes/35-load-test.md`: throughput plateaus at ~141 ops/s
+/// regardless of concurrency, but p99 latency stays under ~100 ms only
+/// up to roughly 10 parallel clients. 32 leaves headroom for short
+/// bursts while still bounding worst-case queue depth.
+pub const DEFAULT_MAX_CONCURRENT_SESSIONS: usize = 32;
+
+/// Resolve the session cap from the `JAVIS_MAX_CONCURRENT_SESSIONS`
+/// env var. Falls back to [`DEFAULT_MAX_CONCURRENT_SESSIONS`] if unset
+/// or unparseable; logs a warning on bad input rather than panicking
+/// because a server should not refuse to start over an env-var typo.
+fn resolve_session_cap() -> usize {
+    match std::env::var("JAVIS_MAX_CONCURRENT_SESSIONS") {
+        Err(_) => DEFAULT_MAX_CONCURRENT_SESSIONS,
+        Ok(s) => match s.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                tracing::warn!(
+                    value = %s,
+                    default = DEFAULT_MAX_CONCURRENT_SESSIONS,
+                    "JAVIS_MAX_CONCURRENT_SESSIONS not a positive integer; using default",
+                );
+                DEFAULT_MAX_CONCURRENT_SESSIONS
+            }
+        },
+    }
 }
 
 struct Inner {
@@ -316,6 +350,12 @@ const SNAPSHOT_VERSION: u32 = 1;
 
 impl AppState {
     pub fn new() -> Self {
+        Self::with_session_cap(resolve_session_cap())
+    }
+
+    /// Like [`AppState::new`] but with an explicit cap. Useful for
+    /// integration tests that want to exercise the rejection path.
+    pub fn with_session_cap(cap: usize) -> Self {
         let inner = Inner {
             brain: fresh_brain(),
             dict: EngramDictionary::new(),
@@ -326,6 +366,7 @@ impl AppState {
         Self {
             inner: Arc::new(Mutex::new(inner)),
             llm: Arc::new(LlmClient::from_env()),
+            sessions: Arc::new(Semaphore::new(cap)),
         }
     }
 
@@ -337,10 +378,18 @@ impl AppState {
         s
     }
 
+    /// Hand out a clone of the session-permit semaphore so the
+    /// HTTP-layer can `try_acquire_owned()` before upgrading the
+    /// WebSocket. Returns the same `Arc` every call.
+    pub fn sessions(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.sessions)
+    }
+
     pub fn handle(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
             llm: Arc::clone(&self.llm),
+            sessions: Arc::clone(&self.sessions),
         }
     }
 
