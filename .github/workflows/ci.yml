@@ -63,6 +63,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --doc
 
+  docs:
+    name: cargo doc (zero warnings)
+    runs-on: ubuntu-latest
+    env:
+      # Treat every rustdoc warning as a build failure: broken
+      # intra-doc links, invalid codeblock attributes, malformed HTML
+      # in doc comments, etc. Keeps the public-API documentation
+      # honest even when the source compiles fine.
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps --all-features
+
   deny:
     name: cargo-deny (licenses, advisories, bans, sources)
     runs-on: ubuntu-latest

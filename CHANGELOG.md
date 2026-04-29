@@ -4,7 +4,15 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 13 (supply-chain hygiene, parts A + B + C)
+## Unreleased — Iteration 13 (supply-chain hygiene, parts A + B + C + D)
+
+### Added (part D — rustdoc warnings as errors)
+- New `docs` CI job runs `cargo doc --workspace --no-deps
+  --all-features` with `RUSTDOCFLAGS="-D warnings"`, so broken
+  intra-doc links, invalid codeblock attributes, and malformed HTML
+  in doc comments fail the build.
+- Verified locally: existing 29 iterations of doc comments pass
+  with both `-D warnings` and `-D rustdoc::all` — no fixes needed.
 
 ### Added (part C — Dependabot)
 - `.github/dependabot.yml` tracks `cargo` (root + every crate) and

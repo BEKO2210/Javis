@@ -165,7 +165,7 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 29 research notes — every decision documented
+├── notes/          ─ 30 research notes — every decision documented
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
 ```
 
@@ -226,6 +226,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 27 | Supply-chain hygiene: `cargo-deny` (advisories + licenses + bans + sources) |
 | 28 | MSRV pinned to Rust 1.86, dedicated CI job |
 | 29 | Dependabot (cargo + github-actions, grouped weekly updates) |
+| 30 | `cargo doc -D warnings` as CI gate |
 
 ---
 
