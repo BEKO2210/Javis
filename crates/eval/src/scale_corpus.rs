@@ -682,7 +682,7 @@ fn pick<'a>(pool: &'a [&'static str], rng: &mut Rng) -> &'a str {
 fn pick_excluding<'a>(pool: &'a [&'static str], rng: &mut Rng, exclude: &[&str]) -> &'a str {
     for _ in 0..16 {
         let candidate = pool[(rng.next_u64() as usize) % pool.len()];
-        if !exclude.iter().any(|&e| e == candidate) {
+        if !exclude.contains(&candidate) {
             return candidate;
         }
     }
