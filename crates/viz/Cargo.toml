@@ -19,7 +19,7 @@ snn-core = { path = "../snn-core" }
 encoders = { path = "../encoders" }
 eval = { path = "../eval" }
 llm = { path = "../llm" }
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "fs"] }
 tower-http = { version = "0.5", features = ["fs", "trace"] }
 serde = { workspace = true }
