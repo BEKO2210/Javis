@@ -224,6 +224,19 @@ What separates Javis from a typical research demo:
 | `encode_sentence` (18 words) | 21 µs |
 | `decode_strict` (vocab 1 000) | 253 µs |
 
+**End-to-end load profile** (note 35, against `docker compose` stack)
+
+| Concurrent WS clients | Throughput | p50 / p99 latency |
+| ---: | ---: | ---: |
+| 1 | 116 ops/s | 8.5 / 11 ms |
+| 10 | 142 ops/s | 70 / 84 ms |
+| 50 | 142 ops/s | 352 / 397 ms |
+| 100 | 141 ops/s | 700 / 771 ms |
+
+Recall is `tokio::Mutex`-serialised on a single Brain instance, so
+throughput plateaus at ~141 ops/sec and latency grows linearly with
+concurrency. No errors / drops / memory leak across 8 277 recalls.
+
 CI runs eight jobs on every push: `fmt`, `clippy -D warnings`,
 `test`, `doc-tests`, `deny`, `msrv`, `docs`, `benches` (compile-only).
 
@@ -239,8 +252,8 @@ javis/
 │   ├── eval/       ─ Token-efficiency benchmarks vs. naive RAG
 │   ├── llm/        ─ Anthropic API adapter (real + deterministic mock)
 │   └── viz/        ─ Axum + WebSocket server, 3D-force-graph frontend
-├── notes/          ─ 34 research notes — every decision documented
-├── scripts/        ─ End-to-end sanity check (Python)
+├── notes/          ─ 35 research notes — every decision documented
+├── scripts/        ─ End-to-end sanity check + load test (Python)
 ├── deploy/         ─ Prometheus + Grafana provisioning for docker-compose
 └── assets/         ─ Logo and architecture diagram (programmatic SVG)
 ```
@@ -307,6 +320,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 32 | Container & deploy: Dockerfile + docker-compose with Prometheus + Grafana |
 | 33 | Docker stack verified end-to-end + snapshot volume |
 | 34 | End-to-end sanity script + Grafana datasource UID fix |
+| 35 | Load test: ~141 recalls/sec sustained, Mutex-serialised, no leak |
 
 ---
 

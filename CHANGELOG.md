@@ -4,7 +4,27 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
-## Unreleased — Iteration 16 (end-to-end sanity)
+## Unreleased — Iteration 17 (load test)
+
+### Added
+- `scripts/load_test.py` — drives N concurrent WebSocket recall
+  sessions for a fixed duration, then reports throughput, client-
+  and server-side latency percentiles, and cross-checks them
+  against the `javis_recall_duration_seconds_count` Prometheus
+  histogram. Default sweep: concurrency 1, 10, 50, 100 × 15 s.
+
+### Verified
+- Server sustains ~141 recalls/sec single-tenant (Mutex-serialised
+  recall path).
+- Latency scales linearly with concurrency: p99 11 ms at c=1,
+  84 ms at c=10, 397 ms at c=50, 771 ms at c=100. No errors, no
+  drops across 8 277 recalls.
+- Memory footprint: 27 MiB idle → 35 MiB peak under sustained
+  load → 34 MiB after cool-down. No leak.
+- Documented bottleneck (`Arc<Mutex<Inner>>`) and three potential
+  scaling paths in `notes/35-load-test.md`.
+
+## Iteration 16 — end-to-end sanity
 
 ### Fixed
 - Grafana dashboard panels referenced datasource `uid: "Prometheus"`
