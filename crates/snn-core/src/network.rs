@@ -12,10 +12,15 @@
 //! inhibitory pre-neurons subtract. Weights themselves are non-negative
 //! magnitudes, clamped by STDP into `[w_min, w_max]`.
 
+use crate::heterosynaptic::{HeterosynapticParams, NormKind};
 use crate::homeostasis::HomeostasisParams;
+use crate::intrinsic::IntrinsicParams;
 use crate::istdp::IStdpParams;
+use crate::metaplasticity::MetaplasticityParams;
 use crate::neuron::{LifNeuron, NeuronKind};
+use crate::reward::RewardParams;
 use crate::stdp::StdpParams;
+use crate::structural::{PruneCounter, StructuralParams};
 use crate::synapse::{Synapse, SynapseKind};
 
 fn default_tau_syn_ms() -> f32 {
@@ -99,6 +104,73 @@ pub struct Network {
     /// transient.
     #[serde(skip, default)]
     pub synapse_events: u64,
+
+    // ==== iter-44 "breakthrough" plasticity stack ====
+    /// BCM-style metaplasticity (sliding LTP/LTD threshold per post).
+    #[serde(default)]
+    pub metaplasticity: Option<MetaplasticityParams>,
+    /// Intrinsic plasticity / spike-frequency adaptation.
+    #[serde(default)]
+    pub intrinsic: Option<IntrinsicParams>,
+    /// Heterosynaptic normalisation (per-post weight-norm cap).
+    #[serde(default)]
+    pub heterosynaptic: Option<HeterosynapticParams>,
+    /// Structural plasticity (sprouting + pruning).
+    #[serde(default)]
+    pub structural: Option<StructuralParams>,
+    /// Three-factor reward-modulated STDP. The eligibility tag and
+    /// the global modulator are kept on `Network` so all learning
+    /// machinery sees the same scalar.
+    #[serde(default)]
+    pub reward: Option<RewardParams>,
+
+    /// Slow pre-trace `r2` (Pfister-Gerstner triplet LTD term). Empty
+    /// unless `stdp.triplet_enabled() == true`.
+    #[serde(skip, default)]
+    pub pre_trace2: Vec<f32>,
+    /// Slow post-trace `o2` (triplet LTP term). Empty unless triplet
+    /// is on.
+    #[serde(skip, default)]
+    pub post_trace2: Vec<f32>,
+    /// Per-synapse eligibility trace for R-STDP. Empty unless
+    /// reward learning is on.
+    #[serde(skip, default)]
+    pub eligibility: Vec<f32>,
+    /// Global neuromodulator (dopamine surrogate). Multiplied with
+    /// the eligibility trace to drive reward-gated weight updates.
+    /// Set via [`Network::set_neuromodulator`]. Default 0 — no
+    /// reward gating.
+    #[serde(skip, default)]
+    pub neuromodulator: f32,
+    /// Fast per-post rate trace (BCM `y`). Empty unless
+    /// metaplasticity is on.
+    #[serde(skip, default)]
+    pub rate_trace: Vec<f32>,
+    /// Slow per-post threshold trace (BCM `θ`). Empty unless
+    /// metaplasticity is on.
+    #[serde(skip, default)]
+    pub theta_trace: Vec<f32>,
+    /// Per-neuron threshold offset added to `LifParams::v_threshold`
+    /// when intrinsic plasticity is on.
+    #[serde(skip, default)]
+    pub v_thresh_offset: Vec<f32>,
+    /// Per-neuron adaptation trace driving the threshold offset
+    /// above. Decays with `IntrinsicParams::tau_adapt_ms`.
+    #[serde(skip, default)]
+    pub adapt_trace: Vec<f32>,
+    /// Per-synapse "consecutive structural-pass evaluations below
+    /// threshold" counter. Empty unless structural plasticity is on.
+    #[serde(skip, default)]
+    pub prune_counters: Vec<PruneCounter>,
+    /// Number of synapses currently marked dead (weight 0, not in
+    /// the `outgoing` / `incoming` buckets). The slot stays in
+    /// `synapses` to keep every `usize` / `u32` index stable.
+    #[serde(skip, default)]
+    pub dead_synapses: u32,
+    /// Replay alternation flag — flipped each `Network::consolidate`
+    /// call when `ReplayParams::alternate_reverse` is on.
+    #[serde(skip, default)]
+    pub replay_flip: bool,
 }
 
 impl Network {
@@ -127,6 +199,22 @@ impl Network {
             homeostasis: None,
             step_counter: 0,
             synapse_events: 0,
+            metaplasticity: None,
+            intrinsic: None,
+            heterosynaptic: None,
+            structural: None,
+            reward: None,
+            pre_trace2: Vec::new(),
+            post_trace2: Vec::new(),
+            eligibility: Vec::new(),
+            neuromodulator: 0.0,
+            rate_trace: Vec::new(),
+            theta_trace: Vec::new(),
+            v_thresh_offset: Vec::new(),
+            adapt_trace: Vec::new(),
+            prune_counters: Vec::new(),
+            dead_synapses: 0,
+            replay_flip: false,
         }
     }
 
@@ -147,6 +235,22 @@ impl Network {
         // a synapse of that kind first delivers, see `kind_channel_mut`.
         self.pre_trace.push(0.0);
         self.post_trace.push(0.0);
+        // iter-44 lazy per-neuron buffers: keyed off the *feature*
+        // configuration, not the current buffer length, so `enable_*`
+        // can be called before any neurons exist (the common pattern
+        // in tests).
+        if self.stdp.is_some_and(|s| s.triplet_enabled()) {
+            self.pre_trace2.push(0.0);
+            self.post_trace2.push(0.0);
+        }
+        if self.metaplasticity.is_some() {
+            self.rate_trace.push(0.0);
+            self.theta_trace.push(0.0);
+        }
+        if self.intrinsic.is_some() {
+            self.adapt_trace.push(0.0);
+            self.v_thresh_offset.push(0.0);
+        }
         id
     }
 
@@ -196,6 +300,16 @@ impl Network {
         self.synapses.push(Synapse::new(pre, post, weight));
         self.outgoing[pre].push(id as u32);
         self.incoming[post].push(id as u32);
+        // Keep per-synapse iter-44 buffers in lock-step with
+        // `synapses`. Keyed off the feature flag — same rationale as
+        // `add_neuron`'s buffers: lets `enable_*` be called before any
+        // synapse exists.
+        if self.reward.is_some() {
+            self.eligibility.push(0.0);
+        }
+        if self.structural.is_some() {
+            self.prune_counters.push(PruneCounter::default());
+        }
         id
     }
 
@@ -238,6 +352,34 @@ impl Network {
         if need_gaba && self.i_syn_gaba.len() != n {
             self.i_syn_gaba = vec![0.0; n];
         }
+        // iter-44: re-seat per-neuron buffers for whichever extended
+        // plasticity rule is enabled. Each re-allocation happens only
+        // if the feature is configured; off-by-default networks pay
+        // no cost.
+        self.ensure_triplet_traces();
+        if self.metaplasticity.is_some() {
+            if self.rate_trace.len() != n {
+                self.rate_trace = vec![0.0; n];
+            }
+            if self.theta_trace.len() != n {
+                self.theta_trace = vec![0.0; n];
+            }
+        }
+        if self.intrinsic.is_some() {
+            if self.adapt_trace.len() != n {
+                self.adapt_trace = vec![0.0; n];
+            }
+            if self.v_thresh_offset.len() != n {
+                self.v_thresh_offset = vec![0.0; n];
+            }
+        }
+        let s = self.synapses.len();
+        if self.reward.is_some() && self.eligibility.len() != s {
+            self.eligibility = vec![0.0; s];
+        }
+        if self.structural.is_some() && self.prune_counters.len() != s {
+            self.prune_counters = vec![PruneCounter::default(); s];
+        }
     }
 
     /// Set the AMPA decay time constant (ms). Must be positive.
@@ -265,6 +407,10 @@ impl Network {
 
     pub fn enable_stdp(&mut self, params: StdpParams) {
         self.stdp = Some(params);
+        // Allocate the slow Pfister-Gerstner traces if the triplet
+        // contribution is on. Idempotent — calling enable_stdp twice
+        // with the same params won't double-allocate.
+        self.ensure_triplet_traces();
     }
 
     pub fn disable_stdp(&mut self) {
@@ -287,6 +433,104 @@ impl Network {
         self.istdp = None;
     }
 
+    // ---- iter-44 plasticity setters --------------------------------
+
+    /// Switch on BCM-style metaplasticity. Allocates per-post `rate`
+    /// and `θ` traces on first call so existing networks stay slim
+    /// when the feature is unused.
+    pub fn enable_metaplasticity(&mut self, params: MetaplasticityParams) {
+        let n = self.neurons.len();
+        if self.rate_trace.len() != n {
+            self.rate_trace = vec![0.0; n];
+        }
+        if self.theta_trace.len() != n {
+            self.theta_trace = vec![0.0; n];
+        }
+        self.metaplasticity = Some(params);
+    }
+
+    pub fn disable_metaplasticity(&mut self) {
+        self.metaplasticity = None;
+    }
+
+    /// Switch on adaptive-threshold intrinsic plasticity. Allocates
+    /// the per-neuron `adapt_trace` and `v_thresh_offset` on first call.
+    pub fn enable_intrinsic_plasticity(&mut self, params: IntrinsicParams) {
+        let n = self.neurons.len();
+        if self.adapt_trace.len() != n {
+            self.adapt_trace = vec![0.0; n];
+        }
+        if self.v_thresh_offset.len() != n {
+            self.v_thresh_offset = vec![0.0; n];
+        }
+        self.intrinsic = Some(params);
+    }
+
+    pub fn disable_intrinsic_plasticity(&mut self) {
+        self.intrinsic = None;
+    }
+
+    pub fn enable_heterosynaptic(&mut self, params: HeterosynapticParams) {
+        self.heterosynaptic = Some(params);
+    }
+
+    pub fn disable_heterosynaptic(&mut self) {
+        self.heterosynaptic = None;
+    }
+
+    /// Switch on structural plasticity. Allocates the per-synapse
+    /// `prune_counters` to match the current synapse count; resized
+    /// lazily as new edges are wired.
+    pub fn enable_structural(&mut self, params: StructuralParams) {
+        let s = self.synapses.len();
+        if self.prune_counters.len() != s {
+            self.prune_counters = vec![PruneCounter::default(); s];
+        }
+        self.structural = Some(params);
+    }
+
+    pub fn disable_structural(&mut self) {
+        self.structural = None;
+    }
+
+    /// Switch on three-factor reward-modulated learning. Allocates a
+    /// per-synapse `eligibility` trace to match `synapses.len()`.
+    pub fn enable_reward_learning(&mut self, params: RewardParams) {
+        let s = self.synapses.len();
+        if self.eligibility.len() != s {
+            self.eligibility = vec![0.0; s];
+        }
+        self.reward = Some(params);
+    }
+
+    pub fn disable_reward_learning(&mut self) {
+        self.reward = None;
+    }
+
+    /// Set the global neuromodulator (dopamine surrogate). The next
+    /// [`Network::step`] reads this value when `reward` is `Some`.
+    /// Persisting state across steps is the caller's responsibility:
+    /// the modulator is *not* automatically reset, so a tonic baseline
+    /// can be modelled by leaving it set.
+    pub fn set_neuromodulator(&mut self, value: f32) {
+        self.neuromodulator = if value.is_finite() { value } else { 0.0 };
+    }
+
+    /// Triplet-STDP allocations are tied to whether the configured
+    /// `StdpParams` need them. Idempotent.
+    fn ensure_triplet_traces(&mut self) {
+        let want = self.stdp.map(|s| s.triplet_enabled()).unwrap_or(false);
+        let n = self.neurons.len();
+        if want {
+            if self.pre_trace2.len() != n {
+                self.pre_trace2 = vec![0.0; n];
+            }
+            if self.post_trace2.len() != n {
+                self.post_trace2 = vec![0.0; n];
+            }
+        }
+    }
+
     /// Reset transient state (membrane potentials, synaptic currents,
     /// STDP traces, homeostatic activity traces, refractory clocks,
     /// time, step counter, event counter). Synapse weights and network
@@ -306,6 +550,31 @@ impl Network {
             }
             self.pre_trace[idx] = 0.0;
             self.post_trace[idx] = 0.0;
+            if idx < self.pre_trace2.len() {
+                self.pre_trace2[idx] = 0.0;
+            }
+            if idx < self.post_trace2.len() {
+                self.post_trace2[idx] = 0.0;
+            }
+            if idx < self.rate_trace.len() {
+                self.rate_trace[idx] = 0.0;
+            }
+            if idx < self.theta_trace.len() {
+                self.theta_trace[idx] = 0.0;
+            }
+            if idx < self.adapt_trace.len() {
+                self.adapt_trace[idx] = 0.0;
+            }
+            if idx < self.v_thresh_offset.len() {
+                self.v_thresh_offset[idx] = 0.0;
+            }
+        }
+        for x in self.eligibility.iter_mut() {
+            *x = 0.0;
+        }
+        self.neuromodulator = 0.0;
+        for c in self.prune_counters.iter_mut() {
+            c.age = 0;
         }
         self.time = 0.0;
         self.step_counter = 0;
@@ -353,6 +622,18 @@ impl Network {
             for x in self.post_trace.iter_mut() {
                 *x *= dm;
             }
+            // Triplet slow-trace decays. Skipped (and buffers stay
+            // empty) when `triplet_enabled() == false`.
+            if p.triplet_enabled() {
+                let dpx = (-dt / p.tau_x.max(1e-3)).exp();
+                let dpy = (-dt / p.tau_y.max(1e-3)).exp();
+                for x in self.pre_trace2.iter_mut() {
+                    *x *= dpx;
+                }
+                for x in self.post_trace2.iter_mut() {
+                    *x *= dpy;
+                }
+            }
         } else if let Some(ip) = self.istdp {
             // iSTDP only — decay just the post-trace using its own tau.
             let dm = (-dt / ip.tau_minus).exp();
@@ -369,10 +650,55 @@ impl Network {
             }
         }
 
+        // 2c) iter-44 trace decays — metaplasticity rate/θ, intrinsic
+        //     adaptation, eligibility tag. Each runs only if its
+        //     buffer was actually sized by the corresponding `enable_*`.
+        if let Some(m) = self.metaplasticity {
+            if m.enabled && !self.rate_trace.is_empty() {
+                let drate = (-dt / m.tau_rate_ms.max(1e-3)).exp();
+                let dtheta = (-dt / m.tau_theta_ms.max(1e-3)).exp();
+                for x in self.rate_trace.iter_mut() {
+                    *x *= drate;
+                }
+                // θ tracks the squared *long-term* rate. The `(1-dtheta)`
+                // weighting keeps the trace a low-pass-filtered estimate
+                // of `rate^2` — slow enough for stability, fast enough
+                // to track concept drift.
+                for (theta, rate) in self.theta_trace.iter_mut().zip(self.rate_trace.iter()) {
+                    *theta = *theta * dtheta + (1.0 - dtheta) * (*rate) * (*rate);
+                }
+            }
+        }
+        if let Some(ip) = self.intrinsic {
+            if ip.enabled && !self.adapt_trace.is_empty() {
+                let da = (-dt / ip.tau_adapt_ms.max(1e-3)).exp();
+                for x in self.adapt_trace.iter_mut() {
+                    *x *= da;
+                }
+                // Recompute the per-neuron threshold offset from the
+                // current adaptation trace. This loop is straight-line
+                // and autovectoriser-friendly.
+                for (offset, &adapt) in self.v_thresh_offset.iter_mut().zip(self.adapt_trace.iter())
+                {
+                    *offset = (ip.beta * (adapt - ip.a_target)).clamp(ip.offset_min, ip.offset_max);
+                }
+            }
+        }
+        if let Some(rp) = self.reward {
+            if !self.eligibility.is_empty() {
+                let de = (-dt / rp.tau_eligibility_ms.max(1e-3)).exp();
+                for x in self.eligibility.iter_mut() {
+                    *x *= de;
+                }
+            }
+        }
+
         // 3) Step every LIF, recording spikes. SoA layout: per-neuron
         //    transient state lives in parallel `Vec<f32>` slices on
         //    `self`; the inner loop is a single straight-line walk
         //    over indices, autovectoriser-friendly.
+        let intrinsic_active =
+            self.intrinsic.is_some_and(|p| p.enabled) && !self.v_thresh_offset.is_empty();
         let mut fired: Vec<usize> = Vec::new();
         let n = self.neurons.len();
         for idx in 0..n {
@@ -397,7 +723,16 @@ impl Network {
             }
             let dv = dt / p.tau_m * (-(*v - p.v_rest) + p.r_m * total);
             *v += dv;
-            if *v >= p.v_threshold {
+            // Effective threshold: classical fixed `v_threshold` *plus*
+            // the intrinsic-plasticity offset when that feature is on.
+            // Off path: `intrinsic_active = false` → no read, no branch
+            // mispredict, byte-identical to the pre-iter-44 hot loop.
+            let v_th = if intrinsic_active {
+                p.v_threshold + self.v_thresh_offset[idx]
+            } else {
+                p.v_threshold
+            };
+            if *v >= v_th {
                 *v = p.v_reset;
                 *refr = t + p.refractory;
                 self.last_spike[idx] = t;
@@ -410,6 +745,16 @@ impl Network {
         let istdp = self.istdp;
         let any_post_trace = stdp.is_some() || istdp.is_some();
         let homeo_active = self.homeostasis.is_some();
+        let triplet_active = stdp.is_some_and(|s| s.triplet_enabled());
+        let meta_active =
+            self.metaplasticity.is_some_and(|m| m.enabled) && !self.rate_trace.is_empty();
+        let intrinsic_spike_active =
+            self.intrinsic.is_some_and(|p| p.enabled) && !self.adapt_trace.is_empty();
+        let reward_active = self.reward.is_some() && !self.eligibility.is_empty();
+        let meta_params = self.metaplasticity;
+        let intrinsic_params = self.intrinsic;
+        let reward_params = self.reward;
+
         for &src in &fired {
             if stdp.is_some() {
                 self.pre_trace[src] += 1.0;
@@ -419,6 +764,16 @@ impl Network {
             }
             if homeo_active {
                 self.activity_trace[src] += 1.0;
+            }
+            // iter-44: rate/adapt traces & triplet slow traces tick on
+            // every spike too. Ordering matters for triplet — the slow
+            // post-trace is *read* before its own update in the LTP
+            // path, matching the Pfister-Gerstner formulation.
+            if meta_active {
+                self.rate_trace[src] += 1.0;
+            }
+            if intrinsic_spike_active {
+                self.adapt_trace[src] += intrinsic_params.map(|p| p.alpha_spike).unwrap_or(0.0);
             }
             let src_kind = self.neurons[src].kind;
             let sign: f32 = match src_kind {
@@ -446,13 +801,43 @@ impl Network {
                     NeuronKind::Excitatory => {
                         if let Some(p) = stdp {
                             // pre-spike → LTD on this outgoing synapse
-                            // proportional to the post-trace.
-                            let new_w = if p.soft_bounds {
-                                w - p.a_minus * self.post_trace[post] * (w - p.w_min)
+                            // proportional to the post-trace. Triplet:
+                            // multiply by `(a_minus + a3_minus * pre_trace2[pre])`
+                            // *read before* the slow pre-trace tick.
+                            let amin = if triplet_active {
+                                p.a_minus + p.a3_minus * self.pre_trace2[src]
                             } else {
-                                (w - p.a_minus * self.post_trace[post]).clamp(p.w_min, p.w_max)
+                                p.a_minus
+                            };
+                            // BCM modulator on the post-neuron — modulates
+                            // both LTP and LTD symmetrically. Off path:
+                            // `meta_active = false` → constant 1.0.
+                            let modulator = if meta_active {
+                                meta_params
+                                    .map(|m| {
+                                        m.modulator(self.rate_trace[post], self.theta_trace[post])
+                                    })
+                                    .unwrap_or(1.0)
+                            } else {
+                                1.0
+                            };
+                            let dw_pre = amin * self.post_trace[post] * modulator;
+                            let new_w = if p.soft_bounds {
+                                w - dw_pre * (w - p.w_min)
+                            } else {
+                                (w - dw_pre).clamp(p.w_min, p.w_max)
                             };
                             self.synapses[eid].weight = new_w;
+                            // Reward eligibility: pre-spike contribution.
+                            if reward_active {
+                                if let Some(rp) = reward_params {
+                                    if !rp.excitatory_only
+                                        || self.neurons[post].kind == NeuronKind::Excitatory
+                                    {
+                                        self.eligibility[eid] -= rp.a_minus * self.post_trace[post];
+                                    }
+                                }
+                            }
                         }
                     }
                     NeuronKind::Inhibitory => {
@@ -480,14 +865,67 @@ impl Network {
                         continue;
                     }
                     let w = self.synapses[eid].weight;
-                    // post-spike → LTP on this incoming synapse
-                    // proportional to the pre-trace.
-                    let new_w = if p.soft_bounds {
-                        w + p.a_plus * self.pre_trace[pre] * (p.w_max - w)
+                    // Triplet LTP: `(a_plus + a3_plus * post_trace2[post])`
+                    // read *before* the slow post-trace tick below, per
+                    // Pfister-Gerstner.
+                    let aplu = if triplet_active {
+                        p.a_plus + p.a3_plus * self.post_trace2[src]
                     } else {
-                        (w + p.a_plus * self.pre_trace[pre]).clamp(p.w_min, p.w_max)
+                        p.a_plus
+                    };
+                    let modulator = if meta_active {
+                        meta_params
+                            .map(|m| m.modulator(self.rate_trace[src], self.theta_trace[src]))
+                            .unwrap_or(1.0)
+                    } else {
+                        1.0
+                    };
+                    let dw_post = aplu * self.pre_trace[pre] * modulator;
+                    let new_w = if p.soft_bounds {
+                        w + dw_post * (p.w_max - w)
+                    } else {
+                        (w + dw_post).clamp(p.w_min, p.w_max)
                     };
                     self.synapses[eid].weight = new_w;
+                    // Reward eligibility: post-spike contribution.
+                    if reward_active {
+                        if let Some(rp) = reward_params {
+                            self.eligibility[eid] += rp.a_plus * self.pre_trace[pre];
+                        }
+                    }
+                }
+            }
+
+            // Triplet slow-trace tick happens *after* both directions
+            // read the previous value — Pfister-Gerstner ordering.
+            if triplet_active {
+                self.pre_trace2[src] += 1.0;
+                self.post_trace2[src] += 1.0;
+            }
+        }
+
+        // 4b) Apply reward-gated weight update on every synapse with
+        //     non-zero eligibility, every step. Cheap when the
+        //     eligibility vec is zero (skip via early-out).
+        if reward_active && self.neuromodulator.abs() > 0.0 {
+            if let Some(rp) = reward_params {
+                let scale = rp.eta * self.neuromodulator * dt;
+                if scale != 0.0 {
+                    for eid in 0..self.synapses.len() {
+                        let elig = self.eligibility[eid];
+                        if elig == 0.0 {
+                            continue;
+                        }
+                        if rp.excitatory_only {
+                            let pre = self.synapses[eid].pre;
+                            if self.neurons[pre].kind != NeuronKind::Excitatory {
+                                continue;
+                            }
+                        }
+                        let w = self.synapses[eid].weight;
+                        let new_w = (w + scale * elig).clamp(rp.w_min, rp.w_max);
+                        self.synapses[eid].weight = new_w;
+                    }
                 }
             }
         }
@@ -503,8 +941,292 @@ impl Network {
             }
         }
 
+        // 5b) Periodic heterosynaptic normalisation.
+        if let Some(hs) = self.heterosynaptic {
+            if hs.enabled && hs.apply_every > 0 && self.step_counter % (hs.apply_every as u64) == 0
+            {
+                self.apply_heterosynaptic_norm(&hs);
+            }
+        }
+
+        // 5c) Periodic structural plasticity — sprout + prune.
+        if let Some(sp) = self.structural {
+            if sp.enabled && sp.apply_every > 0 && self.step_counter % (sp.apply_every as u64) == 0
+            {
+                self.apply_structural_pass(&sp);
+            }
+        }
+
         self.time += dt;
         fired
+    }
+
+    /// Heterosynaptic normalisation pass — caps the per-post-neuron
+    /// L1 / L2 norm of incoming excitatory weights at `target`.
+    fn apply_heterosynaptic_norm(&mut self, hs: &HeterosynapticParams) {
+        let n = self.neurons.len();
+        for post in 0..n {
+            // Only excitatory targets carry a meaningful "incoming
+            // excitatory budget" — inhibitory cells are normally
+            // shaped by iSTDP alone.
+            if self.neurons[post].kind != NeuronKind::Excitatory {
+                continue;
+            }
+            let n_in = self.incoming[post].len();
+            if n_in == 0 {
+                continue;
+            }
+            let mut acc = 0.0_f32;
+            for i in 0..n_in {
+                let eid = self.incoming[post][i] as usize;
+                let pre = self.synapses[eid].pre;
+                if self.neurons[pre].kind != NeuronKind::Excitatory {
+                    continue;
+                }
+                let w = self.synapses[eid].weight;
+                acc += match hs.kind {
+                    NormKind::L1 => w.abs(),
+                    NormKind::L2 => w * w,
+                };
+            }
+            if acc < hs.min_active_sum {
+                continue;
+            }
+            let norm = match hs.kind {
+                NormKind::L1 => acc,
+                NormKind::L2 => acc.sqrt(),
+            };
+            if norm <= hs.target {
+                continue;
+            }
+            let factor = hs.target / norm;
+            for i in 0..n_in {
+                let eid = self.incoming[post][i] as usize;
+                let pre = self.synapses[eid].pre;
+                if self.neurons[pre].kind != NeuronKind::Excitatory {
+                    continue;
+                }
+                self.synapses[eid].weight *= factor;
+            }
+        }
+    }
+
+    /// Structural pass — prune dormant E→E synapses and (optionally)
+    /// sprout new ones between consistently co-active E cells.
+    fn apply_structural_pass(&mut self, sp: &StructuralParams) {
+        let m = self.synapses.len();
+        if self.prune_counters.len() != m {
+            self.prune_counters.resize_with(m, PruneCounter::default);
+        }
+        // ----- Pruning -----
+        let mut to_prune: Vec<usize> = Vec::new();
+        for eid in 0..m {
+            if self.prune_counters[eid].dead {
+                continue;
+            }
+            // Limit pruning to E→E synapses for safety — we don't want
+            // to silently retract iSTDP-managed I→E inhibition.
+            let pre = self.synapses[eid].pre;
+            let post = self.synapses[eid].post;
+            if self.neurons[pre].kind != NeuronKind::Excitatory
+                || self.neurons[post].kind != NeuronKind::Excitatory
+            {
+                continue;
+            }
+            if self.synapses[eid].weight < sp.prune_threshold {
+                self.prune_counters[eid].age = self.prune_counters[eid].age.saturating_add(1);
+                if self.prune_counters[eid].age >= sp.prune_age_steps {
+                    to_prune.push(eid);
+                }
+            } else {
+                self.prune_counters[eid].age = 0;
+            }
+        }
+        for eid in to_prune {
+            self.synapses[eid].weight = 0.0;
+            self.prune_counters[eid].dead = true;
+            // Remove from adjacency buckets so the integration loop
+            // never visits this slot again. The vector indices stay
+            // stable; the `synapses` slot lingers as a tombstone.
+            let pre = self.synapses[eid].pre;
+            let post = self.synapses[eid].post;
+            self.outgoing[pre].retain(|&e| e as usize != eid);
+            self.incoming[post].retain(|&e| e as usize != eid);
+            self.dead_synapses += 1;
+        }
+
+        // ----- Sprouting -----
+        let n = self.neurons.len();
+        // Candidate sources / targets from the recent activity traces.
+        let mut hot_pre: Vec<usize> = Vec::new();
+        let mut hot_post: Vec<usize> = Vec::new();
+        for idx in 0..n {
+            if self.neurons[idx].kind != NeuronKind::Excitatory {
+                continue;
+            }
+            if self.pre_trace[idx] >= sp.sprout_pre_trace {
+                hot_pre.push(idx);
+            }
+            if self.post_trace[idx] >= sp.sprout_post_trace {
+                hot_post.push(idx);
+            }
+        }
+        let mut sprouted: u32 = 0;
+        // Cheap deterministic pairing: walk hot_pre × hot_post, skip
+        // existing edges and self-loops, cap at `max_new_per_step`.
+        'outer: for &pre in &hot_pre {
+            for &post in &hot_post {
+                if sprouted >= sp.max_new_per_step {
+                    break 'outer;
+                }
+                if pre == post {
+                    continue;
+                }
+                let exists = self.outgoing[pre]
+                    .iter()
+                    .any(|&eid| self.synapses[eid as usize].post == post);
+                if exists {
+                    continue;
+                }
+                let _new_eid = self.connect(pre, post, sp.sprout_initial);
+                sprouted += 1;
+            }
+        }
+    }
+
+    /// Drive a brief offline replay/consolidation round through this
+    /// network, biasing it towards the strongest already-formed
+    /// engrams. Plasticity stays on, so weights consolidate exactly
+    /// the way they would during a waking re-experience of the same
+    /// activity pattern.
+    pub fn consolidate(&mut self, params: &crate::replay::ReplayParams) {
+        let n = self.neurons.len();
+        if n == 0 {
+            return;
+        }
+        // Rank E neurons by incoming excitatory weight sum.
+        let mut order: Vec<(usize, f32)> = (0..n)
+            .filter(|&i| self.neurons[i].kind == NeuronKind::Excitatory)
+            .map(|i| {
+                let s: f32 = self.incoming[i]
+                    .iter()
+                    .map(|&eid| {
+                        let s = &self.synapses[eid as usize];
+                        if self.neurons[s.pre].kind == NeuronKind::Excitatory {
+                            s.weight
+                        } else {
+                            0.0
+                        }
+                    })
+                    .sum();
+                (i, s)
+            })
+            .collect();
+        order.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let k = (params.top_k as usize).min(order.len());
+        if k == 0 {
+            return;
+        }
+        let mut chosen: Vec<usize> = order.into_iter().take(k).map(|(i, _)| i).collect();
+        if params.alternate_reverse && self.replay_flip {
+            chosen.reverse();
+        }
+        self.replay_flip = !self.replay_flip;
+
+        let prev_modulator = self.neuromodulator;
+        if params.neuromod_during != 0.0 {
+            self.neuromodulator = params.neuromod_during;
+        }
+
+        let pulse_steps = (params.pulse_ms / self.dt).max(1.0) as usize;
+        let gap_steps = (params.gap_ms / self.dt).max(0.0) as usize;
+        let mut external = vec![0.0_f32; n];
+        let zero = vec![0.0_f32; n];
+        for &idx in &chosen {
+            external[idx] = params.drive_current;
+            for _ in 0..pulse_steps {
+                let _ = self.step(&external);
+            }
+            external[idx] = 0.0;
+            for _ in 0..gap_steps {
+                let _ = self.step(&zero);
+            }
+        }
+
+        self.neuromodulator = prev_modulator;
+    }
+
+    /// Compact the `synapses` vector by removing every dead slot. Every
+    /// `usize` / `u32` index that previously pointed into `synapses`
+    /// gets rewritten — this is the *only* operation in the crate that
+    /// invalidates pre-existing synapse IDs, so callers must drop any
+    /// stale handles before calling. Returns the number of synapses
+    /// that were dropped.
+    pub fn compact_synapses(&mut self) -> usize {
+        if self.dead_synapses == 0 {
+            return 0;
+        }
+        let m = self.synapses.len();
+        let mut new_id: Vec<i32> = vec![-1; m];
+        let mut new_synapses: Vec<Synapse> = Vec::with_capacity(m);
+        let mut new_eligibility: Vec<f32> = if !self.eligibility.is_empty() {
+            Vec::with_capacity(m)
+        } else {
+            Vec::new()
+        };
+        let mut new_counters: Vec<PruneCounter> = if !self.prune_counters.is_empty() {
+            Vec::with_capacity(m)
+        } else {
+            Vec::new()
+        };
+        for (eid, slot) in new_id.iter_mut().enumerate().take(m) {
+            let alive = self
+                .prune_counters
+                .get(eid)
+                .map(|c| !c.dead)
+                .unwrap_or(true);
+            if alive {
+                *slot = new_synapses.len() as i32;
+                new_synapses.push(self.synapses[eid]);
+                if !self.eligibility.is_empty() {
+                    new_eligibility.push(self.eligibility[eid]);
+                }
+                if !self.prune_counters.is_empty() {
+                    new_counters.push(self.prune_counters[eid]);
+                }
+            }
+        }
+        let dropped = m - new_synapses.len();
+        self.synapses = new_synapses;
+        if !self.eligibility.is_empty() {
+            self.eligibility = new_eligibility;
+        }
+        if !self.prune_counters.is_empty() {
+            self.prune_counters = new_counters;
+        }
+        // Rewrite adjacency buckets to point at the new indices.
+        for bucket in self.outgoing.iter_mut() {
+            bucket.retain_mut(|eid| {
+                let mapped = new_id[*eid as usize];
+                if mapped < 0 {
+                    return false;
+                }
+                *eid = mapped as u32;
+                true
+            });
+        }
+        for bucket in self.incoming.iter_mut() {
+            bucket.retain_mut(|eid| {
+                let mapped = new_id[*eid as usize];
+                if mapped < 0 {
+                    return false;
+                }
+                *eid = mapped as u32;
+                true
+            });
+        }
+        self.dead_synapses = 0;
+        dropped
     }
 
     /// Build a fresh, at-rest [`NetworkState`] sized for this network.

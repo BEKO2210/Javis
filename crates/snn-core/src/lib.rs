@@ -41,25 +41,45 @@
 //! - [`StdpParams`], [`IStdpParams`], [`HomeostasisParams`] — opt-in
 //!   plasticity mechanisms; default is a passive integrate-and-fire
 //!   network.
+//! - [`MetaplasticityParams`], [`IntrinsicParams`],
+//!   [`HeterosynapticParams`], [`StructuralParams`], [`RewardParams`],
+//!   [`ReplayParams`] — the iter-44 "breakthrough" stack: BCM sliding
+//!   threshold, adaptive intrinsic plasticity, heterosynaptic
+//!   normalisation, structural sprout/prune, three-factor reward
+//!   learning, and offline replay consolidation. Triplet-STDP lives
+//!   inside [`StdpParams`] (`a3_plus`, `a3_minus`, `tau_x`, `tau_y`).
+//!   All default-off; existing networks are bit-identical.
 
 pub mod brain;
+pub mod heterosynaptic;
 pub mod homeostasis;
+pub mod intrinsic;
 pub mod istdp;
+pub mod metaplasticity;
 pub mod network;
 pub mod neuron;
 pub mod poisson;
 pub mod region;
+pub mod replay;
+pub mod reward;
 pub mod rng;
 pub mod stdp;
+pub mod structural;
 pub mod synapse;
 
 pub use brain::{Brain, BrainState, InterEdge, PendingEvent, PendingQueue};
+pub use heterosynaptic::{HeterosynapticParams, NormKind};
 pub use homeostasis::HomeostasisParams;
+pub use intrinsic::IntrinsicParams;
 pub use istdp::IStdpParams;
+pub use metaplasticity::MetaplasticityParams;
 pub use network::{Network, NetworkState};
 pub use neuron::{LifNeuron, LifParams, NeuronKind};
 pub use poisson::PoissonInput;
 pub use region::Region;
+pub use replay::ReplayParams;
+pub use reward::RewardParams;
 pub use rng::Rng;
 pub use stdp::StdpParams;
+pub use structural::{PruneCounter, StructuralParams};
 pub use synapse::{Synapse, SynapseKind};

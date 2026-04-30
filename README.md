@@ -13,7 +13,7 @@ your LLM, returning a few decoded concepts instead of full document chunks.
 [![Rust edition 2021](https://img.shields.io/badge/rust-edition%202021-CE422B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3a86ff)](#license)
 [![CI](https://img.shields.io/github/actions/workflow/status/BEKO2210/Javis/ci.yml?branch=main&label=ci&logo=github)](.github/workflows/ci.yml)
-[![Tests 113/113](https://img.shields.io/badge/tests-113%2F113%20passing-3fb950)](#tests)
+[![Tests 128/128](https://img.shields.io/badge/tests-128%2F128%20passing-3fb950)](#tests)
 [![Clippy clean](https://img.shields.io/badge/clippy-0%20warnings-3fb950)](#tests)
 [![MSRV 1.86](https://img.shields.io/badge/MSRV-1.86-CE422B?logo=rust&logoColor=white)](#tests)
 [![Self-recall 100%25](https://img.shields.io/badge/self--recall-100%25-3fb950)](#performance-profile)
@@ -21,6 +21,7 @@ your LLM, returning a few decoded concepts instead of full document chunks.
 [![Observability](https://img.shields.io/badge/observability-tracing%20%C2%B7%20Prometheus-7aa2ff)](#production-readiness)
 [![Container](https://img.shields.io/badge/container-Docker%20%2B%20Compose-2496ed?logo=docker&logoColor=white)](#run-with-docker)
 [![Bio inspired](https://img.shields.io/badge/bio--inspired-LIF%20%C2%B7%20STDP%20%C2%B7%20iSTDP%20%C2%B7%20BTSP-62d6ff)](#plasticity)
+[![Iter 44](https://img.shields.io/badge/iter--44-Triplet%20%C2%B7%20R--STDP%20%C2%B7%20BCM%20%C2%B7%20Replay-ff66c4)](#plasticity)
 
 </div>
 
@@ -88,6 +89,38 @@ aggressive LTD on co-active E-targets. The 113 existing tests still pass at
 the new topology. Updated cross-bleed and recall numbers are in
 [`notes/43-topology-scaling.md`](notes/43-topology-scaling.md) once the
 benchmark run completes.
+
+### What changes in iter 44 (this branch)
+
+Seven new biology-grade plasticity mechanisms join the existing
+LIF / STDP / iSTDP / homeostasis / BTSP stack, all opt-in and
+default-off so every pre-iter-44 test stays bit-identical:
+
+1. **Triplet STDP** (Pfister-Gerstner 2006) — frequency-dependent LTP.
+2. **Reward-modulated STDP with eligibility traces** — three-factor
+   learning, gated by `Brain::set_neuromodulator(...)` (the
+   dopamine surrogate). Closes the temporal-credit-assignment loop
+   that pure pair-STDP cannot solve.
+3. **BCM metaplasticity** — sliding LTP/LTD threshold per post-neuron;
+   stops the runaway-LTP failure mode under sustained drive.
+4. **Intrinsic plasticity** — adaptive per-neuron threshold; every
+   cell drifts towards its target rate, no dead or saturated neurons.
+5. **Heterosynaptic L2 normalisation** — the direct fix for the R2
+   saturation problem in `notes/43`. Hard-bounds each post-neuron's
+   incoming-weight budget.
+6. **Structural plasticity** — sprout new edges between repeatedly
+   co-active E cells, prune persistently-dormant ones. Engram
+   capacity stops being a hard topology constant.
+7. **Offline replay / consolidation** — `Brain::consolidate(...)`
+   drives the top-k engram cells in pulses with full plasticity on,
+   the way slow-wave-sleep replay deepens hippocampal engrams.
+
+Switch the whole stack on in the live viz with
+`JAVIS_ITER44=1 cargo run -p viz --release`.
+
+The full architectural rationale, composition into the existing
+pipeline, and 15 new tests are documented in
+[`notes/44-breakthrough-plasticity.md`](notes/44-breakthrough-plasticity.md).
 
 ### Reproducibility
 
@@ -208,7 +241,7 @@ the live brain:
 
 ## Plasticity
 
-Javis composes five biologically-motivated plasticity mechanisms, each opt-in:
+Javis composes twelve biologically-motivated plasticity mechanisms, each opt-in:
 
 | Mechanism | Purpose | Reference |
 | --- | --- | --- |
@@ -218,9 +251,18 @@ Javis composes five biologically-motivated plasticity mechanisms, each opt-in:
 | **Asymmetric homeostasis** | scale-only-down multiplicative renormalisation | Turrigiano 2008 |
 | **BTSP soft bounds** | `Δw = a · trace · (w_max − w)` instead of hard clamp | Bittner 2017 / Milstein 2024 |
 | **Contextual engrams** | fingerprints captured during co-activity, not post-hoc | Tonegawa engram-cell line |
+| **Triplet STDP** *(iter-44)* | frequency-dependent LTP via slow `r2` / `o2` traces | Pfister & Gerstner 2006 |
+| **Reward-modulated STDP** *(iter-44)* | three-factor learning, dopamine-gated eligibility tag | Frémaux & Gerstner 2016; Izhikevich 2007 |
+| **Metaplasticity (BCM)** *(iter-44)* | sliding LTP/LTD threshold per post-neuron | BCM 1982; Cooper & Bear 2012 |
+| **Intrinsic plasticity (SFA)** *(iter-44)* | adaptive per-neuron threshold | Desai 1999; Chrol-Cannon 2014 |
+| **Heterosynaptic L1/L2 norm** *(iter-44)* | per-post incoming-weight budget | Royer & Paré 2003; Field 2020 |
+| **Structural plasticity** *(iter-44)* | sprout + prune to grow/shrink topology | Yang 2009; Holtmaat & Svoboda 2009 |
+| **Offline replay / consolidation** *(iter-44)* | drives top-k engram cells with plasticity on | Buzsáki 2015; Wilson & McNaughton 1994 |
 
-The math behind each lives in `crates/snn-core/src/{stdp,istdp,homeostasis}.rs`,
-the trade-offs are documented in [`notes/`](notes).
+The math behind each lives in `crates/snn-core/src/{stdp,istdp,homeostasis,
+metaplasticity,intrinsic,heterosynaptic,structural,reward,replay}.rs`,
+the trade-offs are documented in [`notes/`](notes), and the full iter-44
+rationale is in [`notes/44-breakthrough-plasticity.md`](notes/44-breakthrough-plasticity.md).
 
 ---
 
@@ -337,12 +379,13 @@ cargo test --release
 | Suite | Tests | Validates |
 | --- | ---: | --- |
 | `snn-core` | 54 | LIF dynamics, STDP & iSTDP, homeostasis, BTSP soft bounds, E/I balance, multi-region routing, snapshot serde, assembly formation, bounds-checked APIs, heap pending queue, AMPA/NMDA/GABA channels, read-only step equivalence |
+| `snn-core` iter-44 | 15 | triplet STDP, reward-modulated STDP / eligibility, BCM metaplasticity, intrinsic plasticity, heterosynaptic L2, structural sprout/prune, offline replay/consolidation, full-stack composite, passive-network regression guard |
 | `encoders` | 22 | SDR union/overlap, hash determinism, top-k decode, injection, full pattern completion |
 | `eval` | 13 | RAG-vs-Javis token efficiency, Wikipedia scaling, intra-topic recall, contextual mode, scale-bench smoke |
 | `llm` | 3 | Anthropic adapter mock contract, token heuristic |
 | `viz` | 16 | WebSocket smoke, train+recall, ask both, snapshot round-trip, `/health` + `/ready`, `/metrics`, concurrency cap, snapshot schema migration (v1→v2) |
 | Doc-tests | 3 | Public quick-start examples in `snn-core` and `encoders` |
-| **Total** | **113** | with **zero clippy warnings** workspace-wide |
+| **Total** | **128** | with **zero clippy warnings** workspace-wide |
 
 ---
 
@@ -397,6 +440,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 41 | AoS → SoA refactor + WS fire-and-forget: 1.40× pipeline, 2× LIF total |
 | 42 | Validation-at-scale: honest 100-sentence benchmark, FP/FN/recall metrics |
 | 43 | Topology scaling: R2 2 000→10 000, sparser connectivity, retuned iSTDP |
+| 44 | **Breakthrough plasticity stack**: triplet-STDP, R-STDP, BCM metaplasticity, intrinsic plasticity, heterosynaptic norm, structural plasticity, offline replay |
 
 ---
 

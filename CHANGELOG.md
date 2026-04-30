@@ -4,6 +4,79 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 44 (breakthrough plasticity stack)
+
+### Added
+- **Triplet STDP** (Pfister & Gerstner 2006). Slow `pre_trace2` /
+  `post_trace2` lazy buffers on `Network`; new `StdpParams.a3_plus`,
+  `a3_minus`, `tau_x`, `tau_y` fields. Default 0 → identical to
+  pair-STDP for every pre-iter-44 configuration.
+- **Reward-modulated STDP with eligibility traces** (`crates/snn-core/src/reward.rs`).
+  Per-synapse eligibility tag, decay τ ≈ 1 s, gated by a global
+  scalar `Network::neuromodulator`. `Brain::set_neuromodulator(...)`
+  broadcasts a dopamine surrogate to every region.
+- **Metaplasticity** with the BCM sliding LTP/LTD threshold
+  (`crates/snn-core/src/metaplasticity.rs`). Per-post-neuron rate +
+  θ traces; `MetaplasticityParams::modulator(rate, θ)` multiplies
+  the STDP Δw on incoming edges.
+- **Intrinsic plasticity / spike-frequency adaptation**
+  (`crates/snn-core/src/intrinsic.rs`). Per-neuron adapt trace +
+  `v_thresh_offset` slot; the LIF integration reads
+  `v_threshold + offset` whenever the feature is on.
+- **Heterosynaptic L1 / L2 normalisation**
+  (`crates/snn-core/src/heterosynaptic.rs`). Periodic per-post
+  excitatory-incoming weight-norm cap. Defaults: L2 with target
+  1.5, applied every 200 steps.
+- **Structural plasticity** (`crates/snn-core/src/structural.rs`).
+  Pruning: E→E synapses below `prune_threshold` for `prune_age_steps`
+  evaluations are removed from the adjacency buckets and marked
+  dead. Sprouting: hot pre/post pairs with no current edge get a new
+  one at `sprout_initial`. `Network::compact_synapses()` reclaims
+  dead slots.
+- **Offline replay / consolidation**
+  (`crates/snn-core/src/replay.rs`, `Network::consolidate`,
+  `Brain::consolidate`). Drives the top-k engram cells in pulses
+  with full plasticity left on; alternates forward / reverse order
+  on successive calls.
+- `Brain::compact_synapses` — sums the per-region compaction count.
+- `crates/snn-core/tests/iter44_breakthrough.rs` — 15 new tests, one
+  positive + one regression-guard per mechanism plus a composite
+  full-stack + a passive-network regression test.
+- `notes/44-breakthrough-plasticity.md` — architectural rationale,
+  composition into the existing pipeline, references, and limits.
+
+### Changed
+- `Network::step` now decays the new traces (when their feature is
+  on), reads the BCM modulator on every STDP Δw, runs the periodic
+  heterosynaptic and structural passes, and applies the
+  reward-gated update at the end of the step. Off paths early-out
+  on a single `bool` and stay byte-identical to the pre-iter-44
+  hot loop.
+- `Network` gained: `metaplasticity`, `intrinsic`, `heterosynaptic`,
+  `structural`, `reward` as `Option<...>` configs;
+  `pre_trace2`/`post_trace2`/`eligibility`/`rate_trace`/`theta_trace`/
+  `adapt_trace`/`v_thresh_offset`/`prune_counters`/`dead_synapses`/
+  `replay_flip` as transient lazy buffers.
+- `lib.rs` re-exports `MetaplasticityParams`, `IntrinsicParams`,
+  `HeterosynapticParams`, `NormKind`, `StructuralParams`,
+  `PruneCounter`, `RewardParams`, `ReplayParams`.
+
+### Verified
+All 113 pre-existing tests still pass; the regression guard
+`classical_passive_network_unchanged_by_iter44` asserts byte-identity
+of the off-by-default hot loop.
+
+### Caveats
+- Snapshot schema gains six `Option<...>` fields and several
+  `#[serde(skip)]` lazy buffers. Old snapshots load fine
+  (`#[serde(default)]` everywhere); newly-saved snapshots store the
+  new params if their feature was on at save time.
+- Reward learning currently treats `excitatory_only = true` as the
+  default; striatal D1 vs D2 sign asymmetries are out of scope.
+- The structural sprouting walk is deterministic and bounded by
+  `max_new_per_step`; a randomised reservoir may be needed at
+  larger hot-set sizes than R2 = 10 000 currently produces.
+
 ## Unreleased — Iteration 25 (topology scaling: R2 → 10 000)
 
 ### Changed
