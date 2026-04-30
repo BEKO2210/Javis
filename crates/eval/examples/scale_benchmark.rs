@@ -32,6 +32,12 @@ fn main() {
     let queries_cap = parse_arg(&args, "--queries", 60);
     let decode_k = parse_arg(&args, "--decode-k", 6);
     let seed: u64 = parse_arg(&args, "--seed", 42);
+    // Decoder confidence floor: containment ratio
+    // |recall ∩ stored| / |stored|. Engrams scoring below this
+    // threshold are omitted from the result rather than filling the
+    // top-k slot with the next-best garbage. 0.0 reproduces the
+    // pre-iter-44 "always return k results" behaviour.
+    let decode_threshold: f32 = parse_arg(&args, "--decode-threshold", 0.0_f32);
 
     // iter-44 stack toggles.
     //   --iter44 off       (default) = pre-iter-44 baseline.
@@ -52,7 +58,7 @@ fn main() {
 
     eprintln!(
         "Scale benchmark: sentences={sentences} seed={seed} queries_cap={queries_cap} \
-         decode_k={decode_k} iter44={iter44:?}",
+         decode_k={decode_k} decode_threshold={decode_threshold} iter44={iter44:?}",
     );
 
     let t0 = Instant::now();
@@ -83,7 +89,7 @@ fn main() {
         .collect();
 
     eprintln!("[3/3] evaluating {} queries …", queries.len());
-    let report = brain.evaluate(&queries, decode_k);
+    let report = brain.evaluate_with_threshold(&queries, decode_k, decode_threshold);
 
     let total_secs = t0.elapsed().as_secs_f64();
     eprintln!("Total wall-time: {:.1} s", total_secs);

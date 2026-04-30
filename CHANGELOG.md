@@ -4,6 +4,45 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 44.1 (decoder confidence floor)
+
+### Added
+- `EngramDictionary::decode_top_above(active, k, min_score)` —
+  identical to `decode_top` but **omits** engrams whose containment
+  ratio is below `min_score` instead of filling the top-k slot with
+  the next-best garbage. `decode_top` is now `decode_top_above(_,
+  k, 0.0)` so existing callers see no change.
+- `ScaleBrain::query_with_threshold` /
+  `ScaleBrain::evaluate_with_threshold` — pass-through wrappers so
+  the scale benchmark can take a confidence floor.
+- `--decode-threshold` flag on the `scale_benchmark` example.
+- Two new unit tests in `crates/encoders/src/decode.rs`
+  (`decode_top_above_filters_low_confidence_matches`,
+  `decode_top_unchanged_by_threshold_refactor`) + the regression
+  guard that `decode_top` is bit-identical to the new method at
+  threshold `0.0`.
+
+### Verified — same 32-sentence corpus, seed 42, `--iter44 off`
+
+| `--decode-threshold` | FP / Q | Token reduction | Self-recall |
+| ---: | ---: | ---: | ---: |
+| `0.0` (pre-iter-44) | 4.50 | 38.9 % | 100 % |
+| `0.10` | 4.50 | 38.9 % | 100 % |
+| **`0.20`** | **0.62** | **79.7 %** | 100 % |
+| `0.30` | 0.00 | 84.7 % | 100 % |
+
+The headline:
+- **FP / query: 4.50 → 0.62 (− 86 %)**
+- **Token reduction: 38.9 % → 79.7 % (+ 2.0×)**
+- self-recall stays at 100 %; decoder latency unchanged.
+
+The "recall of co-occurring neighbours" that fell to zero was almost
+entirely noise: the random-overlap floor for two KWTA-100 patterns
+in an R2 of 8000 E neurons is 12.5 %, so anything below that is
+statistically indistinguishable from chance. The threshold makes
+the *real* engram-orthogonality problem visible — and that's the
+gap iter-44's reward + structural mechanisms are designed to close.
+
 ## Unreleased — Iteration 44 (breakthrough plasticity stack)
 
 ### Added

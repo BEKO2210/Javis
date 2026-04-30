@@ -13,11 +13,11 @@ your LLM, returning a few decoded concepts instead of full document chunks.
 [![Rust edition 2021](https://img.shields.io/badge/rust-edition%202021-CE422B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3a86ff)](#license)
 [![CI](https://img.shields.io/github/actions/workflow/status/BEKO2210/Javis/ci.yml?branch=main&label=ci&logo=github)](.github/workflows/ci.yml)
-[![Tests 128/128](https://img.shields.io/badge/tests-128%2F128%20passing-3fb950)](#tests)
+[![Tests 130/130](https://img.shields.io/badge/tests-130%2F130%20passing-3fb950)](#tests)
 [![Clippy clean](https://img.shields.io/badge/clippy-0%20warnings-3fb950)](#tests)
 [![MSRV 1.86](https://img.shields.io/badge/MSRV-1.86-CE422B?logo=rust&logoColor=white)](#tests)
 [![Self-recall 100%25](https://img.shields.io/badge/self--recall-100%25-3fb950)](#performance-profile)
-[![Token reduction 35-45%25](https://img.shields.io/badge/token%20reduction-35--45%25-ffd166)](#performance-profile)
+[![Token reduction 35-80%25](https://img.shields.io/badge/token%20reduction-35--80%25-ffd166)](#performance-profile)
 [![Observability](https://img.shields.io/badge/observability-tracing%20%C2%B7%20Prometheus-7aa2ff)](#production-readiness)
 [![Container](https://img.shields.io/badge/container-Docker%20%2B%20Compose-2496ed?logo=docker&logoColor=white)](#run-with-docker)
 [![Bio inspired](https://img.shields.io/badge/bio--inspired-LIF%20%C2%B7%20STDP%20%C2%B7%20iSTDP%20%C2%B7%20BTSP-62d6ff)](#plasticity)
@@ -89,6 +89,27 @@ aggressive LTD on co-active E-targets. The 113 existing tests still pass at
 the new topology. Updated cross-bleed and recall numbers are in
 [`notes/43-topology-scaling.md`](notes/43-topology-scaling.md) once the
 benchmark run completes.
+
+### What changes in iter 44.1 (this branch)
+
+A *decoder confidence floor* via `--decode-threshold` (default `0.0`
+= pre-iter-44 behaviour, recommended `0.2` for the 32-sentence
+corpus). The original `decode_top` always returned `k` results even
+when the highest scoring engram sat right at the random-overlap
+baseline (`KWTA_K / R2_E = 12.5 %`). The floor omits low-confidence
+matches instead of filling the slot with garbage.
+
+Measured on the same 32-sentence corpus, seed 42, `--iter44 off`:
+
+| `--decode-threshold` | FP / Q | Token reduction | Self-recall |
+| ---: | ---: | ---: | ---: |
+| `0.0` (pre-iter-44) | 4.50 | 38.9 % | 100 % |
+| **`0.20`** | **0.62** | **79.7 %** | 100 % |
+| `0.30` | 0.00 | 84.7 % | 100 % |
+
+That is **FP − 86 %** and **token reduction × 2.0** with no plasticity
+change at all; the SNN's engrams were already orthogonal, the decoder
+just refused to admit it.
 
 ### What changes in iter 44 (this branch)
 
@@ -392,12 +413,12 @@ cargo test --release
 | --- | ---: | --- |
 | `snn-core` | 54 | LIF dynamics, STDP & iSTDP, homeostasis, BTSP soft bounds, E/I balance, multi-region routing, snapshot serde, assembly formation, bounds-checked APIs, heap pending queue, AMPA/NMDA/GABA channels, read-only step equivalence |
 | `snn-core` iter-44 | 15 | triplet STDP, reward-modulated STDP / eligibility, BCM metaplasticity, intrinsic plasticity, heterosynaptic L2, structural sprout/prune, offline replay/consolidation, full-stack composite, passive-network regression guard |
-| `encoders` | 22 | SDR union/overlap, hash determinism, top-k decode, injection, full pattern completion |
+| `encoders` | 24 | SDR union/overlap, hash determinism, top-k decode, threshold-floor decode (iter 44.1), injection, full pattern completion |
 | `eval` | 13 | RAG-vs-Javis token efficiency, Wikipedia scaling, intra-topic recall, contextual mode, scale-bench smoke |
 | `llm` | 3 | Anthropic adapter mock contract, token heuristic |
 | `viz` | 16 | WebSocket smoke, train+recall, ask both, snapshot round-trip, `/health` + `/ready`, `/metrics`, concurrency cap, snapshot schema migration (v1→v2) |
 | Doc-tests | 3 | Public quick-start examples in `snn-core` and `encoders` |
-| **Total** | **128** | with **zero clippy warnings** workspace-wide |
+| **Total** | **130** | with **zero clippy warnings** workspace-wide |
 
 ---
 

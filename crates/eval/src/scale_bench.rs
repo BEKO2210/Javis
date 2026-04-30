@@ -494,8 +494,25 @@ impl ScaleBrain {
     }
 
     /// Run one query against the trained state. `decode_k` is the
-    /// top-k cap on the engram dictionary scan.
+    /// top-k cap on the engram dictionary scan. Equivalent to
+    /// `query_with_threshold(query, decode_k, 0.0)` — every decoder
+    /// hit is returned, including low-confidence garbage.
     pub fn query(&mut self, query: &str, decode_k: usize) -> ScaleQueryResult {
+        self.query_with_threshold(query, decode_k, 0.0)
+    }
+
+    /// Same as [`Self::query`] but additionally requires every
+    /// decoded engram to score `≥ min_score`. Engrams below the
+    /// threshold are *omitted* from the result instead of filling
+    /// the top-k slot with the next-best garbage. This is the right
+    /// entry point when the caller cares about precision on the
+    /// downstream LLM payload.
+    pub fn query_with_threshold(
+        &mut self,
+        query: &str,
+        decode_k: usize,
+        min_score: f32,
+    ) -> ScaleQueryResult {
         let total_t0 = Instant::now();
         let q_lc = query.to_lowercase();
 
@@ -515,9 +532,13 @@ impl ScaleBrain {
         };
 
         // Phase B: dictionary scan — measured separately so we can
-        // chart it against vocab size.
+        // chart it against vocab size. Threshold filtering happens
+        // *inside* the decoder so the slot stays empty when nothing
+        // clears the bar.
         let dec_t0 = Instant::now();
-        let decoded = self.dict.decode_top(&recall_indices, decode_k);
+        let decoded = self
+            .dict
+            .decode_top_above(&recall_indices, decode_k, min_score);
         let decode_micros = dec_t0.elapsed().as_micros();
 
         // RAG payload = first sentence whose lowercased form contains
@@ -579,9 +600,20 @@ impl ScaleBrain {
 
     /// Run the full set of queries the corpus declared and aggregate.
     pub fn evaluate(&mut self, queries: &[String], decode_k: usize) -> ScaleReport {
+        self.evaluate_with_threshold(queries, decode_k, 0.0)
+    }
+
+    /// Same as [`Self::evaluate`] but with a decoder confidence
+    /// floor — see [`Self::query_with_threshold`].
+    pub fn evaluate_with_threshold(
+        &mut self,
+        queries: &[String],
+        decode_k: usize,
+        min_score: f32,
+    ) -> ScaleReport {
         let mut per_query: Vec<ScaleQueryResult> = Vec::with_capacity(queries.len());
         for (i, q) in queries.iter().enumerate() {
-            per_query.push(self.query(q, decode_k));
+            per_query.push(self.query_with_threshold(q, decode_k, min_score));
             if (i + 1) % 25 == 0 || i + 1 == queries.len() {
                 eprintln!("  evaluated {}/{} queries", i + 1, queries.len());
             }

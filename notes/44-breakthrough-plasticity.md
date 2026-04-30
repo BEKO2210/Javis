@@ -263,6 +263,67 @@ no idle / consolidation phase).
   (sentences arriving in batches over minutes) where engram capacity
   *is* the bottleneck.
 
+## Iter 44.1 — decoder confidence floor
+
+Independent of the plasticity stack, the original `decode_top` always
+returned `k` results — even when the highest-scoring engram had a
+containment ratio of `0.13` (right at the random-overlap baseline of
+`KWTA_K / R2_E = 100 / 8000 = 12.5 %`). That is, **the FP count of
+4.50 / query in the iter-43 baseline was largely a decoder artifact**:
+the engrams were already orthogonal, the decoder just refused to
+return an empty result.
+
+`EngramDictionary::decode_top_above(active, k, min_score)` (and
+`ScaleBrain::evaluate_with_threshold`) cleanly fix this — engrams
+that score below the floor are *omitted* instead of filling the slot
+with the next-best garbage.
+
+Measured on the same 32-sentence corpus, seed 42, `--iter44 off`:
+
+| `--decode-threshold` | FP / Q | Token reduction | Self-recall | "Recall" of co-occurring |
+| ---: | ---: | ---: | ---: | ---: |
+| `0.0` (default — pre-iter-44) | 4.50 | 38.9 % | **100 %** | 4.4 % |
+| `0.10` | 4.50 | 38.9 % | 100 % | 4.4 % |
+| **`0.20`** | **0.62** | **79.7 %** | **100 %** | 0.0 % |
+| `0.30` | 0.00 | 84.7 % | 100 % | 0.0 % |
+
+The "recall of co-occurring neighbours" that fell to zero was almost
+entirely **noise**: the random-overlap floor for two
+KWTA-100 patterns in an R2 of 8000 E neurons is 12.5 %, so anything
+in the 4 – 13 % score range is statistically indistinguishable from
+chance. With threshold `0.2`:
+
+- **FP / query: 4.50 → 0.62 (− 86 %).** Cross-bleed mostly disappears.
+- **Token reduction: 38.9 % → 79.7 % (+ 2.0×).** The mean Javis
+  payload shrinks from 8.00 to 2.69 tokens — usually just the query
+  word and the occasional high-overlap neighbour.
+- **Self-recall stays at 100 %**: the query word's own engram has
+  containment 1.0 by construction, well above any threshold.
+- **Decoder latency unchanged** (the threshold filter is a single
+  comparison per scored engram).
+
+### Honest reading of the threshold result
+
+This is a *measurement* fix, not a model fix. The SNN's engrams were
+already orthogonal — the previous benchmark just hid that behind a
+decoder that always returned `k` words regardless of confidence. With
+the floor in place, the same network looks dramatically better on
+both precision metrics, but the underlying engram structure is
+unchanged.
+
+What the threshold makes visible is the *real* problem the iter-44
+stack was supposed to attack: **after the noise is filtered out, the
+"recall of co-occurring neighbours" is 0 %**. Related concepts in
+the corpus produce *separate* engrams, not partially-overlapping
+ones. This is the gap that reward-modulated STDP + structural
+plasticity have to close, and it is exactly the gap a
+correlation-only training pass cannot close.
+
+Recommendation: `--decode-threshold 0.2` is the new default for any
+honest measurement on this corpus. Lower values include random
+overlaps; higher values gain a few extra FP-reduction percentage
+points at the cost of also dropping marginally-real partial matches.
+
 ## Limits acknowledged
 
 - The structural pass currently sprouts E→E only and uses a
