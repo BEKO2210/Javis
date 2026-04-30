@@ -11,7 +11,7 @@ pub mod scale_corpus;
 pub mod token_efficiency;
 pub mod wiki_corpus;
 
-pub use scale_bench::{ScaleBrain, ScaleQueryResult, ScaleReport, ScaleSummary};
+pub use scale_bench::{Iter44Config, ScaleBrain, ScaleQueryResult, ScaleReport, ScaleSummary};
 pub use scale_corpus::{build_scale_corpus, ScaleCorpus};
 pub use wiki_corpus::{wiki_corpus, wiki_queries};
 

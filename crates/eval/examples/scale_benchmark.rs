@@ -24,7 +24,7 @@
 
 use std::time::Instant;
 
-use eval::{build_scale_corpus, ScaleBrain};
+use eval::{build_scale_corpus, Iter44Config, ScaleBrain};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -33,9 +33,26 @@ fn main() {
     let decode_k = parse_arg(&args, "--decode-k", 6);
     let seed: u64 = parse_arg(&args, "--seed", 42);
 
+    // iter-44 stack toggles.
+    //   --iter44 off       (default) = pre-iter-44 baseline.
+    //   --iter44 stability = heterosynaptic + metaplasticity only.
+    //   --iter44 tuned     = intrinsic + heterosynaptic + structural,
+    //                        params calibrated for short-corpus runs.
+    //   --iter44 full      = every mechanism on (dev / stress test).
+    let iter44 = match parse_string(&args, "--iter44").as_deref() {
+        Some("full") => Iter44Config::full(),
+        Some("stability") => Iter44Config::stability_only(),
+        Some("tuned") => Iter44Config::tuned_for_short_corpus(),
+        Some("off") | None => Iter44Config::iter43(),
+        Some(other) => {
+            eprintln!("--iter44 must be one of: off | stability | tuned | full (got '{other}')");
+            std::process::exit(2);
+        }
+    };
+
     eprintln!(
         "Scale benchmark: sentences={sentences} seed={seed} queries_cap={queries_cap} \
-         decode_k={decode_k}",
+         decode_k={decode_k} iter44={iter44:?}",
     );
 
     let t0 = Instant::now();
@@ -49,7 +66,7 @@ fn main() {
     );
 
     eprintln!("[2/3] training SNN (this is the slow step) …");
-    let mut brain = ScaleBrain::train_on(&corpus);
+    let mut brain = ScaleBrain::train_on_with_config(&corpus, &iter44);
     eprintln!(
         "  trained in {:.1} s — vocab {} engrams in dictionary",
         brain.training_secs, brain.vocab_size,
@@ -88,4 +105,15 @@ fn parse_arg<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T
         i += 1;
     }
     default
+}
+
+fn parse_string(args: &[String], name: &str) -> Option<String> {
+    let mut i = 0;
+    while i + 1 < args.len() {
+        if args[i] == name {
+            return Some(args[i + 1].clone());
+        }
+        i += 1;
+    }
+    None
 }

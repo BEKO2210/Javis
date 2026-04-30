@@ -64,7 +64,30 @@ note that introduced the change — every iteration has a corresponding
 ### Verified
 All 113 pre-existing tests still pass; the regression guard
 `classical_passive_network_unchanged_by_iter44` asserts byte-identity
-of the off-by-default hot loop.
+of the off-by-default hot loop. 15 new unit tests in
+`crates/snn-core/tests/iter44_breakthrough.rs`.
+
+### Benchmark
+Measured against iter-43 on the deterministic 32-sentence corpus
+(seed 42, `cargo run --release -p eval --example scale_benchmark
+-- --iter44 {off | stability | tuned | full}`):
+
+| Config | Train sec | Recall | FP / query | Latency |
+| --- | ---: | ---: | ---: | ---: |
+| `off` (iter-43 baseline) | 175 | 4.4 % | 4.50 | 16.1 ms |
+| `stability` | 236 | 4.4 % | 4.50 | 16.9 ms |
+| `tuned` | **27** | 2.7 % | 4.69 | **14.0 ms** |
+| `full` | 355 | 1.6 % | 4.81 | 44.0 ms |
+
+The iter-44 stack does **not** improve recall on this short-corpus
+benchmark — see `notes/44` for the full reading. Heterosynaptic and
+BCM scale weights uniformly per post-neuron and so don't change the
+fingerprint kWTA pattern; reward-modulated STDP / replay / BCM-θ all
+need longer training windows or a reward signal that the current
+eval harness does not emit. The mechanisms are present, unit-tested
+and ready for the *next* benchmark — multi-epoch corpora, streaming
+input with consolidation gaps, and reward-aware retrieval — none of
+which the iter-25 evaluation harness exercises.
 
 ### Caveats
 - Snapshot schema gains six `Option<...>` fields and several

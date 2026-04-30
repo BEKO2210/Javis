@@ -94,7 +94,19 @@ benchmark run completes.
 
 Seven new biology-grade plasticity mechanisms join the existing
 LIF / STDP / iSTDP / homeostasis / BTSP stack, all opt-in and
-default-off so every pre-iter-44 test stays bit-identical:
+default-off so every pre-iter-44 test stays bit-identical.
+
+**Honest benchmark result**: on the deterministic 32-sentence corpus
+(seed 42), the new mechanisms *do not* improve recall over the
+iter-43 baseline out of the box — `off` 4.4 %, `stability` 4.4 %,
+`tuned` 2.7 %, `full` 1.6 %. Heterosynaptic / BCM scale weights
+uniformly per post and don't change the kWTA fingerprint;
+reward-modulated STDP and replay both need longer training windows
+or a reward signal the current eval harness does not provide. The
+stack is infrastructure for the *next* benchmark — multi-epoch
+streaming corpora and reward-aware retrieval — see
+[`notes/44`](notes/44-breakthrough-plasticity.md) for the full
+reading. The mechanisms themselves:
 
 1. **Triplet STDP** (Pfister-Gerstner 2006) — frequency-dependent LTP.
 2. **Reward-modulated STDP with eligibility traces** — three-factor

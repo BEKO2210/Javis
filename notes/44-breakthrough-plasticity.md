@@ -173,6 +173,96 @@ let _dropped = brain.compact_synapses();
 | `full_iter44_stack_runs_without_panicking` | composite — every mechanism on at once, no NaN/index panic |
 | `classical_passive_network_unchanged_by_iter44` | the regression guard for all pre-existing tests |
 
+## Benchmark — measured against iter-43 baseline
+
+Reproducible:
+
+```sh
+# Pre-iter-44 baseline (5x speed-up, used as reference):
+cargo run --release -p eval --example scale_benchmark -- \
+    --sentences 32 --queries 16 --seed 42 --iter44 off
+
+# iter-44 stability subset (heterosynaptic + metaplasticity):
+cargo run --release -p eval --example scale_benchmark -- \
+    --sentences 32 --queries 16 --seed 42 --iter44 stability
+
+# iter-44 short-corpus tuned (intrinsic + heterosynaptic + structural):
+cargo run --release -p eval --example scale_benchmark -- \
+    --sentences 32 --queries 16 --seed 42 --iter44 tuned
+
+# Every iter-44 mechanism on (dev / stress test only):
+cargo run --release -p eval --example scale_benchmark -- \
+    --sentences 32 --queries 16 --seed 42 --iter44 full
+```
+
+Results on the **deterministic 32-sentence corpus, seed 42, decode-k 6**:
+
+| Config | Train sec | Recall | FP / query | FN / query | Total query latency |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `off` (iter-43 baseline) | 175 | **4.4 %** | 4.50 | 10.94 | 16.1 ms |
+| `stability` (heterosyn + BCM) | 236 | 4.4 % | 4.50 | 10.94 | 16.9 ms |
+| `tuned` (intrinsic + heterosyn + structural) | **27** | 2.7 % | 4.69 | 11.12 | **14.0 ms** |
+| `full` (every mechanism) | 355 | 1.6 % | 4.81 | 11.25 | 44.0 ms |
+
+(Token reduction is `38.9 %` and self-recall `100 %` for every config —
+those depend on `decode_k` and the dictionary scan, not the underlying
+plasticity choice.)
+
+### Honest reading of the numbers
+
+**The iter-44 stack does not improve recall on this 32-sentence
+benchmark out of the box.** Three reasons make this an *expected*
+result rather than a regression:
+
+1. **Heterosynaptic / BCM scale weights uniformly per post-neuron** —
+   they shrink absolute drive but preserve the relative pattern that
+   kWTA reads from. The fingerprint is the same regardless of the
+   absolute weight magnitudes, so the engram dictionary is identical
+   (the FP word *lists* differ between `off` and `stability` but the
+   aggregate metrics do not).
+2. **BCM θ has τ = 10 s**, the tuned default for biological
+   regimes. The benchmark only spends 4.8 s in plasticity-on training
+   (32 × 150 ms), nowhere near steady-state. The metaplasticity
+   modulator stays close to 1 throughout, so it acts as a no-op.
+3. **The `full` regression is genuine**: with default `IntrinsicParams`
+   `a_target = 5` (tuned for multi-second cues) on a 150 ms cue,
+   every neuron's adaptation trace stays well below target → offset
+   pinned at `offset_min = -10` → effective threshold drops 10 mV →
+   blob-saturation. The `tuned` preset uses `a_target = 0.5`,
+   `offset_min = -2` and recovers most of the baseline behaviour
+   while running 6× faster (structural pruning aggressively shrinks
+   the dormant E→E synapses).
+
+### Where the iter-44 stack *does* matter
+
+The mechanisms target failure modes that this benchmark cannot
+exercise:
+
+| Mechanism | Failure mode it targets | Why this benchmark misses it |
+| --- | --- | --- |
+| Reward-modulated STDP | Goal-directed learning, credit assignment over seconds | The eval harness has no reward signal — `set_neuromodulator` is never called |
+| Triplet STDP | Burst-coincidence frequency dependence | The training schedule has flat 150 ms cues, no high-rate bursts |
+| BCM metaplasticity | Runaway LTP under sustained activity | 4.8 s of training is below the τ = 10 s θ time constant |
+| Structural plasticity | Engram capacity ceiling at fixed topology | 32 concepts on a 10 000-neuron R2 is well below the topology-determined capacity |
+| Replay / consolidation | Long-term consolidation across an idle gap | The harness runs strictly online, no idle-time replay loop |
+| Intrinsic plasticity | Dead / saturated neurons over hours of operation | Dynamic range ≈ 5 s training; intrinsic time scale not reached |
+
+In other words: the iter-44 stack is *infrastructure for the next
+benchmark*, not a free win on the iter-25 one. It unblocks
+reward-based learning, multi-epoch consolidation and unbounded
+structural growth — all of which need a different evaluation harness
+to measure (the current one assumes one-shot supervised training and
+no idle / consolidation phase).
+
+### Action items for a future benchmark
+- Add a reward-aware corpus (e.g. multi-step retrieval where the
+  ground-truth co-occurrence map is the reward signal).
+- Schedule explicit replay rounds *between* training epochs so θ /
+  eligibility traces actually equilibrate.
+- Stress the structural plasticity rule with a streaming corpus
+  (sentences arriving in batches over minutes) where engram capacity
+  *is* the bottleneck.
+
 ## Limits acknowledged
 
 - The structural pass currently sprouts E→E only and uses a
