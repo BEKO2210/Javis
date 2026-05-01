@@ -57,7 +57,14 @@ use snn_core::{
 const DT: f32 = 0.1;
 const R1_N: usize = 1000;
 const R2_N: usize = 2_000;
-const R2_INH_FRAC: f32 = 0.20;
+/// Iter-48: 0.20 → 0.30. Fraction of R2 cells that are inhibitory.
+/// Iter-47a postmortem found oscillatory recurrent bursting at the
+/// "interesting" sweep point and 0/30 canonical-target hits in
+/// 12 001 R2-E spikes — classic Vogels-Sprekeler 2011 EI-imbalance
+/// signature. Increasing the inhibitory pool from 20 % to 30 %
+/// gives iSTDP roughly 1.5× the inhibitory budget to dampen the
+/// avalanche; combined with the iSTDP timing fix below.
+const R2_INH_FRAC: f32 = 0.30;
 const R2_P_CONNECT: f32 = 0.05;
 const FAN_OUT: usize = 12;
 /// Iter-47a-2 sweep finding (notes/47a + notes/47a-postmortem):
@@ -520,11 +527,30 @@ fn stdp() -> StdpParams {
     }
 }
 
+/// Iter-48 iSTDP retune (Vogels et al. 2011 fast-EI-balance):
+///
+/// - `tau_minus`: 30 → 8 ms. The original 30 ms post-trace is
+///   appropriate for slow homeostasis but is *longer* than the
+///   AMPA → GABA latency budget needed to suppress a cascade
+///   while it forms. 8 ms is in the same regime as the AMPA τ
+///   used elsewhere in snn-core, so an inhibitory cell that
+///   fires in response to a recurrent E avalanche has a chance
+///   of catching the *same* cascade instead of one trial later.
+///
+/// - `a_plus`: 0.10 → 0.30. Larger LTP per pre-only I-spike so
+///   silenced E-targets accumulate inhibitory weight faster.
+///   In the iter-47a-pm cascade trace, the post-cascade epoch
+///   showed θ jumping 95× — that's the rate the iSTDP has to
+///   match if the inhibitory walls are to grow during, not after.
+///
+/// - `a_minus`: 1.10 unchanged — the LTD-on-coactivity term is
+///   still the right magnitude (and it carries the full ratio
+///   responsibility for engram selectivity, untouched here).
 fn istdp() -> IStdpParams {
     IStdpParams {
-        a_plus: 0.10,
+        a_plus: 0.30,
         a_minus: 1.10,
-        tau_minus: 30.0,
+        tau_minus: 8.0,
         w_min: 0.0,
         w_max: 8.0,
     }
