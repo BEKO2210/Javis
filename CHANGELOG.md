@@ -4,6 +4,103 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 46 (teacher-forcing + R1→R2 gate)
+
+Iter-45 documented honestly that pure STDP and R-STDP both stayed
+at random-baseline accuracy on the 16-pair association task —
+because the cue's R2 representation was almost entirely the
+random R1 → R2 forward projection, leaving recurrent learning no
+room to bias it. Iter-46 attacks the bottleneck directly: during
+training, the canonical target SDR is **clamped into R2** via a
+new dedicated driver, plasticity is gated to keep evaluation
+clean, and the per-trial diagnostics make the chain visible.
+
+### Added (5 atomic commits)
+
+- `TeacherForcingConfig` (`enabled`, `cue_ms`, `delay_ms`,
+  `prediction_ms`, `teacher_ms`, `tail_ms`,
+  `target_clamp_strength`, `plasticity_during_{prediction,teacher}`,
+  `wta_k`, three reward levels, `homeostatic_normalization`,
+  `debug_trials`, `r1r2_prediction_gate`). Default `off()` —
+  every iter-45 path stays bit-identical.
+- `RewardConfig.teacher: TeacherForcingConfig` plus
+  `with_teacher(epochs)` constructor.
+- `canonical_target_r2_sdr(word, e_pool, k, salt)` — deterministic
+  hash → fixed K-of-pool R2-E indices. Stable per `(word, salt)`,
+  no per-trial drift.
+- `drive_with_r2_clamp(brain, cue, r2_target, r1_str, r2_str,
+  dur_ms, r2_e)` — drives R1 forward *and* R2 directly, returns
+  spike counts.
+- Six-phase trial schedule: cue → delay → prediction (plasticity
+  off) → teacher (cue lead-in then clamp) → reward (from
+  prediction, never from teacher) → tail.
+- Anti-causal STDP timing fix: `lead_in = clamp(teacher_ms / 4,
+  4, 12)` ms of cue alone before the clamp — without this fix the
+  clamp's instantaneous target spikes would lead the cue's
+  delayed R2 spikes and STDP would learn the wrong direction.
+- `--association-training-gate-r1r2 [value]` CLI flag (default
+  `1.0`, flag-only sets `0.3`) to attenuate cue current during
+  the prediction phase only — training-only knob, evaluation
+  always runs at full strength.
+- Optional epoch-end homeostatic L2 normalisation of R2 → R2
+  weights, off by default (`--homeostasis`).
+- Extended `RewardEpochMetrics` with `random_top3_baseline`,
+  `mean_rank`, `mrr`, `target_clamp_hit_rate`,
+  `prediction_top3_before_teacher`, `eligibility_nonzero_count`,
+  `r2_recurrent_weight_{mean,max}`, `active_r2_units_per_cue`,
+  `correct_minus_incorrect_margin`, `decoder_micros`.
+- `--debug-trial` prints up to 3 example pair traces per epoch.
+- 2 new unit tests
+  (`canonical_target_r2_sdr_is_stable_and_in_pool`,
+  `drive_with_r2_clamp_makes_target_neurons_fire`); existing
+  smoke (`reward_benchmark_smoke`) still passes ~ 6 s.
+
+### Verified — full sweep, 16 pairs + 16 noise, vocab 32, seed 42
+
+| Arm | Description | Epoch 19 top-3 | margin | clamp | Wall |
+| --- | --- | ---: | ---: | ---: | ---: |
+| A | Pure STDP, no teacher | 0.06 | n/a | n/a | 4 min |
+| B | R-STDP, no teacher | 0.19 | n/a | n/a | 4 min |
+| C | R-STDP + teacher (step 3) | 0.00 | -0.05 | **1.00** | 7 min |
+| C′ | + step-4b lead-in (4 epochs) | 0.06 | -0.03 | **1.00** | 1 min |
+| D | + R1 → R2 gate 0.3 + homeostasis (4 ep) | 0.00 | -0.04 | **1.00** | 1 min |
+
+### Honest reading
+
+The teacher-forcing infrastructure works exactly as designed.
+**`target_clamp_hit_rate = 1.00`** across every teacher epoch —
+the clamp activates every one of the 30 canonical target
+neurons every time. The first run (arm C) produced a clean
+diagnostic surprise: `margin = -0.04` (canonical-target cells
+fire *less* than the rest under cue-only recall) — caused by
+anti-causal STDP timing, fixed in step 4b.
+
+After the timing fix, the margin stays around -0.03 to -0.05.
+With the R1 → R2 prediction gate at 0.3 plus aggressive
+homeostatic L2 normalisation, the *first* non-zero
+`prediction_top3_before_teacher = 0.02` shows up at epoch 3 —
+the right signal in the right direction, but two orders of
+magnitude below the 20 % acceptance threshold and within
+trial-to-trial variance.
+
+**The bottleneck has moved.** Iter-45 said "R1 → R2 dominates
+and we can't measure how much"; iter-46 says "R1 → R2 dominates
+to a magnitude we can now read off the per-trial spike density
+(90–180 active R2-E cells per cue when the canonical target is
+30 cells)". The honest next-iter (47) bottleneck is **the
+absolute scale of R1 → R2 vs R2 → R2**:
+
+- Reduce `INTER_WEIGHT` from 2.0 to 0.5 so STDP-grown weights
+  actually compete with forward drive.
+- Add an explicit association-bridge region between R1 and R2.
+- Make the R1 → R2 path itself learnable so teacher reward can
+  shape the input projection, not only the recurrent loop.
+
+The iter-46 harness is the platform on which any of those can
+be A/B-tested against the same scoring contract — `notes/46`
+has the full chain of measurements, the per-arm tables, and the
+diagnostic stack.
+
 ## Unreleased — Iteration 45 (reward-aware pair-association harness)
 
 ### Added

@@ -90,6 +90,35 @@ the new topology. Updated cross-bleed and recall numbers are in
 [`notes/43-topology-scaling.md`](notes/43-topology-scaling.md) once the
 benchmark run completes.
 
+### What changes in iter 46 (this branch)
+
+The pair-association harness from iter-45 grows a *teacher-forcing*
+training arm: a deterministic per-word canonical R2-E SDR
+(`canonical_target_r2_sdr`) and a `drive_with_r2_clamp` primitive
+that injects target spikes directly into R2 — bypassing the
+random R1 → R2 forward path. Plus a six-phase trial schedule
+(cue → delay → prediction → teacher → reward → tail) with
+plasticity gating around the prediction window so evaluation
+never contaminates training, an anti-causal STDP timing fix
+(cue lead-in before the clamp), and a `--association-training-
+gate-r1r2` flag to attenuate forward drive during the prediction
+phase only.
+
+Honest result on the same 16-pair + 16-noise corpus, seed 42:
+`target_clamp_hit_rate = 1.00` across every teacher epoch (the
+clamp itself works perfectly), but `correct_minus_incorrect_margin`
+stays in `[-0.06, -0.03]` — the canonical-target cells fire
+*less* than the rest under cue-only recall, even with the
+timing fix and the R1 → R2 gate. The first non-zero
+`prediction_top3_before_teacher = 0.02` appears at epoch 3 with
+homeostasis on, but does not stabilise above the 9.4 % chance
+floor in any run. The bottleneck has moved from iter-45's "we
+can't measure it" to iter-46's "we can measure it; here is the
+number". See [`notes/46`](notes/46-teacher-forcing.md) for the
+full chain of measurements and the next-iter (47) directions
+(reduce `INTER_WEIGHT`, add an association-bridge region, or
+make R1 → R2 itself learnable).
+
 ### What changes in iter 45 (this branch)
 
 A *reward-aware pair-association benchmark*
@@ -495,6 +524,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 44 | **Breakthrough plasticity stack**: triplet-STDP, R-STDP, BCM metaplasticity, intrinsic plasticity, heterosynaptic norm, structural plasticity, offline replay |
 | 44.1 | Decoder confidence floor (`--decode-threshold`): FP −86%, token reduction +2× |
 | 45 | **Reward-aware pair-association harness**: dopamine + eligibility tag exercised end-to-end, honest "no convergence yet" finding documented |
+| 46 | **Teacher-forcing harness**: R2 target-clamp + 6-phase schedule + R1→R2 gate + anti-causal STDP fix; `clamp = 1.00`, but R1→R2 forward dominance survives — honest diagnosis of next bottleneck |
 
 ---
 
