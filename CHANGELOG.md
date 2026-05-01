@@ -4,6 +4,87 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 51 Schritt 1 (Arm B saturation)
+
+Bekos protocol for iter-51 had three steps; Schritt 1 was a
+single 16-epoch run with `--iter46-baseline` to answer "is 0.19
+a stable operating point, the start of a learning curve, or a
+metastable transient?". No code change, no new commit
+infrastructure beyond the iter-50 flag.
+
+### Verified — `--epochs 16 --reps 4 --iter46-baseline`
+
+```
+Arm B (R-STDP) top-3 trajectory:
+Epoch:   0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
+top-3: 0.19 0.12 0.06 0.06 0.12 0.06 0.12 0.12 0.19 0.19 0.06 0.06 0.12 0.06 0.06 0.12
+```
+
+**top-3 mean = 0.107**, oscillates 0.06 ↔ 0.19 with no
+monotone trend. `top-1 = 0.00 every epoch`.
+
+### The hard read — `0.19` is noise, not a learning signal
+
+- Random baseline (3/32) = **0.094**
+- Arm B 16-epoch mean = **0.107**
+- Per-epoch Bernoulli StdDev with `n = 16` ≈ **0.077**
+- 95 % CI for the mean: **[0.069, 0.145]**
+- **Random 0.094 sits inside the CI.**
+
+Arm B is **statistically not distinguishable from chance** on
+the top-3 metric. The 0.19 hits in epochs 0, 8, 9 are noise
+peaks of a chance-level distribution.
+
+Secondary metrics confirm:
+- `mean reward ≈ −0.60` vs random expectation `−0.68` —
+  marginally less negative, ≈ 5–10 % "doing something" gap.
+- `r2_active = 145` stable across all 16 epochs (no learning
+  trajectory in cell counts).
+- `tgt_hit_mean = 2.4–2.8` vs random expectation
+  `145 × 30/1400 = 3.10` — sub-random throughout.
+
+### Implication — iter-52 entry, NOT Bekos's Schritt 2/3
+
+The iter-51 plan presupposed `0.19` was a real signal and asked
+"ceiling vs starting point". Data answers: **neither**. Sweeping
+parameters against a chance-level baseline is a coin-flip with
+extra steps.
+
+iter-52 entry should **statistically validate that any learning
+exists at all** before any mechanism work:
+
+1. **Multi-seed Arm B** (~ 30 min): seeds 41–45, 16 epochs
+   each. With 80 epoch-samples, SE of mean drops to ~0.009;
+   `top-3 mean > 0.11` would be 2 σ above chance.
+2. **Untrained-brain control** (~ 5 min): forward-projection
+   + random recurrent, no plasticity. If `top-3 ≈ 0.107` too,
+   the chain has been measuring the forward baseline since
+   iter-44.
+3. **Trial-to-trial consistency** (~ 30 min code): same cue
+   3×, Jaccard similarity of top-3 sets. Under chance ≈ low,
+   under learning ≈ high. One new metric, decoder-relative,
+   meaningful in BOTH paths.
+
+### Methodological lesson
+
+iter-50: "save the simplest working configuration as a
+regression guard."
+iter-51: **"a regression guard is only a guard if its baseline
+is statistically distinguishable from the null."**
+
+The whole iter-44…50 chain measured against `top-3 = 0.19`
+without ever testing whether that was above chance. Five
+iterations of methodology against an unverified baseline.
+
+This isn't a failure of methodology — Bekos's protocol forced
+exactly the 16-epoch reproduction that revealed the statistical
+situation. But it sharpens what "baseline" requires before it
+counts as evidence: a confidence interval that excludes the
+null.
+
+All 9 eval lib tests still green; clippy `-D warnings` clean.
+No code change in this iter — pure data.
+
 ## Unreleased — Iteration 50 (Arm B reproduction)
 
 Bekos diagnostic: before the fourth consecutive parameter sweep
