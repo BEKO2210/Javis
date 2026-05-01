@@ -358,8 +358,7 @@ impl ScaleBrain {
             // of 0.5 actually matches the per-cue spike count we
             // observe; with the default value the offset stays
             // pinned at `offset_min` and the network melts down.
-            brain
-                .regions[1]
+            brain.regions[1]
                 .network
                 .enable_intrinsic_plasticity(IntrinsicParams {
                     a_target: 0.5,
@@ -375,8 +374,7 @@ impl ScaleBrain {
             // L2 target of 0.5 actually clips the saturated R2 rows
             // (default 1.5 / 4.0 was above the typical incoming-norm
             // and never triggered).
-            brain
-                .regions[1]
+            brain.regions[1]
                 .network
                 .enable_heterosynaptic(HeterosynapticParams {
                     target: 0.5,
@@ -388,16 +386,18 @@ impl ScaleBrain {
             // Sprout aggressively between hot pre/post pairs, prune
             // the dormant E→E edges whose weight stayed below 5e-3
             // for two structural passes.
-            brain.regions[1].network.enable_structural(StructuralParams {
-                apply_every: 1_500,
-                max_new_per_step: 32,
-                prune_threshold: 0.005,
-                prune_age_steps: 3,
-                sprout_pre_trace: 0.2,
-                sprout_post_trace: 0.2,
-                sprout_initial: 0.05,
-                enabled: true,
-            });
+            brain.regions[1]
+                .network
+                .enable_structural(StructuralParams {
+                    apply_every: 1_500,
+                    max_new_per_step: 32,
+                    prune_threshold: 0.005,
+                    prune_age_steps: 3,
+                    sprout_pre_trace: 0.2,
+                    sprout_post_trace: 0.2,
+                    sprout_initial: 0.05,
+                    enabled: true,
+                });
         }
 
         let n = corpus.sentences.len();

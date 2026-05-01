@@ -155,7 +155,6 @@ pub struct RewardEpochMetrics {
     pub noise_top3_rate: f32,
 
     // ---- iter-46 diagnostics ------------------------------------
-
     /// Random top-3 baseline — `decode_k / vocab_size`. Anything
     /// at or below this is statistically indistinguishable from
     /// chance.
@@ -195,7 +194,6 @@ pub struct RewardEpochMetrics {
     pub decoder_micros: u128,
 
     // ---- iter-47 sparsity diagnostics ----------------------------
-
     /// Mean number of R2-E cells active during the prediction
     /// phase (per real pair, averaged over the epoch). Used by
     /// the iter-47 acceptance band [25, 70].
@@ -219,7 +217,6 @@ pub struct RewardEpochMetrics {
     pub selectivity_index: f32,
 
     // ---- iter-48 cascade-stability diagnostics ------------------
-
     /// 99th percentile of `prediction_active_count` across the
     /// epoch's real-pair trials. Iter-47a postmortem identified
     /// avalanches as the dominant failure mode — p99 is a tight
@@ -390,7 +387,7 @@ pub struct TeacherForcingConfig {
     /// teacher-forcing.
     pub homeostatic_normalization: bool,
     /// Print debug info for the first 1–3 example pairs of each
-    /// arm. See [`RewardConfig::debug_trials`].
+    /// arm. Set to 0 to disable debug output.
     pub debug_trials: u32,
     /// Iter-48 A/B knob: keep iSTDP active during the prediction
     /// phase. Default `false` preserves the iter-46 invariant
@@ -764,14 +761,7 @@ fn wire_forward_decorrelated(
         }
         for _ in 0..FAN_OUT {
             let dst = block[(rng.next_u64() as usize) % block.len()];
-            brain.connect(
-                0,
-                r1_idx as usize,
-                1,
-                dst,
-                inter_weight,
-                INTER_DELAY_MS,
-            );
+            brain.connect(0, r1_idx as usize, 1, dst, inter_weight, INTER_DELAY_MS);
         }
     }
 
@@ -785,11 +775,7 @@ fn wire_forward_decorrelated(
 /// post-wiring brain state — no internal short-cut to the block
 /// allocation. Panics with the offending cue pair and the shared
 /// indices on the first violation.
-fn assert_decorrelated_disjoint(
-    brain: &Brain,
-    encoder: &TextEncoder,
-    vocab: &[String],
-) {
+fn assert_decorrelated_disjoint(brain: &Brain, encoder: &TextEncoder, vocab: &[String]) {
     let mut targets: Vec<BTreeSet<u32>> = Vec::with_capacity(vocab.len());
     for word in vocab {
         let r1_sdr = encoder.encode_word(word);
@@ -807,10 +793,7 @@ fn assert_decorrelated_disjoint(
     }
     for i in 0..targets.len() {
         for j in (i + 1)..targets.len() {
-            let inter: Vec<u32> = targets[i]
-                .intersection(&targets[j])
-                .copied()
-                .collect();
+            let inter: Vec<u32> = targets[i].intersection(&targets[j]).copied().collect();
             assert!(
                 inter.is_empty(),
                 "iter-54 decorrelated invariant violated: cues '{}' (idx {}) and '{}' (idx {}) \
@@ -1223,8 +1206,16 @@ fn intrinsic_mean_by_kind(brain: &Brain) -> (f32, f32) {
             }
         }
     }
-    let e = if e_n > 0 { (e_sum / e_n as f64) as f32 } else { 0.0 };
-    let i = if i_n > 0 { (i_sum / i_n as f64) as f32 } else { 0.0 };
+    let e = if e_n > 0 {
+        (e_sum / e_n as f64) as f32
+    } else {
+        0.0
+    };
+    let i = if i_n > 0 {
+        (i_sum / i_n as f64) as f32
+    } else {
+        0.0
+    };
     (e, i)
 }
 
@@ -1236,10 +1227,7 @@ fn intrinsic_stats(brain: &Brain, r2_e_set: &BTreeSet<usize>) -> (f32, f32, f32,
     if net.v_thresh_offset.is_empty() || r2_e_set.is_empty() {
         return (0.0, 0.0, 0.0, 0.0, 0.0);
     }
-    let xs: Vec<f32> = r2_e_set
-        .iter()
-        .map(|&i| net.v_thresh_offset[i])
-        .collect();
+    let xs: Vec<f32> = r2_e_set.iter().map(|&i| net.v_thresh_offset[i]).collect();
     let n = xs.len() as f32;
     let mean: f32 = xs.iter().sum::<f32>() / n;
     let var: f32 = xs.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / n;
@@ -1370,8 +1358,7 @@ fn run_teacher_trial(
     // natural test for "does iSTDP catch the cascade in time"
     // identified by the iter-47a postmortem.
     let suppress_stdp = !cfg.plasticity_during_prediction;
-    let suppress_istdp =
-        !cfg.plasticity_during_prediction && !cfg.istdp_during_prediction;
+    let suppress_istdp = !cfg.plasticity_during_prediction && !cfg.istdp_during_prediction;
     if suppress_stdp {
         brain.regions[1].network.disable_stdp();
     }
@@ -1395,8 +1382,7 @@ fn run_teacher_trial(
     }
     let pred_topk = top_k_indices(&pred_counts, cfg.wta_k.max(1));
     outcome.prediction_topk = pred_topk.clone();
-    outcome.prediction_active_count =
-        pred_counts.iter().filter(|&&c| c > 0).count() as u32;
+    outcome.prediction_active_count = pred_counts.iter().filter(|&&c| c > 0).count() as u32;
     // Iter-47: count how many of the canonical-target neurons fired
     // during the prediction phase. This is the numerator of the
     // selectivity index — "did the cue alone reach the right
@@ -1430,15 +1416,8 @@ fn run_teacher_trial(
     // build before the post-spikes arrive.
     let lead_in_ms: u32 = (cfg.teacher_ms / 4).clamp(4, 12);
     let clamp_ms: u32 = cfg.teacher_ms.saturating_sub(lead_in_ms).max(1);
-    let _lead_counts = drive_with_r2_clamp(
-        brain,
-        cue_sdr,
-        &[],
-        DRIVE_NA,
-        0.0,
-        lead_in_ms as f32,
-        r2_e,
-    );
+    let _lead_counts =
+        drive_with_r2_clamp(brain, cue_sdr, &[], DRIVE_NA, 0.0, lead_in_ms as f32, r2_e);
     let teacher_counts = drive_with_r2_clamp(
         brain,
         cue_sdr,
@@ -1464,12 +1443,8 @@ fn run_teacher_trial(
 
     // ---- Phase 5: reward. Score the *prediction* against the
     //      canonical target — teacher activation does NOT count.
-    let target_in_topk = pred_topk
-        .iter()
-        .any(|i| target_set.contains(i));
-    let any_wrong_topk = pred_topk
-        .iter()
-        .any(|i| !target_set.contains(i));
+    let target_in_topk = pred_topk.iter().any(|i| target_set.contains(i));
+    let any_wrong_topk = pred_topk.iter().any(|i| !target_set.contains(i));
     let reward = if !use_reward {
         0.0
     } else if is_noise {
@@ -1628,9 +1603,7 @@ pub fn run_determinism_smoke(corpus: &RewardCorpus, cfg: &RewardConfig) {
     let j13 = jaccard(&trials[0], &trials[2]);
     let mean_j = (j12 + j23 + j13) / 3.0;
 
-    eprintln!(
-        "[iter-53 smoke] pairwise Jaccard: 1↔2 = {j12:.3} | 2↔3 = {j23:.3} | 1↔3 = {j13:.3}",
-    );
+    eprintln!("[iter-53 smoke] pairwise Jaccard: 1↔2 = {j12:.3} | 2↔3 = {j23:.3} | 1↔3 = {j13:.3}",);
     eprintln!("[iter-53 smoke] mean Jaccard = {mean_j:.3}");
 
     // L2 sanity assertion (Layer-4 lesson from iter-52).
@@ -1666,7 +1639,9 @@ pub fn run_postmortem_diagnostic(
     brain.regions[1].network.enable_stdp(stdp_params);
     brain.regions[1].network.enable_istdp(istdp_params);
     brain.regions[1].network.enable_homeostasis(homeostasis());
-    brain.regions[1].network.enable_intrinsic_plasticity(intrinsic());
+    brain.regions[1]
+        .network
+        .enable_intrinsic_plasticity(intrinsic());
     if cfg.use_reward {
         brain.regions[1]
             .network
@@ -1678,7 +1653,12 @@ pub fn run_postmortem_diagnostic(
     let target_r2_map: std::collections::HashMap<String, Vec<u32>> = corpus
         .vocab
         .iter()
-        .map(|w| (w.clone(), canonical_target_r2_sdr(w, &pool, TARGET_R2_K, salt)))
+        .map(|w| {
+            (
+                w.clone(),
+                canonical_target_r2_sdr(w, &pool, TARGET_R2_K, salt),
+            )
+        })
         .collect();
 
     eprintln!(
@@ -1716,7 +1696,11 @@ pub fn run_postmortem_diagnostic(
         }
         let (m, s, mn, mx, fr) = intrinsic_stats(&brain, &r2_e);
         let net = &brain.regions[1].network;
-        let w_max = net.synapses.iter().map(|s| s.weight).fold(0.0_f32, f32::max);
+        let w_max = net
+            .synapses
+            .iter()
+            .map(|s| s.weight)
+            .fold(0.0_f32, f32::max);
         let w_sum: f64 = net.synapses.iter().map(|s| s.weight as f64).sum();
         let w_mean = (w_sum / net.synapses.len().max(1) as f64) as f32;
         eprintln!(
@@ -1756,7 +1740,11 @@ pub fn run_postmortem_diagnostic(
         cfg.teacher.prediction_ms,
     );
     eprintln!("  step | active | target");
-    for (i, (&a, &t)) in per_step_active.iter().zip(per_step_target.iter()).enumerate() {
+    for (i, (&a, &t)) in per_step_active
+        .iter()
+        .zip(per_step_target.iter())
+        .enumerate()
+    {
         // Print every 10th step plus last to stay readable.
         if i % 10 == 0 || i + 1 == per_step_active.len() {
             eprintln!("  {:>4} | {:>5} | {:>5}", i, a, t);
@@ -1766,9 +1754,21 @@ pub fn run_postmortem_diagnostic(
     let total_target: u64 = per_step_target.iter().map(|&x| x as u64).sum();
     let max_active = per_step_active.iter().max().copied().unwrap_or(0);
     let max_target = per_step_target.iter().max().copied().unwrap_or(0);
-    let early = per_step_active.iter().take(per_step_active.len() / 4).map(|&x| x as u64).sum::<u64>();
-    let late = per_step_active.iter().skip(per_step_active.len() * 3 / 4).map(|&x| x as u64).sum::<u64>();
-    let onset_dominance = if late > 0 { early as f32 / late as f32 } else { f32::INFINITY };
+    let early = per_step_active
+        .iter()
+        .take(per_step_active.len() / 4)
+        .map(|&x| x as u64)
+        .sum::<u64>();
+    let late = per_step_active
+        .iter()
+        .skip(per_step_active.len() * 3 / 4)
+        .map(|&x| x as u64)
+        .sum::<u64>();
+    let onset_dominance = if late > 0 {
+        early as f32 / late as f32
+    } else {
+        f32::INFINITY
+    };
     eprintln!(
         "[postmortem] sums: total_active={total_active} total_target={total_target} max_active/step={max_active} max_target/step={max_target}",
     );
@@ -1835,7 +1835,9 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     // iter-46 Arm B did not enable intrinsic plasticity.
     // Iter-52: also skip under no_plasticity.
     if !cfg.teacher.iter46_baseline && !no_plasticity {
-        brain.regions[1].network.enable_intrinsic_plasticity(intrinsic());
+        brain.regions[1]
+            .network
+            .enable_intrinsic_plasticity(intrinsic());
     }
     if cfg.use_reward && !no_plasticity {
         brain.regions[1]
@@ -1976,8 +1978,7 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                         // Did the prediction-phase top-k contain *any*
                         // canonical target neuron? (top3 in name —
                         // wta_k controls actual k.)
-                        let target_set: BTreeSet<u32> =
-                            canonical.iter().copied().collect();
+                        let target_set: BTreeSet<u32> = canonical.iter().copied().collect();
                         if outcome
                             .prediction_topk
                             .iter()
@@ -2040,12 +2041,8 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                         -1.0_f32
                     } else {
                         brain.regions[1].network.reset_state();
-                        let counts = drive_for_with_counts(
-                            &mut brain,
-                            &cue_sdr.indices,
-                            RECALL_MS,
-                            &r2_e,
-                        );
+                        let counts =
+                            drive_for_with_counts(&mut brain, &cue_sdr.indices, RECALL_MS, &r2_e);
                         let kwta = top_k_indices(&counts, KWTA_K);
                         let target_kwta = {
                             brain.regions[1].network.reset_state();
@@ -2057,8 +2054,7 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                             );
                             top_k_indices(&cs, KWTA_K)
                         };
-                        let overlap =
-                            kwta.iter().filter(|i| target_kwta.contains(i)).count();
+                        let overlap = kwta.iter().filter(|i| target_kwta.contains(i)).count();
                         let ratio = overlap as f32 / target_kwta.len().max(1) as f32;
                         if ratio >= 0.30 {
                             1.0
@@ -2085,10 +2081,7 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                 // cleaner; here we toggle STDP/iSTDP off for the
                 // brief sample to keep weights stable, then back on.
                 if !*is_noise {
-                    let canonical = target_r2_map
-                        .get(&pair.target)
-                        .cloned()
-                        .unwrap_or_default();
+                    let canonical = target_r2_map.get(&pair.target).cloned().unwrap_or_default();
                     // Iter-52: skip the disable/enable cycle when
                     // no_plasticity is true — STDP / iSTDP were
                     // never enabled, so re-enabling them mid-run
@@ -2100,25 +2093,18 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                         brain.regions[1].network.disable_istdp();
                     }
                     brain.regions[1].network.reset_state();
-                    let pred_counts = drive_for_with_counts(
-                        &mut brain,
-                        &cue_sdr.indices,
-                        RECALL_MS,
-                        &r2_e,
-                    );
+                    let pred_counts =
+                        drive_for_with_counts(&mut brain, &cue_sdr.indices, RECALL_MS, &r2_e);
                     if !no_plasticity {
                         brain.regions[1].network.enable_stdp(stdp_params);
                         brain.regions[1].network.enable_istdp(istdp_params);
                     }
-                    let target_set: BTreeSet<u32> =
-                        canonical.iter().copied().collect();
+                    let target_set: BTreeSet<u32> = canonical.iter().copied().collect();
                     let active = pred_counts.iter().filter(|&&c| c > 0).count() as u32;
                     let target_hits = pred_counts
                         .iter()
                         .enumerate()
-                        .filter(|(i, &c)| {
-                            c > 0 && target_set.contains(&(*i as u32))
-                        })
+                        .filter(|(i, &c)| c > 0 && target_set.contains(&(*i as u32)))
                         .count() as u32;
                     active_samples.push(active);
                     target_hit_samples.push(target_hits);
@@ -2171,8 +2157,7 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                 continue;
             }
             brain.regions[1].network.reset_state();
-            let counts =
-                drive_for_with_counts(&mut brain, &cue_sdr.indices, RECALL_MS, &r2_e);
+            let counts = drive_for_with_counts(&mut brain, &cue_sdr.indices, RECALL_MS, &r2_e);
             active_total += counts.iter().filter(|&&c| c > 0).count() as u64;
             active_n += 1;
             let kwta = top_k_indices(&counts, KWTA_K);
@@ -2203,8 +2188,7 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
             // target neurons.
             if teacher_active {
                 if let Some(canonical) = target_r2_map.get(&pair.target) {
-                    let target_set: BTreeSet<u32> =
-                        canonical.iter().copied().collect();
+                    let target_set: BTreeSet<u32> = canonical.iter().copied().collect();
                     let (mut correct_sum, mut correct_n, mut incorrect_sum, mut incorrect_n) =
                         (0u64, 0u32, 0u64, 0u32);
                     for (i, &c) in counts.iter().enumerate() {
@@ -2359,8 +2343,7 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                 if active_samples.is_empty() {
                     0.0
                 } else {
-                    active_samples.iter().sum::<u32>() as f32
-                        / active_samples.len() as f32
+                    active_samples.iter().sum::<u32>() as f32 / active_samples.len() as f32
                 }
             },
             r2_active_pre_teacher_p10: {
@@ -2377,8 +2360,7 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                 if target_hit_samples.is_empty() {
                     0.0
                 } else {
-                    target_hit_samples.iter().sum::<u32>() as f32
-                        / target_hit_samples.len() as f32
+                    target_hit_samples.iter().sum::<u32>() as f32 / target_hit_samples.len() as f32
                 }
             },
             selectivity_index: {
@@ -2514,10 +2496,7 @@ fn train_brain_inplace(
             let tgt_sdr = encoder.encode_word(&pair.target);
 
             if teacher_active {
-                let canonical = target_r2_map
-                    .get(&pair.target)
-                    .cloned()
-                    .unwrap_or_default();
+                let canonical = target_r2_map.get(&pair.target).cloned().unwrap_or_default();
                 for _rep in 0..cfg.reps_per_pair.max(1) {
                     brain.regions[1].network.reset_state();
                     let _ = run_teacher_trial(
@@ -2553,27 +2532,17 @@ fn train_brain_inplace(
                         -1.0_f32
                     } else {
                         brain.regions[1].network.reset_state();
-                        let counts = drive_for_with_counts(
-                            brain,
-                            &cue_sdr.indices,
-                            RECALL_MS,
-                            r2_e,
-                        );
+                        let counts =
+                            drive_for_with_counts(brain, &cue_sdr.indices, RECALL_MS, r2_e);
                         let kwta = top_k_indices(&counts, KWTA_K);
                         let target_kwta = {
                             brain.regions[1].network.reset_state();
-                            let cs = drive_for_with_counts(
-                                brain,
-                                &tgt_sdr.indices,
-                                RECALL_MS,
-                                r2_e,
-                            );
+                            let cs =
+                                drive_for_with_counts(brain, &tgt_sdr.indices, RECALL_MS, r2_e);
                             top_k_indices(&cs, KWTA_K)
                         };
-                        let overlap =
-                            kwta.iter().filter(|i| target_kwta.contains(i)).count();
-                        let ratio =
-                            overlap as f32 / target_kwta.len().max(1) as f32;
+                        let overlap = kwta.iter().filter(|i| target_kwta.contains(i)).count();
+                        let ratio = overlap as f32 / target_kwta.len().max(1) as f32;
                         if ratio >= 0.30 {
                             1.0
                         } else if ratio >= 0.15 {
@@ -2629,12 +2598,10 @@ fn evaluate_jaccard_matrix(
         for _trial_i in 0..N_TRIALS {
             // Full reset — R1 + R2 + pending queue + brain.time.
             brain.reset_state();
-            let counts =
-                drive_for_with_counts(brain, &cue_sdr.indices, RECALL_MS, r2_e);
+            let counts = drive_for_with_counts(brain, &cue_sdr.indices, RECALL_MS, r2_e);
             let kwta = top_k_indices(&counts, KWTA_K);
             let decoded = dict.decode_top(&kwta, TOP_K);
-            let top: Vec<String> =
-                decoded.iter().map(|(w, _)| w.clone()).collect();
+            let top: Vec<String> = decoded.iter().map(|(w, _)| w.clone()).collect();
             trials.push(top);
         }
         matrix.push(trials);
@@ -2685,8 +2652,7 @@ fn evaluate_jaccard_matrix(
         if v.len() < 2 {
             0.0
         } else {
-            let var = v.iter().map(|x| (x - m).powi(2)).sum::<f32>()
-                / (v.len() - 1) as f32;
+            let var = v.iter().map(|x| (x - m).powi(2)).sum::<f32>() / (v.len() - 1) as f32;
             var.sqrt()
         }
     };
@@ -2724,8 +2690,7 @@ fn run_jaccard_arm(
     } else {
         (INTER_WEIGHT, R2_INH_FRAC)
     };
-    let encoder =
-        TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
+    let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
     let mut brain = if cfg.teacher.decorrelated_init {
         // Iter-54: hard-decorrelated R1 → R2 wiring. Build R1 + R2
         // *without* the standard random fan-out, then wire only
@@ -2773,7 +2738,9 @@ fn run_jaccard_arm(
         brain.regions[1].network.enable_homeostasis(homeostasis());
     }
     if !cfg.teacher.iter46_baseline && !no_plasticity {
-        brain.regions[1].network.enable_intrinsic_plasticity(intrinsic());
+        brain.regions[1]
+            .network
+            .enable_intrinsic_plasticity(intrinsic());
     }
     if cfg.use_reward && !no_plasticity {
         brain.regions[1]
@@ -2832,8 +2799,7 @@ fn run_jaccard_arm(
 
     let vocab: Vec<String> = corpus.vocab.iter().cloned().collect();
     let dict = build_vocab_dictionary(&mut brain, &encoder, &r2_e, &vocab);
-    let jaccard =
-        evaluate_jaccard_matrix(&mut brain, &encoder, &r2_e, &dict, &vocab);
+    let jaccard = evaluate_jaccard_matrix(&mut brain, &encoder, &r2_e, &dict, &vocab);
 
     let l2_post_eval = brain_synapse_l2_norms(&brain);
 
@@ -2841,10 +2807,7 @@ fn run_jaccard_arm(
         // Untrained arm: plasticity was never enabled; eval must
         // be a pure read. Pre-train and post-eval L2 must match
         // bit-for-bit (the iter-52 invariant carried forward).
-        let identical = pre_l2
-            .iter()
-            .zip(l2_post_eval.iter())
-            .all(|(a, b)| a == b);
+        let identical = pre_l2.iter().zip(l2_post_eval.iter()).all(|(a, b)| a == b);
         assert!(
             identical,
             "iter-53: --no-plasticity arm changed weights (seed={}, arm={arm}). \
@@ -2941,17 +2904,11 @@ pub fn render_jaccard_sweep(sweep: &JaccardSweepResult) -> String {
     use std::fmt::Write;
     let mut s = String::new();
     s.push_str("### Iter-53: Decoder-relative Jaccard sweep\n\n");
-    s.push_str(
-        "| Seed | Arm | Same-Cue | Cross-Cue | n_cues | n_pairs |\n",
-    );
-    s.push_str(
-        "| ---: | :--- | ---: | ---: | ---: | ---: |\n",
-    );
+    s.push_str("| Seed | Arm | Same-Cue | Cross-Cue | n_cues | n_pairs |\n");
+    s.push_str("| ---: | :--- | ---: | ---: | ---: | ---: |\n");
     let n = sweep.untrained.len().max(sweep.trained.len());
     for i in 0..n {
-        for (label, arms) in
-            [("untrained", &sweep.untrained), ("trained", &sweep.trained)]
-        {
+        for (label, arms) in [("untrained", &sweep.untrained), ("trained", &sweep.trained)] {
             if let Some(r) = arms.get(i) {
                 let _ = writeln!(
                     s,
@@ -2979,8 +2936,7 @@ pub fn render_jaccard_sweep(sweep: &JaccardSweepResult) -> String {
         if v.len() < 2 {
             0.0
         } else {
-            let var = v.iter().map(|x| (x - m).powi(2)).sum::<f32>()
-                / (v.len() - 1) as f32;
+            let var = v.iter().map(|x| (x - m).powi(2)).sum::<f32>() / (v.len() - 1) as f32;
             var.sqrt()
         }
     };
@@ -3015,11 +2971,7 @@ pub fn render_jaccard_sweep(sweep: &JaccardSweepResult) -> String {
     let tc_m = mean_of(&tc);
     let tc_s = std_of(&tc, tc_m);
 
-    let _ = writeln!(
-        s,
-        "\n**Aggregate (n={} seeds):**\n",
-        sweep.untrained.len(),
-    );
+    let _ = writeln!(s, "\n**Aggregate (n={} seeds):**\n", sweep.untrained.len(),);
     let _ = writeln!(
         s,
         "- Untrained: same={us_m:.3}±{us_s:.3} cross={uc_m:.3}±{uc_s:.3}",
@@ -3148,9 +3100,7 @@ pub fn render_markdown(label: &str, metrics: &[RewardEpochMetrics]) -> String {
     s.push_str(
         "| Epoch | r2_act mean | p10 | p90 | p99 | tgt_hit mean | selectivity | θ_E | θ_I |\n",
     );
-    s.push_str(
-        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
-    );
+    s.push_str("| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for m in metrics {
         s.push_str(&format!(
             "| {:>3} | {:>5.1} | {:>4} | {:>4} | {:>4} | {:>5.2} | {:>+6.4} | {:>5.3} | {:>5.3} |\n",
@@ -3208,15 +3158,7 @@ mod tests {
         let pool = r2_e_pool(&r2_e);
         let target = canonical_target_r2_sdr("zebra", &pool, 16, 0xCAFE);
         // No cue, just the clamp at high strength.
-        let counts = drive_with_r2_clamp(
-            &mut brain,
-            &[],
-            &target,
-            0.0,
-            500.0,
-            20.0,
-            &r2_e,
-        );
+        let counts = drive_with_r2_clamp(&mut brain, &[], &target, 0.0, 500.0, 20.0, &r2_e);
         let target_set: BTreeSet<u32> = target.iter().copied().collect();
         let fired_in_target = target_set
             .iter()
@@ -3273,18 +3215,11 @@ mod tests {
     fn decorrelated_init_is_pairwise_disjoint() {
         let corpus = default_corpus();
         let vocab_vec: Vec<String> = corpus.vocab.iter().cloned().collect();
-        let encoder =
-            TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
+        let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
         let mut brain = Brain::new(DT);
         brain.add_region(build_input_region());
         brain.add_region(build_memory_region(43, R2_INH_FRAC));
-        let blocks = wire_forward_decorrelated(
-            &mut brain,
-            &encoder,
-            &vocab_vec,
-            123,
-            INTER_WEIGHT,
-        );
+        let blocks = wire_forward_decorrelated(&mut brain, &encoder, &vocab_vec, 123, INTER_WEIGHT);
         assert_eq!(blocks.len(), vocab_vec.len());
         // Block-to-block disjointness (precondition).
         for i in 0..blocks.len() {

@@ -479,7 +479,7 @@ pub struct SnapshotMetadata {
 }
 
 /// Current schema version. Incremented in lock-step with the
-/// migration table in [`migrate_snapshot`].
+/// `migrate_snapshot` table in this module.
 pub const SNAPSHOT_VERSION: u32 = 2;
 
 /// Type-erased migration step. Takes a `Value` describing a snapshot

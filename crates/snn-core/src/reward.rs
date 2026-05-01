@@ -19,7 +19,7 @@
 //! - `eligibility[s]` is a per-synapse "synaptic tag" that decays with
 //!   `tau_e` (typically 0.5–2 s, much longer than the STDP traces).
 //! - `modulator(t)` is a *global* scalar — the dopamine surrogate. It
-//!   can be set externally each step via [`Network::set_neuromodulator`]
+//!   can be set externally each step via [`crate::Network::set_neuromodulator`]
 //!   or [`crate::Brain::set_neuromodulator`]; it can be positive
 //!   (reward), negative (punishment) or zero (baseline).
 //!
@@ -28,7 +28,7 @@
 //! plasticity observed in striatum and frontal cortex.
 //!
 //! Default `eta = 0.0` keeps reward learning off; existing networks
-//! see no behaviour change unless [`Network::enable_reward_learning`]
+//! see no behaviour change unless [`crate::Network::enable_reward_learning`]
 //! is called.
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]

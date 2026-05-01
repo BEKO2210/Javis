@@ -17,9 +17,9 @@
 use std::time::Instant;
 
 use eval::{
-    default_reward_corpus, render_jaccard_sweep, render_reward_markdown,
-    run_determinism_smoke, run_jaccard_bench, run_postmortem_diagnostic,
-    run_reward_benchmark, Iter49Mode, RewardConfig, TeacherForcingConfig,
+    default_reward_corpus, render_jaccard_sweep, render_reward_markdown, run_determinism_smoke,
+    run_jaccard_bench, run_postmortem_diagnostic, run_reward_benchmark, Iter49Mode, RewardConfig,
+    TeacherForcingConfig,
 };
 
 fn main() {
@@ -66,8 +66,7 @@ fn main() {
     // dynamics, recurrent spike propagation, and the decoder all
     // stay live; only weight updates are silenced. End-of-run L2
     // norm sanity asserts the gate was tight.
-    let no_plasticity =
-        flag(&args, "--no-plasticity") || flag(&args, "--frozen-weights");
+    let no_plasticity = flag(&args, "--no-plasticity") || flag(&args, "--frozen-weights");
 
     // Iter-54: hard-decorrelated R1 → R2 init. Replaces the random
     // FAN_OUT wiring with disjoint-block-per-cue wiring (each vocab
@@ -171,8 +170,7 @@ fn main() {
     // over `--seeds` (comma-separated; defaults to a single `--seed`)
     // and prints both the per-seed table and the aggregate Δ-of-Δ.
     if flag(&args, "--jaccard-bench") {
-        let seeds_str = parse_string(&args, "--seeds")
-            .unwrap_or_else(|| seed.to_string());
+        let seeds_str = parse_string(&args, "--seeds").unwrap_or_else(|| seed.to_string());
         let seeds: Vec<u64> = seeds_str
             .split(',')
             .filter_map(|s| s.trim().parse::<u64>().ok())
