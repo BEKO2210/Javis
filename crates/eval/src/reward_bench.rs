@@ -120,6 +120,125 @@ pub struct RewardEpochMetrics {
     pub noise_top3_rate: f32,
 }
 
+/// Iter-46 teacher-forcing configuration. When attached to a
+/// [`RewardConfig`], the trial schedule switches from "drive cue
+/// then target through R1" (iter-45) to a clean six-phase cycle:
+///
+/// 1. **cue** (`cue_ms`): cue SDR drives R1 → forward R1→R2 fires.
+/// 2. **delay** (`delay_ms`): no input.
+/// 3. **prediction** (`prediction_ms`): cue alone again, plasticity
+///    OFF (controlled by `plasticity_during_prediction`); the
+///    network's spontaneous top-k is captured for diagnostics and
+///    reward gating.
+/// 4. **teacher** (`teacher_ms`): cue on R1 *plus* the canonical
+///    target SDR clamped *directly into R2-E* with current
+///    `target_clamp_strength`. Plasticity ON
+///    (`plasticity_during_teacher`) — STDP / R-STDP get clean
+///    pre→post coincidences between cue-driven R2 cells and
+///    teacher-clamped target R2 cells.
+/// 5. **reward** (`reward_after_teacher`): the modulator is set
+///    based on the *prediction* (not teacher). Teacher cells alone
+///    must never count as a recall success.
+/// 6. **tail** (`tail_ms`): no input, traces decay.
+#[derive(Debug, Clone, Copy)]
+pub struct TeacherForcingConfig {
+    pub enabled: bool,
+    pub cue_ms: u32,
+    pub delay_ms: u32,
+    pub prediction_ms: u32,
+    pub teacher_ms: u32,
+    pub tail_ms: u32,
+    /// External current injected into each clamped R2-E neuron during
+    /// the teacher phase (nA). Higher values → harder forcing, lower
+    /// values let the network's own dynamics co-determine which
+    /// target cells fire. ~ 200 nA is the same scale as the existing
+    /// R1 forward drive.
+    pub target_clamp_strength: f32,
+    /// Optional refractory-style limit on the clamp: if non-zero,
+    /// only every Nth ms gets the high current (lets target cells
+    /// recover between forced spikes).
+    pub target_clamp_spike_interval_ms: u32,
+    /// Disable STDP / iSTDP during the prediction phase so the test
+    /// does not contaminate the weights.
+    pub plasticity_during_prediction: bool,
+    /// Enable plasticity during the teacher phase. Almost always
+    /// `true` — that's the whole point of teacher-forcing.
+    pub plasticity_during_teacher: bool,
+    /// Run reward delivery only after the teacher phase. Default
+    /// `true`; setting it to `false` falls back to iter-45 timing.
+    pub reward_after_teacher: bool,
+    /// How many top-scoring decoded engrams the prediction phase
+    /// reads. Default 3 — same k the epoch readout uses.
+    pub wta_k: usize,
+    /// Negative reward applied when the *wrong* target sneaks into
+    /// the prediction's top-k. Drives R-STDP to actively suppress
+    /// false candidates.
+    pub negative_reward_for_false_topk: f32,
+    pub positive_reward_for_correct: f32,
+    pub noise_reward: f32,
+    /// Re-normalise R2 → R2 weights to a fixed L2 norm at the end of
+    /// every epoch. Helps stop weight blow-up under repeated
+    /// teacher-forcing.
+    pub homeostatic_normalization: bool,
+    /// Print debug info for the first 1–3 example pairs of each
+    /// arm. See [`RewardConfig::debug_trials`].
+    pub debug_trials: u32,
+}
+
+impl Default for TeacherForcingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cue_ms: 40,
+            delay_ms: 10,
+            prediction_ms: 20,
+            teacher_ms: 40,
+            tail_ms: 20,
+            target_clamp_strength: 250.0,
+            target_clamp_spike_interval_ms: 0,
+            plasticity_during_prediction: false,
+            plasticity_during_teacher: true,
+            reward_after_teacher: true,
+            wta_k: 3,
+            negative_reward_for_false_topk: -0.5,
+            positive_reward_for_correct: 1.0,
+            noise_reward: -1.0,
+            homeostatic_normalization: true,
+            debug_trials: 0,
+        }
+    }
+}
+
+impl TeacherForcingConfig {
+    pub const fn off() -> Self {
+        Self {
+            enabled: false,
+            cue_ms: 40,
+            delay_ms: 10,
+            prediction_ms: 20,
+            teacher_ms: 40,
+            tail_ms: 20,
+            target_clamp_strength: 250.0,
+            target_clamp_spike_interval_ms: 0,
+            plasticity_during_prediction: false,
+            plasticity_during_teacher: true,
+            reward_after_teacher: true,
+            wta_k: 3,
+            negative_reward_for_false_topk: -0.5,
+            positive_reward_for_correct: 1.0,
+            noise_reward: -1.0,
+            homeostatic_normalization: false,
+            debug_trials: 0,
+        }
+    }
+    pub const fn enabled() -> Self {
+        Self {
+            enabled: true,
+            ..Self::off()
+        }
+    }
+}
+
 /// Configuration for one benchmark run.
 #[derive(Debug, Clone, Copy)]
 pub struct RewardConfig {
@@ -134,6 +253,9 @@ pub struct RewardConfig {
     /// path needs several presentations to build up weights against
     /// the dominant R1 → R2 forward drive.
     pub reps_per_pair: u32,
+    /// Iter-46 teacher-forcing schedule. Default `off` — the
+    /// pre-iter-46 cue+target-through-R1 path is preserved.
+    pub teacher: TeacherForcingConfig,
 }
 
 impl RewardConfig {
@@ -143,6 +265,7 @@ impl RewardConfig {
             use_reward: false,
             seed: 42,
             reps_per_pair: 4,
+            teacher: TeacherForcingConfig::off(),
         }
     }
     pub const fn with_reward(epochs: usize) -> Self {
@@ -151,6 +274,16 @@ impl RewardConfig {
             use_reward: true,
             seed: 42,
             reps_per_pair: 4,
+            teacher: TeacherForcingConfig::off(),
+        }
+    }
+    pub const fn with_teacher(epochs: usize) -> Self {
+        Self {
+            epochs,
+            use_reward: true,
+            seed: 42,
+            reps_per_pair: 4,
+            teacher: TeacherForcingConfig::enabled(),
         }
     }
 }
@@ -707,6 +840,7 @@ mod tests {
                 seed: 42,
                 // Tiny reps_per_pair so the smoke test stays fast.
                 reps_per_pair: 1,
+                teacher: TeacherForcingConfig::off(),
             };
             let metrics = run_reward_benchmark(&small, &cfg);
             assert_eq!(metrics.len(), 2);
