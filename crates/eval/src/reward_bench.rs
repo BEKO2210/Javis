@@ -740,17 +740,42 @@ fn run_teacher_trial(
 
     // ---- Phase 4: teacher. Cue + R2 target clamp. Plasticity ON
     //      (it is by default; this matches the iter-45 reps loop).
+    //
+    //      CRITICAL: drive cue alone for `cue_lead_in_teacher` ms
+    //      *before* applying the clamp. The R1 → R2 inter-region
+    //      delay is 2 ms, so without a lead-in the clamp would
+    //      activate the target cells *before* the cue's R2 cells
+    //      fire — STDP would then learn target → cue (anti-causal)
+    //      instead of cue → target. The lead-in lets cue cells
+    //      establish a pre-spike pattern that the clamped target
+    //      cells then *follow*, giving STDP the right timing
+    //      asymmetry.
     if !cfg.plasticity_during_teacher {
         brain.regions[1].network.disable_stdp();
         brain.regions[1].network.disable_istdp();
     }
+    // Lead-in: cue alone, no clamp. ~ ¼ of the teacher window or
+    // 8 ms, whichever is shorter, but always at least 4 ms so the
+    // R1 → R2 delay can complete and pre-traces have time to
+    // build before the post-spikes arrive.
+    let lead_in_ms: u32 = (cfg.teacher_ms / 4).clamp(4, 12);
+    let clamp_ms: u32 = cfg.teacher_ms.saturating_sub(lead_in_ms).max(1);
+    let _lead_counts = drive_with_r2_clamp(
+        brain,
+        cue_sdr,
+        &[],
+        DRIVE_NA,
+        0.0,
+        lead_in_ms as f32,
+        r2_e,
+    );
     let teacher_counts = drive_with_r2_clamp(
         brain,
         cue_sdr,
         target_r2_sdr,
         DRIVE_NA,
         cfg.target_clamp_strength,
-        cfg.teacher_ms as f32,
+        clamp_ms as f32,
         r2_e,
     );
     if !cfg.plasticity_during_teacher {
