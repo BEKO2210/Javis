@@ -1333,6 +1333,117 @@ struct TrialOutcome {
 /// epoch metric stream. Returns the final intrinsic stats as a
 /// quintuple `(theta_mean, theta_std, theta_min, theta_max, frac>1mV)`
 /// so callers can render them in a table.
+/// Iter-53 determinism smoke (Bekos's pre-implementation gate
+/// for the Jaccard-consistency metric path B). Builds an
+/// untrained brain, builds the per-vocab fingerprint dictionary
+/// once, then presents the first real-pair cue 3× with
+/// `reset_state` between trials. Reports the per-trial top-3
+/// sets and the pairwise Jaccard similarity.
+///
+/// Decision matrix (Bekos):
+/// - mean Jaccard ≈ 1.0 → system is deterministic per cue,
+///   Jaccard metric trivial, fall back to Option A
+///   (per-trial trained-minus-untrained Δ).
+/// - mean Jaccard < 1.0 but > 0 → Jaccard is informative,
+///   proceed to Option B (full implementation).
+/// - mean Jaccard ≈ 0 → too random, edge case.
+///
+/// Uses no plasticity by construction (forced regardless of
+/// `cfg.teacher.no_plasticity`) so the determinism observed
+/// is the pure brain dynamics, not a side effect of any
+/// learning rule.
+pub fn run_determinism_smoke(corpus: &RewardCorpus, cfg: &RewardConfig) {
+    let (inter_weight_used, inh_frac_used) = if cfg.teacher.iter46_baseline {
+        (2.0_f32, 0.20_f32)
+    } else {
+        (INTER_WEIGHT, R2_INH_FRAC)
+    };
+    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used);
+    let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
+    let r2_e = r2_e_set(&brain);
+
+    eprintln!(
+        "[iter-53 smoke] determinism test — seed={}, INTER_WEIGHT={}, R2_INH_FRAC={}",
+        cfg.seed, inter_weight_used, inh_frac_used,
+    );
+    eprintln!("[iter-53 smoke] plasticity: ALL OFF (forced for determinism check)");
+
+    // No enable_* calls — pure forward + recurrent dynamics, no
+    // plasticity. This is the cleanest baseline for "does the
+    // same cue produce the same top-3 across reset_state cycles".
+    let pre_l2 = brain_synapse_l2_norms(&brain);
+
+    let vocab: Vec<String> = corpus.vocab.iter().cloned().collect();
+    // Build the fingerprint dictionary once. Each call to
+    // `drive_for_with_counts` does reset_state internally inside
+    // build_vocab_dictionary so dictionary construction itself
+    // is deterministic given the seed.
+    let dict = build_vocab_dictionary(&mut brain, &encoder, &r2_e, &vocab);
+
+    // Pick the first real-pair cue.
+    let pair = &corpus.pairs[0];
+    let cue_sdr = encoder.encode_word(&pair.cue);
+    eprintln!(
+        "[iter-53 smoke] cue = '{}' target = '{}' (vocab size = {}, decode k = 3)",
+        pair.cue,
+        pair.target,
+        vocab.len(),
+    );
+
+    let mut trials: Vec<Vec<String>> = Vec::with_capacity(3);
+    for trial_i in 0..3 {
+        brain.regions[1].network.reset_state();
+        let counts = drive_for_with_counts(&mut brain, &cue_sdr.indices, RECALL_MS, &r2_e);
+        let kwta = top_k_indices(&counts, KWTA_K);
+        let active = counts.iter().filter(|&&c| c > 0).count();
+        let decoded = dict.decode_top(&kwta, 3);
+        let top3_words: Vec<String> = decoded.iter().map(|(w, _)| w.clone()).collect();
+        let target_in = top3_words.iter().any(|w| w == &pair.target);
+        eprintln!(
+            "[iter-53 smoke] trial {trial_i}: r2_active={active} top-3={top3_words:?} target_in={target_in}",
+        );
+        trials.push(top3_words);
+    }
+
+    // Pairwise Jaccard on top-3 word sets.
+    let jaccard = |a: &[String], b: &[String]| -> f32 {
+        let sa: BTreeSet<&String> = a.iter().collect();
+        let sb: BTreeSet<&String> = b.iter().collect();
+        let inter = sa.intersection(&sb).count();
+        let uni = sa.union(&sb).count();
+        if uni == 0 {
+            0.0
+        } else {
+            inter as f32 / uni as f32
+        }
+    };
+    let j12 = jaccard(&trials[0], &trials[1]);
+    let j23 = jaccard(&trials[1], &trials[2]);
+    let j13 = jaccard(&trials[0], &trials[2]);
+    let mean_j = (j12 + j23 + j13) / 3.0;
+
+    eprintln!(
+        "[iter-53 smoke] pairwise Jaccard: 1↔2 = {j12:.3} | 2↔3 = {j23:.3} | 1↔3 = {j13:.3}",
+    );
+    eprintln!("[iter-53 smoke] mean Jaccard = {mean_j:.3}");
+
+    // L2 sanity assertion (Layer-4 lesson from iter-52).
+    let post_l2 = brain_synapse_l2_norms(&brain);
+    let identical = pre_l2.iter().zip(post_l2.iter()).all(|(a, b)| a == b);
+    eprintln!(
+        "[iter-53 smoke] L2 invariant: pre={pre_l2:?} post={post_l2:?} bit-identical={identical}",
+    );
+    assert!(
+        identical,
+        "iter-53 smoke: weights changed under no-plasticity path",
+    );
+
+    eprintln!("[iter-53 smoke] Bekos decision matrix:");
+    eprintln!("  mean Jaccard ≈ 1.0  → deterministic, Option B trivial, fall back to Option A");
+    eprintln!("  0 < mean J < 1.0    → Jaccard informative, proceed to Option B");
+    eprintln!("  mean Jaccard ≈ 0    → too random, edge case");
+}
+
 pub fn run_postmortem_diagnostic(
     corpus: &RewardCorpus,
     cfg: &RewardConfig,

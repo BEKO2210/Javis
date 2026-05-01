@@ -17,8 +17,9 @@
 use std::time::Instant;
 
 use eval::{
-    default_reward_corpus, render_reward_markdown, run_postmortem_diagnostic,
-    run_reward_benchmark, Iter49Mode, RewardConfig, TeacherForcingConfig,
+    default_reward_corpus, render_reward_markdown, run_determinism_smoke,
+    run_postmortem_diagnostic, run_reward_benchmark, Iter49Mode, RewardConfig,
+    TeacherForcingConfig,
 };
 
 fn main() {
@@ -135,6 +136,23 @@ fn main() {
     };
 
     let corpus = default_reward_corpus();
+
+    // Iter-53 determinism smoke (Bekos's pre-implementation gate):
+    // bypass everything else, run the 1-cue × 3-trial determinism
+    // test, print the pairwise Jaccard, exit.
+    if flag(&args, "--determinism-smoke") {
+        let mut t = teacher;
+        t.no_plasticity = true; // forced, see run_determinism_smoke
+        let cfg = RewardConfig {
+            epochs: 0,
+            use_reward: false,
+            seed,
+            reps_per_pair: 0,
+            teacher: t,
+        };
+        run_determinism_smoke(&corpus, &cfg);
+        return;
+    }
 
     // Iter-47a postmortem branch: bypass the normal two-arm output
     // entirely, run a single diagnostic. Always uses the teacher
