@@ -47,8 +47,8 @@ use std::collections::BTreeSet;
 
 use encoders::{EngramDictionary, TextEncoder};
 use snn_core::{
-    Brain, HomeostasisParams, IStdpParams, LifNeuron, LifParams, NeuronKind, Region, RewardParams,
-    Rng, StdpParams,
+    Brain, HomeostasisParams, IStdpParams, IntrinsicParams, LifNeuron, LifParams, NeuronKind,
+    Region, RewardParams, Rng, StdpParams,
 };
 
 /// Topology — a fast 2 000-neuron R2 keeps the benchmark wall-time
@@ -60,7 +60,13 @@ const R2_N: usize = 2_000;
 const R2_INH_FRAC: f32 = 0.20;
 const R2_P_CONNECT: f32 = 0.05;
 const FAN_OUT: usize = 12;
-const INTER_WEIGHT: f32 = 2.0;
+/// Iter-47a: reduced from 2.0 → 0.5 to give recurrent R2→R2 weights
+/// (max ~0.8 under STDP) a fighting chance against the forward
+/// drive sum (FAN_OUT × INTER_WEIGHT). Combined with intrinsic
+/// plasticity on R2 (Diehl & Cook 2015 adaptive threshold) to keep
+/// the R2 active-cell count in a sparse band per cue, instead of
+/// 90–180 cells dominated by the forward path.
+const INTER_WEIGHT: f32 = 0.5;
 const INTER_DELAY_MS: f32 = 2.0;
 const ENC_N: u32 = R1_N as u32;
 const ENC_K: u32 = 20;
@@ -162,6 +168,30 @@ pub struct RewardEpochMetrics {
     /// Useful to see whether iter-46 is slower than iter-45's
     /// dictionary-rebuild.
     pub decoder_micros: u128,
+
+    // ---- iter-47 sparsity diagnostics ----------------------------
+
+    /// Mean number of R2-E cells active during the prediction
+    /// phase (per real pair, averaged over the epoch). Used by
+    /// the iter-47 acceptance band [25, 70].
+    pub r2_active_pre_teacher_mean: f32,
+    /// 10th percentile across the epoch's real-pair trials.
+    /// `< 5` is the iter-47 "signal-death" warning.
+    pub r2_active_pre_teacher_p10: u32,
+    /// 90th percentile. `> 100` is the iter-47 "drive-too-strong"
+    /// warning.
+    pub r2_active_pre_teacher_p90: u32,
+    /// Mean count of canonical-target neurons that fired during
+    /// the prediction phase, before the clamp. Direct readout of
+    /// "did the cue alone reach the right cells?".
+    pub target_hit_pre_teacher_mean: f32,
+    /// Selectivity index — Diehl-Cook-style normalisation:
+    /// `target_hit / |target| − non_target_active / (|R2_E| − |target|)`
+    /// `> 0` ⇒ targets fire over-proportionally;
+    /// `= 0` ⇒ uniform across the population;
+    /// `< 0` ⇒ targets fire under-proportionally (the iter-46
+    ///         symptom that iter-47 must flip).
+    pub selectivity_index: f32,
 }
 
 /// Iter-46 teacher-forcing configuration. When attached to a
@@ -492,6 +522,38 @@ fn homeostasis() -> HomeostasisParams {
     }
 }
 
+/// Iter-47a-2 — Diehl & Cook (2015) adaptive threshold per R2-E
+/// neuron. The iter-44 IntrinsicParams already implements the rule:
+///
+/// ```text
+///   adapt(t+dt) = adapt(t) * exp(-dt / tau_adapt)
+///   adapt      += alpha_spike on every post-spike
+///   v_thresh_eff = v_threshold_base + beta * (adapt - a_target)
+/// ```
+///
+/// With `a_target = 0`, `beta = 1`, this collapses to a pure
+/// per-spike threshold offset (Δθ ≈ alpha_spike), which is exactly
+/// Diehl-Cook. The cap on `offset_max` stops the threshold from
+/// climbing so high that a neuron stops firing entirely (dead-cell
+/// failure mode).
+///
+/// Key insight: this is the *cheapest* fix for the iter-46 finding
+/// that R2 had 90–180 active cells per cue (vs. 30 canonical
+/// targets). Cells that fire too often raise their own threshold,
+/// quieting the runaway forward population without touching the
+/// recurrent path.
+fn intrinsic() -> IntrinsicParams {
+    IntrinsicParams {
+        alpha_spike: 0.05,
+        tau_adapt_ms: 2000.0,
+        a_target: 0.0,
+        beta: 1.0,
+        offset_min: 0.0,
+        offset_max: 5.0,
+        enabled: true,
+    }
+}
+
 fn reward_params() -> RewardParams {
     // η large enough that 80 ms of consolidation moves a tag of order
     // 1.0 by ~ 0.1 in weight space — comparable to a single STDP pair
@@ -698,6 +760,18 @@ fn shuffle<T>(rng: &mut Rng, v: &mut [T]) {
     }
 }
 
+/// Iter-47: linear-interpolated percentile of a small sample
+/// (clamped to integer u32 because all our active-cell counts are
+/// integers). Empty sample → 0.
+fn percentile_u32(sorted_samples: &[u32], pct: f32) -> u32 {
+    if sorted_samples.is_empty() {
+        return 0;
+    }
+    let n = sorted_samples.len();
+    let idx = ((pct.clamp(0.0, 1.0)) * (n - 1) as f32).round() as usize;
+    sorted_samples[idx.min(n - 1)]
+}
+
 /// Iter-46 six-phase trial. Returns the prediction-phase top-k
 /// (computed *before* teacher-forcing) so the caller can score
 /// recall and feed reward without contaminating the eval signal.
@@ -759,6 +833,16 @@ fn run_teacher_trial(
     outcome.prediction_topk = pred_topk.clone();
     outcome.prediction_active_count =
         pred_counts.iter().filter(|&&c| c > 0).count() as u32;
+    // Iter-47: count how many of the canonical-target neurons fired
+    // during the prediction phase. This is the numerator of the
+    // selectivity index — "did the cue alone reach the right
+    // cells, before the clamp helped?".
+    let target_set: BTreeSet<u32> = target_r2_sdr.iter().copied().collect();
+    outcome.pred_target_hits = pred_counts
+        .iter()
+        .enumerate()
+        .filter(|(i, &c)| c > 0 && target_set.contains(&(*i as u32)))
+        .count() as u32;
 
     // ---- Phase 4: teacher. Cue + R2 target clamp. Plasticity ON
     //      (it is by default; this matches the iter-45 reps loop).
@@ -804,8 +888,9 @@ fn run_teacher_trial(
         brain.regions[1].network.enable_stdp(rest_stdp);
         brain.regions[1].network.enable_istdp(rest_istdp);
     }
-    // Diagnostic: how reliably did the clamp drive the intended set?
-    let target_set: BTreeSet<u32> = target_r2_sdr.iter().copied().collect();
+    // Diagnostic: how reliably did the clamp drive the intended
+    // set? Reuses `target_set` already built in the prediction
+    // phase above (iter-47 selectivity readout).
     let clamp_hit = target_set
         .iter()
         .filter(|&&i| teacher_counts[i as usize] > 0)
@@ -862,6 +947,11 @@ struct TrialOutcome {
     target_clamp_size: u32,
     prediction_correct: bool,
     reward_value: f32,
+    /// Iter-47: number of canonical-target neurons that fired at
+    /// least once during the prediction phase (before the clamp).
+    /// Lets the epoch loop compute the selectivity index without
+    /// re-running R2 step.
+    pred_target_hits: u32,
 }
 
 // ----------------------------------------------------------------------
@@ -885,6 +975,12 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     brain.regions[1].network.enable_stdp(stdp_params);
     brain.regions[1].network.enable_istdp(istdp_params);
     brain.regions[1].network.enable_homeostasis(homeostasis());
+    // Iter-47a-2: Diehl-Cook adaptive threshold to keep R2 active
+    // cell count in a sparse band per cue. Without this the reduced
+    // INTER_WEIGHT alone risks variance blow-up (some cues over,
+    // some under-active). Tracked in metrics:
+    // r2_active_pre_teacher (mean, p10, p90), selectivity_index.
+    brain.regions[1].network.enable_intrinsic_plasticity(intrinsic());
     if cfg.use_reward {
         brain.regions[1]
             .network
@@ -944,6 +1040,10 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
         let mut prediction_top3_hits: u32 = 0;
         let mut prediction_top3_total: u32 = 0;
         let mut debug_emitted: u32 = 0;
+        // Iter-47 sparsity samples — collected per real-pair trial,
+        // percentiles taken at the end of the epoch.
+        let mut active_samples: Vec<u32> = Vec::new();
+        let mut target_hit_samples: Vec<u32> = Vec::new();
 
         for (pair, is_noise) in &schedule {
             let cue_sdr = encoder.encode_word(&pair.cue);
@@ -993,6 +1093,9 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                             prediction_top3_hits += 1;
                         }
                         prediction_top3_total += 1;
+                        // Iter-47: per-trial sparsity samples.
+                        active_samples.push(outcome.prediction_active_count);
+                        target_hit_samples.push(outcome.pred_target_hits);
                     }
                     // Debug: print the first `debug_trials` real-pair
                     // diagnostics each epoch so the operator can see
@@ -1302,6 +1405,52 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
             },
             correct_minus_incorrect_margin: correct_w - incorrect_w,
             decoder_micros,
+            // ---- iter-47 sparsity readout ----
+            r2_active_pre_teacher_mean: {
+                if active_samples.is_empty() {
+                    0.0
+                } else {
+                    active_samples.iter().sum::<u32>() as f32
+                        / active_samples.len() as f32
+                }
+            },
+            r2_active_pre_teacher_p10: {
+                let mut s = active_samples.clone();
+                s.sort_unstable();
+                percentile_u32(&s, 0.10)
+            },
+            r2_active_pre_teacher_p90: {
+                let mut s = active_samples.clone();
+                s.sort_unstable();
+                percentile_u32(&s, 0.90)
+            },
+            target_hit_pre_teacher_mean: {
+                if target_hit_samples.is_empty() {
+                    0.0
+                } else {
+                    target_hit_samples.iter().sum::<u32>() as f32
+                        / target_hit_samples.len() as f32
+                }
+            },
+            selectivity_index: {
+                // Per-trial selectivity, then mean. Each trial's
+                // selectivity is target_hit / |target| − non_target_active /
+                // (|R2_E| − |target|).
+                let target_size = TARGET_R2_K as f32;
+                let r2_e_size = r2_e.len() as f32;
+                let bg_size = (r2_e_size - target_size).max(1.0);
+                if active_samples.is_empty() {
+                    0.0
+                } else {
+                    let mut sum = 0.0_f32;
+                    for (i, &active) in active_samples.iter().enumerate() {
+                        let hit = target_hit_samples[i] as f32;
+                        let non = (active as f32 - hit).max(0.0);
+                        sum += hit / target_size - non / bg_size;
+                    }
+                    sum / active_samples.len() as f32
+                }
+            },
         });
     }
 
@@ -1375,6 +1524,7 @@ pub fn render_markdown(label: &str, metrics: &[RewardEpochMetrics]) -> String {
             first.random_top3_baseline,
         ));
     }
+    // Table 1 — outcome / accuracy / weight stats (iter-44…46).
     s.push_str(
         "| Epoch | top-1 | top-3 | MRR | mean rwd | noise t3 | \
          pred-t3 | clamp | margin | elig | w̄ | wmax | dec µs |\n",
@@ -1398,6 +1548,28 @@ pub fn render_markdown(label: &str, metrics: &[RewardEpochMetrics]) -> String {
             m.r2_recurrent_weight_mean,
             m.r2_recurrent_weight_max,
             m.decoder_micros,
+        ));
+    }
+    // Table 2 — iter-47 sparsity diagnostics. Surfaces the
+    // forward-drive vs target-population balance per epoch so the
+    // [25, 70] acceptance band and the selectivity sign are
+    // immediately readable.
+    s.push('\n');
+    s.push_str(
+        "| Epoch | r2_act mean | r2_act p10 | r2_act p90 | tgt_hit mean | selectivity |\n",
+    );
+    s.push_str(
+        "| ---: | ---: | ---: | ---: | ---: | ---: |\n",
+    );
+    for m in metrics {
+        s.push_str(&format!(
+            "| {:>3} | {:>5.1} | {:>5} | {:>5} | {:>5.2} | {:>+6.4} |\n",
+            m.epoch,
+            m.r2_active_pre_teacher_mean,
+            m.r2_active_pre_teacher_p10,
+            m.r2_active_pre_teacher_p90,
+            m.target_hit_pre_teacher_mean,
+            m.selectivity_index,
         ));
     }
     s
