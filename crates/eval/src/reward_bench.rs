@@ -370,6 +370,17 @@ pub struct TeacherForcingConfig {
     /// When `true`, also forces `iter49_mode = None`,
     /// `enabled = false`, and skips `enable_intrinsic_plasticity`.
     pub iter46_baseline: bool,
+    /// Iter-52 untrained control: skip every `enable_*` plasticity
+    /// call so the brain runs as a pure random-weight forward
+    /// projection — no STDP, no R-STDP, no iSTDP, no homeostasis,
+    /// no intrinsic plasticity. Forward LIF dynamics, recurrent
+    /// spike propagation, and the decoder all stay live; only
+    /// weight updates are gated. Used to answer "is any of the
+    /// chain's measured top-3 actually a learning signal, or is
+    /// it the forward-projection baseline plus noise?". Combine
+    /// with `iter46_baseline = true` for the strict iter-46-Arm-B
+    /// untrained variant.
+    pub no_plasticity: bool,
     /// During the prediction phase only, scale the R1 cue current
     /// by this factor. `1.0` = no gating (default); `0.3` halves
     /// the forward drive so the cue's R2 response is more easily
@@ -410,6 +421,7 @@ impl Default for TeacherForcingConfig {
             gated_warmup_epochs: 2,
             gated_ramp_epochs: 2,
             iter46_baseline: false,
+            no_plasticity: false,
         }
     }
 }
@@ -440,6 +452,7 @@ impl TeacherForcingConfig {
             gated_warmup_epochs: 2,
             gated_ramp_epochs: 2,
             iter46_baseline: false,
+            no_plasticity: false,
         }
     }
     pub const fn enabled() -> Self {
@@ -1064,6 +1077,26 @@ fn r2_e_set(brain: &Brain) -> BTreeSet<usize> {
         .collect()
 }
 
+/// Iter-52: per-region L2 norm of all synapse weights. Used as a
+/// bit-identity sanity check under `--no-plasticity`: if the gate
+/// is tight, the post-training norms must equal the pre-training
+/// norms exactly (up to f32 stability of repeated `.weight` reads).
+/// Returns one f64 per region.
+fn brain_synapse_l2_norms(brain: &Brain) -> Vec<f64> {
+    brain
+        .regions
+        .iter()
+        .map(|r| {
+            r.network
+                .synapses
+                .iter()
+                .map(|s| (s.weight as f64) * (s.weight as f64))
+                .sum::<f64>()
+                .sqrt()
+        })
+        .collect()
+}
+
 fn shuffle<T>(rng: &mut Rng, v: &mut [T]) {
     // Fisher-Yates using the deterministic in-house RNG.
     for i in (1..v.len()).rev() {
@@ -1464,9 +1497,17 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     } else {
         istdp_iter49(&cfg.teacher, 0)
     };
-    brain.regions[1].network.enable_stdp(stdp_params);
-    brain.regions[1].network.enable_istdp(istdp_params);
-    brain.regions[1].network.enable_homeostasis(homeostasis());
+    // Iter-52 untrained control: gate every plasticity enable.
+    // The brain becomes a pure random-weight forward projection
+    // with recurrent spike propagation but no weight updates.
+    // L2-norm sanity asserts at the end of the run prove the
+    // gate is tight (post-training norms must equal pre-training).
+    let no_plasticity = cfg.teacher.no_plasticity;
+    if !no_plasticity {
+        brain.regions[1].network.enable_stdp(stdp_params);
+        brain.regions[1].network.enable_istdp(istdp_params);
+        brain.regions[1].network.enable_homeostasis(homeostasis());
+    }
     // Iter-47a-2: Diehl-Cook adaptive threshold to keep R2 active
     // cell count in a sparse band per cue. Without this the reduced
     // INTER_WEIGHT alone risks variance blow-up (some cues over,
@@ -1475,13 +1516,29 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     //
     // Iter-50 diagnostic: skip when iter46_baseline is set, since
     // iter-46 Arm B did not enable intrinsic plasticity.
-    if !cfg.teacher.iter46_baseline {
+    // Iter-52: also skip under no_plasticity.
+    if !cfg.teacher.iter46_baseline && !no_plasticity {
         brain.regions[1].network.enable_intrinsic_plasticity(intrinsic());
     }
-    if cfg.use_reward {
+    if cfg.use_reward && !no_plasticity {
         brain.regions[1]
             .network
             .enable_reward_learning(reward_params());
+    }
+    // Iter-52 sanity: capture the L2 norm of every region's
+    // synapse weights at run start. End-of-run norms must equal
+    // these bit-for-bit when no_plasticity is true.
+    let pre_norms = if no_plasticity {
+        Some(brain_synapse_l2_norms(&brain))
+    } else {
+        None
+    };
+    if no_plasticity {
+        eprintln!(
+            "[iter-52] Plasticity gated: STDP=off iSTDP=off Homeostasis=off \
+             AdaptiveTheta=off R-STDP=off | initial L2 (R1→R2, R2→R2)={:?}",
+            pre_norms.as_ref().unwrap(),
+        );
     }
 
     // Iter-46: pre-compute the canonical target-R2 SDR for every
@@ -1531,12 +1588,15 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
         //
         // Iter-50 diagnostic: when iter46_baseline is set, use the
         // original iter-46 iSTDP every epoch (no ramp).
+        // Iter-52: gate under no_plasticity.
         istdp_params = if cfg.teacher.iter46_baseline {
             istdp_iter46_baseline()
         } else {
             istdp_iter49(&cfg.teacher, epoch)
         };
-        brain.regions[1].network.enable_istdp(istdp_params);
+        if !no_plasticity {
+            brain.regions[1].network.enable_istdp(istdp_params);
+        }
 
         // Build the trial schedule for this epoch: every real pair +
         // every noise pair, shuffled.
@@ -1712,8 +1772,16 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                         .get(&pair.target)
                         .cloned()
                         .unwrap_or_default();
-                    brain.regions[1].network.disable_stdp();
-                    brain.regions[1].network.disable_istdp();
+                    // Iter-52: skip the disable/enable cycle when
+                    // no_plasticity is true — STDP / iSTDP were
+                    // never enabled, so re-enabling them mid-run
+                    // would silently turn plasticity on (the leak
+                    // the L2-norm sanity assert caught on first
+                    // run).
+                    if !no_plasticity {
+                        brain.regions[1].network.disable_stdp();
+                        brain.regions[1].network.disable_istdp();
+                    }
                     brain.regions[1].network.reset_state();
                     let pred_counts = drive_for_with_counts(
                         &mut brain,
@@ -1721,8 +1789,10 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                         RECALL_MS,
                         &r2_e,
                     );
-                    brain.regions[1].network.enable_stdp(stdp_params);
-                    brain.regions[1].network.enable_istdp(istdp_params);
+                    if !no_plasticity {
+                        brain.regions[1].network.enable_stdp(stdp_params);
+                        brain.regions[1].network.enable_istdp(istdp_params);
+                    }
                     let target_set: BTreeSet<u32> =
                         canonical.iter().copied().collect();
                     let active = pred_counts.iter().filter(|&&c| c > 0).count() as u32;
@@ -1756,10 +1826,14 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
         //
         // Plasticity is silenced for the duration of the readout
         // so the test does not contaminate the next epoch's
-        // training.
+        // training. Iter-52: skip when no_plasticity (the call
+        // would not change behaviour, but the matching enable_*
+        // below would silently turn plasticity on).
         let saved_modulator = brain.regions[1].network.neuromodulator;
-        brain.regions[1].network.disable_stdp();
-        brain.regions[1].network.disable_istdp();
+        if !no_plasticity {
+            brain.regions[1].network.disable_stdp();
+            brain.regions[1].network.disable_istdp();
+        }
         brain.set_neuromodulator(0.0);
 
         let dec_t0 = std::time::Instant::now();
@@ -1849,9 +1923,14 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
         }
         let decoder_micros = dec_t0.elapsed().as_micros();
 
-        // Restore plasticity for the next epoch.
-        brain.regions[1].network.enable_stdp(stdp_params);
-        brain.regions[1].network.enable_istdp(istdp_params);
+        // Restore plasticity for the next epoch. Iter-52: skip
+        // when no_plasticity — STDP / iSTDP were never enabled,
+        // so calling enable_*() here would turn them on
+        // mid-run.
+        if !no_plasticity {
+            brain.regions[1].network.enable_stdp(stdp_params);
+            brain.regions[1].network.enable_istdp(istdp_params);
+        }
         brain.set_neuromodulator(saved_modulator);
 
         // Optional iter-46 homeostatic normalisation: re-scale
@@ -2019,6 +2098,25 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                 e
             },
         });
+    }
+
+    // Iter-52 sanity assertion: when no_plasticity is true, post-
+    // training synapse L2 norms must equal the pre-training values
+    // bit-for-bit. If they differ by even one ulp, a plasticity
+    // path is leaking.
+    if let Some(pre) = pre_norms {
+        let post = brain_synapse_l2_norms(&brain);
+        let identical = pre.iter().zip(post.iter()).all(|(a, b)| a == b);
+        eprintln!(
+            "[iter-52] post-training L2 norms = {:?} | bit-identical to pre = {}",
+            post, identical,
+        );
+        assert!(
+            identical,
+            "iter-52 invariant violated: weights changed under --no-plasticity. \
+             pre = {:?}, post = {:?}",
+            pre, post,
+        );
     }
 
     metrics

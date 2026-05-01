@@ -4,6 +4,105 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 52 (untrained-brain control)
+
+Bekos's iter-52 spec: `--no-plasticity` toggle that gates every
+plasticity enable, plus L2-norm bit-identity sanity assertion,
+plus 4-seed × 16-epoch run on `--iter46-baseline --no-plasticity`,
+plus pre-fixed iter-53 branching matrix.
+
+### Added — single commit
+
+- `TeacherForcingConfig.no_plasticity` field + CLI flag
+  `--no-plasticity` (alias `--frozen-weights`).
+- Plasticity-enable gate at three sites the L2 sanity caught:
+  (1) run-time setup, (2) per-epoch ActivityGated re-enable,
+  (3) mid-trial disable/enable cycles in the Arm-B-diagnostic
+  block AND the epoch readout.
+- `brain_synapse_l2_norms(brain)` helper.
+- Run-start log + run-end `assert!` of bit-identical L2 norms
+  under `no_plasticity = true`.
+
+### Verified — 4 seeds × 16 epochs, all bit-identical L2
+
+```
+seed | initial L2  | post L2     | match | top-3 mean
+ 41  | 136.5766…   | 136.5766…   |  ✓    | 0.0413
+ 42  | 136.0980…   | 136.0980…   |  ✓    | 0.0225
+ 43  | 136.3604…   | 136.3604…   |  ✓    | 0.0375
+ 44  | 136.5731…   | 136.5731…   |  ✓    | 0.0563
+```
+
+Aggregated over 64 epoch-samples:
+- Untrained top-3 mean: **0.039** (95 % CI [-0.008, 0.086])
+- iter-51 trained top-3 mean: **0.107** (95 % CI [0.069, 0.145])
+- Δ trained − untrained: **0.068, ~2.2 σ**
+- Untrained vs random 0.094: **−0.055, ~2.3 σ — significantly BELOW random**
+
+### Honest reading — Mess-Frage per Bekos's matrix
+
+The first L2-norm assertion failure on the initial run caught a
+9× weight blowup that the visible config would have hidden:
+mid-run `disable_stdp` / `enable_stdp(stdp_params)` cycles in
+the Arm-B-diagnostic and epoch-readout blocks were silently
+turning plasticity back on. After all three gate sites closed,
+all 4 seeds produced bit-identical pre/post L2 norms.
+
+Two new statistical readings emerge:
+
+1. **Plasticity is doing something measurable.** Trained 0.107
+   vs untrained 0.039 is a real Δ at ~2.2 σ. iter-51's
+   "indistinguishable from chance" was too conservative — it
+   compared trained to an analytical random model, not to an
+   empirical decoder-on-fresh-brain control.
+2. **The decoder has a bias against the correct target on a
+   fresh brain.** Untrained top-3 sits at 0.039 — significantly
+   *below* the 0.094 random baseline. With `r2_active = 180`
+   in the untrained brain (vs 145 trained), the fingerprint
+   dictionary is dominated by a uniform forward-projection
+   pattern; `decode_top` returns the same alphabetic-tiebreak
+   "default" set on every cue, almost never including the
+   correct target.
+
+Per Bekos's pre-fixed branching matrix:
+
+| Untrained top-3 | Branch | This data |
+| --- | --- | :-: |
+| ≈ 0.107 (CI overlap) | Architecture inert | ❌ |
+| ≤ 0.085 | **Measurement question** | **✓** (0.039 ≪ 0.085) |
+| ≥ 0.13 | Sign question | ❌ |
+
+### iter-53 implication — decoder-relative readout, NOT new mechanism
+
+iter-53 should NOT:
+- Build new architecture (the brain is doing something).
+- Sweep plasticity parameters (real but small lift; no
+  parameter is going to 10× the 0.068 Δ).
+- Multi-seed power-analyse trained alone (the trained-vs-
+  untrained Δ is the relevant signal, not a tighter trained-
+  alone CI).
+
+iter-53 SHOULD: replace top-3-against-fingerprint with a
+decoder-relative metric that doesn't degrade on highly
+correlated dictionaries. Two candidates, both ~30 min code:
+(a) per-trial trained-minus-untrained Δ; (b) trial-to-trial
+Jaccard consistency on 3× repeated cues.
+
+### Methodological lesson
+
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a regression guard is only a guard if its baseline
+excludes the null.
+**iter-52: an analytical null hypothesis is not the same as
+an empirical untrained control. Use the control whenever the
+decoder can have a bias.**
+
+The L2 sanity assertion that caught the 9× blowup on the first
+run was the single most leveraged 10 lines of diagnostic code
+in the whole iter-44…52 chain.
+
+All 9 eval lib tests still green; clippy `-D warnings` clean.
+
 ## Unreleased — Iteration 51 Schritt 1 (Arm B saturation)
 
 Bekos protocol for iter-51 had three steps; Schritt 1 was a

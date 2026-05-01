@@ -59,6 +59,15 @@ fn main() {
     // teacher_forcing.
     let iter46_baseline = flag(&args, "--iter46-baseline");
 
+    // Iter-52 untrained control: --no-plasticity (alias
+    // --frozen-weights) gates every plasticity enable so the brain
+    // runs as a pure random-weight forward projection. Forward LIF
+    // dynamics, recurrent spike propagation, and the decoder all
+    // stay live; only weight updates are silenced. End-of-run L2
+    // norm sanity asserts the gate was tight.
+    let no_plasticity =
+        flag(&args, "--no-plasticity") || flag(&args, "--frozen-weights");
+
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
     //   wmax-cap       — symptom: iSTDP w_max 8.0 → 2.0
@@ -122,6 +131,7 @@ fn main() {
         gated_warmup_epochs: 2,
         gated_ramp_epochs: 2,
         iter46_baseline,
+        no_plasticity,
     };
 
     let corpus = default_reward_corpus();
@@ -146,7 +156,8 @@ fn main() {
     eprintln!(
         "Reward benchmark: pairs={} noise_pairs={} vocab={} epochs={epochs} reps={reps} seed={seed} \
          teacher_forcing={teacher_on} wta_k={wta_k} homeostasis={homeostasis} r1r2_gate={r1r2_gate} \
-         istdp_in_pred={istdp_in_prediction} iter49={} iter46_baseline={iter46_baseline}",
+         istdp_in_pred={istdp_in_prediction} iter49={} iter46_baseline={iter46_baseline} \
+         no_plasticity={no_plasticity}",
         corpus.pairs.len(),
         corpus.noise_pairs.len(),
         corpus.vocab.len(),
