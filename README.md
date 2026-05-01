@@ -552,6 +552,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 45 | **Reward-aware pair-association harness**: dopamine + eligibility tag exercised end-to-end, honest "no convergence yet" finding documented |
 | 46 | **Teacher-forcing harness**: R2 target-clamp + 6-phase schedule + R1→R2 gate + anti-causal STDP fix; `clamp = 1.00`, but R1→R2 forward dominance survives — honest diagnosis of next bottleneck |
 | 47a | **Forward-drive scaling + adaptive θ**: INTER_WEIGHT sweep + Diehl-Cook intrinsic plasticity + 5 sparsity metrics; INTER_WEIGHT 1.0 + adaptive θ produces *first* monotone learning signal (target_hit 1.16 → 2.59), but bistability at 0.7 proves k-WTA is necessary for iter-48 |
+| 47a-pm | **Postmortem diagnostics**: 16-epoch saturation test (selectivity *collapses* in epochs 5–15) + per-step cascade trace (oscillatory bursting, NOT onset-burst, early/late ratio 0.97) + θ effect-size measurement (0.05 mV mean, < 0.3 % of 15 mV LIF swing). Reverses iter-48 plan: k-WTA out, **fast iSTDP (Vogels 2011) in** |
 
 ---
 

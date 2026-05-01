@@ -60,21 +60,30 @@ const R2_N: usize = 2_000;
 const R2_INH_FRAC: f32 = 0.20;
 const R2_P_CONNECT: f32 = 0.05;
 const FAN_OUT: usize = 12;
-/// Iter-47a-2 sweep finding (notes/47):
+/// Iter-47a-2 sweep finding (notes/47a + notes/47a-postmortem):
 ///
 /// - 2.0 (iter-46 baseline): 90–180 active R2 cells, margin negative.
 /// - 0.5: signal-death, 0.8–3 cells, no learning substrate.
-/// - 1.0: 96–139 cells, still above band but tgt-hit grows
-///   monotonically (1.16 → 2.59 over 4 epochs); selectivity rises
-///   from -0.022 toward 0.
+/// - 1.0: 96–139 cells, monotone learning signal in epochs 0-3
+///   (target_hit 1.16 → 2.59, selectivity -0.022 → -0.0005), then
+///   COLLAPSED in epochs 5–15 (selectivity → -0.045, target_hit →
+///   0.08). Postmortem (b)+(c): adaptive θ effect size is tiny
+///   (mean = 0.05 mV, max = 0.86 mV, frac > 1mV = 0 — << LIF
+///   15 mV swing); the collapse is driven by STDP/iSTDP imbalance,
+///   not by θ over-correction.
 /// - 0.7: BISTABLE — epochs 0-2 stable at ~10 cells, epoch 3
-///   explodes to 507 mean / 1599 p90 (recurrent cascade,
-///   Litwin-Kumar 2014). Adaptive θ alone cannot prevent the
-///   exponential blow-up.
+///   explodes (mean 507 / p90 1599). Postmortem (b)+(c): per-step
+///   trace shows synchronised oscillatory bursting (10 / 54 / …
+///   / 189 / 10 / …, early-vs-late ratio 0.97) with 0 canonical-
+///   target hits; θ jumps reactively from 0.03 → 2.84 mV in the
+///   cascade epoch (99.9 % of cells > 1 mV) but only AFTER the
+///   blow-up — Diehl-Cook is reactive, not preventive.
 ///
-/// Held at 1.0 because that is the most stable sweep point with a
-/// monotone learning signal. The hard sparsity cap (47a-3, k-WTA)
-/// addresses the bistability on top of this.
+/// Held at 1.0 because that is the most stable sweep point with
+/// at least transient learning. iter-48 entry from postmortem
+/// data: tighter iSTDP (Vogels 2011) for fast EI balance, NOT
+/// per-step k-WTA — the failure mode is oscillatory bursting,
+/// not onset-burst.
 const INTER_WEIGHT: f32 = 1.0;
 const INTER_DELAY_MS: f32 = 2.0;
 const ENC_N: u32 = R1_N as u32;
@@ -728,6 +737,87 @@ fn drive_with_r2_clamp(
     counts
 }
 
+/// Iter-47a postmortem (b)+(c): same as `drive_with_r2_clamp` but
+/// also records, per simulation step:
+///   - how many R2-E cells fired in that step (active count),
+///   - how many of those were canonical-target cells.
+///
+/// Used by the cascade diagnostic to distinguish onset-burst vs.
+/// sustained-runaway (Litwin-Kumar 2014). The function is *not*
+/// on the hot path — only called when the operator passes
+/// `--debug-cascade`.
+#[allow(clippy::too_many_arguments)]
+fn drive_with_r2_clamp_traced(
+    brain: &mut Brain,
+    cue_indices: &[u32],
+    r2_target_indices: &[u32],
+    r1_strength: f32,
+    r2_strength: f32,
+    duration_ms: f32,
+    r2_e_set: &BTreeSet<usize>,
+) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+    let target_set: BTreeSet<u32> = r2_target_indices.iter().copied().collect();
+    let r2_size = brain.regions[1].num_neurons();
+    let mut counts = vec![0u32; r2_size];
+    let mut per_step_active: Vec<u32> = Vec::new();
+    let mut per_step_target: Vec<u32> = Vec::new();
+    let mut ext1 = vec![0.0_f32; R1_N];
+    for &idx in cue_indices {
+        if (idx as usize) < R1_N {
+            ext1[idx as usize] = r1_strength;
+        }
+    }
+    let mut ext2 = vec![0.0_f32; R2_N];
+    if r2_strength != 0.0 {
+        for &idx in r2_target_indices {
+            if (idx as usize) < R2_N {
+                ext2[idx as usize] = r2_strength;
+            }
+        }
+    }
+    let externals = vec![ext1, ext2];
+    let steps = (duration_ms / DT) as usize;
+    for _ in 0..steps {
+        let spikes = brain.step(&externals);
+        let mut step_active: u32 = 0;
+        let mut step_target: u32 = 0;
+        for &id in &spikes[1] {
+            if r2_e_set.contains(&id) {
+                counts[id] += 1;
+                step_active += 1;
+                if target_set.contains(&(id as u32)) {
+                    step_target += 1;
+                }
+            }
+        }
+        per_step_active.push(step_active);
+        per_step_target.push(step_target);
+    }
+    (counts, per_step_active, per_step_target)
+}
+
+/// Iter-47a postmortem (c): summary statistics for the per-neuron
+/// adaptive-threshold offset (Diehl-Cook). Returns
+/// `(mean, std, min, max, frac_above_1mV)` over the R2-E pool.
+fn intrinsic_stats(brain: &Brain, r2_e_set: &BTreeSet<usize>) -> (f32, f32, f32, f32, f32) {
+    let net = &brain.regions[1].network;
+    if net.v_thresh_offset.is_empty() || r2_e_set.is_empty() {
+        return (0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+    let xs: Vec<f32> = r2_e_set
+        .iter()
+        .map(|&i| net.v_thresh_offset[i])
+        .collect();
+    let n = xs.len() as f32;
+    let mean: f32 = xs.iter().sum::<f32>() / n;
+    let var: f32 = xs.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / n;
+    let std = var.sqrt();
+    let min = xs.iter().cloned().fold(f32::INFINITY, f32::min);
+    let max = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let above = xs.iter().filter(|&&x| x > 1.0).count() as f32 / n;
+    (mean, std, min, max, above)
+}
+
 /// Subset of the R2-E neurons in their topological order — the pool
 /// from which `canonical_target_r2_sdr` picks. Cached at brain build
 /// time so we don't filter the neuron list on every call.
@@ -971,6 +1061,151 @@ struct TrialOutcome {
 /// Run the pair-association benchmark for `cfg.epochs` epochs and
 /// return per-epoch metrics. The harness builds its own `Brain` and
 /// dictionary so the call is self-contained.
+/// Iter-47a postmortem driver. Trains for `train_epochs` epochs on
+/// the corpus (using the supplied teacher config), then for the
+/// first real pair runs ONE additional teacher trial in which the
+/// prediction phase is captured step-by-step. Prints:
+///   - per-step R2-E active count (onset-burst vs sustained-runaway)
+///   - per-step canonical-target hit count
+///   - final intrinsic-θ distribution stats over R2-E
+///   - mean / max R2 → R2 weight
+///
+/// Read-only after the configured training; does not mutate the
+/// epoch metric stream. Returns the final intrinsic stats as a
+/// quintuple `(theta_mean, theta_std, theta_min, theta_max, frac>1mV)`
+/// so callers can render them in a table.
+pub fn run_postmortem_diagnostic(
+    corpus: &RewardCorpus,
+    cfg: &RewardConfig,
+    train_epochs: usize,
+) -> (f32, f32, f32, f32, f32) {
+    // Mirror run_reward_benchmark's brain construction, train for
+    // train_epochs, then run one diagnostic trial on the first
+    // real pair.
+    let mut brain = fresh_brain(cfg.seed);
+    let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
+    let r2_e = r2_e_set(&brain);
+    let stdp_params = stdp();
+    let istdp_params = istdp();
+    brain.regions[1].network.enable_stdp(stdp_params);
+    brain.regions[1].network.enable_istdp(istdp_params);
+    brain.regions[1].network.enable_homeostasis(homeostasis());
+    brain.regions[1].network.enable_intrinsic_plasticity(intrinsic());
+    if cfg.use_reward {
+        brain.regions[1]
+            .network
+            .enable_reward_learning(reward_params());
+    }
+    let mut rng = Rng::new(cfg.seed);
+    let pool = r2_e_pool(&r2_e);
+    let salt = cfg.seed ^ 0xCAFE_F00D_DEAD_BEEFu64;
+    let target_r2_map: std::collections::HashMap<String, Vec<u32>> = corpus
+        .vocab
+        .iter()
+        .map(|w| (w.clone(), canonical_target_r2_sdr(w, &pool, TARGET_R2_K, salt)))
+        .collect();
+
+    eprintln!(
+        "[postmortem] train_epochs={train_epochs} pairs={} noise={} INTER_WEIGHT={}",
+        corpus.pairs.len(),
+        corpus.noise_pairs.len(),
+        INTER_WEIGHT,
+    );
+    for epoch in 0..train_epochs {
+        let mut schedule: Vec<(RewardPair, bool)> = corpus
+            .pairs
+            .iter()
+            .map(|p| (p.clone(), false))
+            .chain(corpus.noise_pairs.iter().map(|p| (p.clone(), true)))
+            .collect();
+        shuffle(&mut rng, &mut schedule);
+        for (pair, is_noise) in &schedule {
+            let cue_sdr = encoder.encode_word(&pair.cue);
+            let canonical = target_r2_map.get(&pair.target).cloned().unwrap_or_default();
+            for _ in 0..cfg.reps_per_pair.max(1) {
+                brain.regions[1].network.reset_state();
+                let _ = run_teacher_trial(
+                    &mut brain,
+                    &cfg.teacher,
+                    cfg.use_reward,
+                    *is_noise,
+                    &cue_sdr.indices,
+                    &canonical,
+                    &r2_e,
+                    stdp_params,
+                    istdp_params,
+                );
+                idle(&mut brain, COOLDOWN_MS);
+            }
+        }
+        let (m, s, mn, mx, fr) = intrinsic_stats(&brain, &r2_e);
+        let net = &brain.regions[1].network;
+        let w_max = net.synapses.iter().map(|s| s.weight).fold(0.0_f32, f32::max);
+        let w_sum: f64 = net.synapses.iter().map(|s| s.weight as f64).sum();
+        let w_mean = (w_sum / net.synapses.len().max(1) as f64) as f32;
+        eprintln!(
+            "[postmortem epoch {epoch}] θ mean={:.3} std={:.3} min={:.3} max={:.3} frac>1mV={:.3} | w̄={:.3} wmax={:.3}",
+            m, s, mn, mx, fr, w_mean, w_max,
+        );
+    }
+    eprintln!("[postmortem] training done; capturing per-step prediction trace …");
+
+    // Diagnostic trial — first real pair, plasticity OFF on all
+    // rules so the trace is a pure read-out.
+    let pair = &corpus.pairs[0];
+    let cue_sdr = encoder.encode_word(&pair.cue);
+    let _canonical = target_r2_map.get(&pair.target).cloned().unwrap_or_default();
+    brain.regions[1].network.disable_stdp();
+    brain.regions[1].network.disable_istdp();
+    brain.set_neuromodulator(0.0);
+    brain.regions[1].network.reset_state();
+
+    // Phase-1 cue, phase-2 delay, phase-3 prediction TRACED.
+    drive_for(&mut brain, &cue_sdr.indices, cfg.teacher.cue_ms as f32);
+    idle(&mut brain, cfg.teacher.delay_ms as f32);
+    let (_counts, per_step_active, per_step_target) = drive_with_r2_clamp_traced(
+        &mut brain,
+        &cue_sdr.indices,
+        &[],
+        DRIVE_NA * cfg.teacher.r1r2_prediction_gate,
+        0.0,
+        cfg.teacher.prediction_ms as f32,
+        &r2_e,
+    );
+
+    eprintln!(
+        "[postmortem] prediction phase per-step trace ({} steps × {:.2} ms = {:.0} ms)",
+        per_step_active.len(),
+        DT,
+        cfg.teacher.prediction_ms,
+    );
+    eprintln!("  step | active | target");
+    for (i, (&a, &t)) in per_step_active.iter().zip(per_step_target.iter()).enumerate() {
+        // Print every 10th step plus last to stay readable.
+        if i % 10 == 0 || i + 1 == per_step_active.len() {
+            eprintln!("  {:>4} | {:>5} | {:>5}", i, a, t);
+        }
+    }
+    let total_active: u64 = per_step_active.iter().map(|&x| x as u64).sum();
+    let total_target: u64 = per_step_target.iter().map(|&x| x as u64).sum();
+    let max_active = per_step_active.iter().max().copied().unwrap_or(0);
+    let max_target = per_step_target.iter().max().copied().unwrap_or(0);
+    let early = per_step_active.iter().take(per_step_active.len() / 4).map(|&x| x as u64).sum::<u64>();
+    let late = per_step_active.iter().skip(per_step_active.len() * 3 / 4).map(|&x| x as u64).sum::<u64>();
+    let onset_dominance = if late > 0 { early as f32 / late as f32 } else { f32::INFINITY };
+    eprintln!(
+        "[postmortem] sums: total_active={total_active} total_target={total_target} max_active/step={max_active} max_target/step={max_target}",
+    );
+    eprintln!(
+        "[postmortem] early-vs-late dominance ratio (sum first 25% / sum last 25%): {onset_dominance:.2}",
+    );
+    eprintln!(
+        "[postmortem]   > 2.0 ⇒ onset-burst pattern (k-WTA fix); ≤ 1.5 ⇒ sustained drive (iSTDP fix)",
+    );
+
+    intrinsic_stats(&brain, &r2_e)
+}
+
 pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<RewardEpochMetrics> {
     let mut brain = fresh_brain(cfg.seed);
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());

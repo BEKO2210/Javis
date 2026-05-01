@@ -4,6 +4,75 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 47a postmortem (saturation + cascade + θ effect size)
+
+Three diagnostic questions left after iter-47a-2's acceptance
+sweep (notes/47a) — answered with explicit instrumentation
+*before* writing iter-48 code, per Bekos's protocol:
+"lieber eine Iteration verlieren an saubere Diagnose, als drei
+Iterationen an spekulative Architekturänderungen".
+
+### Added (commit pending)
+
+- `drive_with_r2_clamp_traced(...)` — parallels
+  `drive_with_r2_clamp` but records per-step R2-E spike count
+  and per-step canonical-target hit count. Used only on the
+  postmortem path; hot training loop untouched.
+- `intrinsic_stats(brain, r2_e_set)` returns
+  `(mean, std, min, max, frac > 1 mV)` of `Network.v_thresh_offset`.
+- `run_postmortem_diagnostic(corpus, cfg, train_epochs)` —
+  trains for `train_epochs`, prints per-epoch θ + weight stats,
+  then runs ONE read-only diagnostic trial that captures the
+  prediction-phase per-step trace.
+- CLI: `--debug-cascade` switches to the postmortem path,
+  `--postmortem-train N` controls epoch count (default 4).
+
+### Verified (3 questions, full data in notes/47a-postmortem.md)
+
+**(a) Saturation test — INTER_WEIGHT = 1.0 over 16 epochs**:
+selectivity does NOT asymptote at zero and does NOT pass through.
+It approaches zero in epoch 3 (-0.0005, target_hit 2.59), then
+**collapses** in epochs 5-15 to ≈ -0.045 with target_hit 0.08.
+The mechanism is partially right then structurally unstable
+(catastrophic interference; the very cells that learn get
+suppressed).
+
+**(b) Cascade pattern at INTER_WEIGHT = 0.7**:
+12 001 R2-E spikes in 20 ms prediction window, max 219 cells/step;
+**early-vs-late ratio = 0.97** (NOT onset-burst, would be > 2.0);
+trace oscillates between ≈ 10 and ≈ 200 cells/step (synchronised
+recurrent bursting / neuronal avalanche). 0 canonical-target
+cells fire in the entire 20 ms.
+
+**(c) θ effect size**:
+At INTER_WEIGHT = 1.0, θ_mean = 0.05 mV, max = 0.86 mV,
+frac > 1 mV = 0.000 over 4 epochs — i.e. **0.3 % of the 15 mV LIF
+swing**, operationally invisible. At INTER_WEIGHT = 0.7, epochs
+0-2 identical (≈ 0.03 mV), then in epoch 3 (cascade)
+**θ_mean jumps 95× to 2.84 mV** with 99.9 % of cells > 1 mV —
+Diehl-Cook is **reactive after the cascade, not preventive**.
+
+### Iter-48 architecture, data-driven
+
+The iter-47-decision-note's default fallback (k-WTA per step) is
+**ruled out**: spike volume at 0.7 is oscillatory, not
+onset-burst; per-step k-WTA shaves peaks but does not remove the
+recurrent imbalance that drives the avalanche.
+
+The data point unambiguously at **tighter iSTDP (Vogels 2011)**
+for fast EI balance:
+- `R2_INH_FRAC: 0.20 → 0.30` (more inhibition)
+- `IStdpParams.tau_minus: 30 ms → 8 ms` (fast response)
+- `IStdpParams.a_plus: 0.10 → 0.30` (stronger LTP on silent E
+  targets)
+- Optional: enable iSTDP during prediction (CLI flag for A/B)
+- Keep INTER_WEIGHT = 1.0; Diehl-Cook stays as a tie-breaker
+  but is not the primary stabiliser.
+
+Acceptance criteria for iter-48 phase 1 to be fixed pre-run:
+selectivity > 0.0 AND target_hit_mean > 5 AND max per-step active
+< 50 after 4 epochs.
+
 ## Unreleased — Iteration 47a (forward-drive scaling + adaptive threshold)
 
 Iter-46 ended with `clamp_hit_rate = 1.00` but

@@ -17,8 +17,8 @@
 use std::time::Instant;
 
 use eval::{
-    default_reward_corpus, render_reward_markdown, run_reward_benchmark, RewardConfig,
-    TeacherForcingConfig,
+    default_reward_corpus, render_reward_markdown, run_postmortem_diagnostic,
+    run_reward_benchmark, RewardConfig, TeacherForcingConfig,
 };
 
 fn main() {
@@ -46,6 +46,13 @@ fn main() {
     let noise_reward: f32 = parse_arg(&args, "--noise-reward", -1.0_f32);
     let homeostasis = flag(&args, "--homeostasis");
     let debug_trials: u32 = if flag(&args, "--debug-trial") { 3 } else { 0 };
+    // Iter-47a postmortem mode: trains for `train_epochs` epochs with
+    // the configured teacher arm, then runs a single read-only
+    // diagnostic trial that captures per-step prediction-phase
+    // activity + final v_thresh_offset distribution. Bypasses the
+    // normal benchmark output entirely.
+    let postmortem = flag(&args, "--debug-cascade");
+    let postmortem_train: usize = parse_arg(&args, "--postmortem-train", 4_usize);
     // Iter-46 R1 → R2 gate. Defaults to 1.0 (no gating); pass e.g.
     // 0.3 to halve the forward drive during the prediction phase
     // and let recurrent learning express itself.
@@ -81,6 +88,24 @@ fn main() {
     };
 
     let corpus = default_reward_corpus();
+
+    // Iter-47a postmortem branch: bypass the normal two-arm output
+    // entirely, run a single diagnostic. Always uses the teacher
+    // schedule + reward (the only mode the postmortem cares about).
+    if postmortem {
+        let mut t = teacher;
+        t.enabled = true;
+        let cfg = RewardConfig {
+            epochs: postmortem_train,
+            use_reward: true,
+            seed,
+            reps_per_pair: reps,
+            teacher: t,
+        };
+        let _ = run_postmortem_diagnostic(&corpus, &cfg, postmortem_train);
+        return;
+    }
+
     eprintln!(
         "Reward benchmark: pairs={} noise_pairs={} vocab={} epochs={epochs} reps={reps} seed={seed} \
          teacher_forcing={teacher_on} wta_k={wta_k} homeostasis={homeostasis} r1r2_gate={r1r2_gate}",
