@@ -4,6 +4,47 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 57 (phase-length sweep on decorrelated + c500)
+
+iter-56 landed branch (α) of the iter-57 selector — clamp axis
+is magnitude-limited with diminishing returns (asymptote
+estimate ≈ 0.197, combined-axes ceiling ~0.20). Per Bekos's
+iter-57 spec, the next un-swept axis is **phase length** —
+specifically `teacher_ms`, which controls integration time
+under fixed clamp intensity. iter-57 sweeps three points at
+clamp = 500 nA: 40 ms (default; iter-56 c500 replication),
+80 ms (double), 120 ms (triple), 4 seeds × 32 epochs.
+
+### Run
+
+```sh
+for tms in 40 80 120; do
+  cargo run --release -p eval --example reward_benchmark -- \
+    --jaccard-bench --seeds 42,7,13,99 --epochs 32 \
+    --decorrelated-init --teacher-forcing \
+    --target-clamp-strength 500 --teacher-ms $tms
+done
+```
+
+### Verified — phase-length curve
+
+<!-- @CHANGELOG_PHASE_CURVE@ -->
+
+State-reset assertion: PASSED on every untrained arm (12/12).
+Decorrelated invariant: PASSED on every brain construction
+(24/24).
+
+### Honest reading
+
+<!-- @CHANGELOG_HONEST_READING@ -->
+
+### Methodological lesson
+
+<!-- @CHANGELOG_LESSON@ -->
+
+All eval lib tests still green; clippy `-D warnings` clean
+(no code changes since iter-54).
+
 ## Unreleased — Iteration 56 (clamp-strength sweep on decorrelated + ep32)
 
 iter-55 landed branch (ii) — Saturation — of the iter-56
