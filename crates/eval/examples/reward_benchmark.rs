@@ -17,9 +17,9 @@
 use std::time::Instant;
 
 use eval::{
-    default_reward_corpus, render_reward_markdown, run_determinism_smoke,
-    run_postmortem_diagnostic, run_reward_benchmark, Iter49Mode, RewardConfig,
-    TeacherForcingConfig,
+    default_reward_corpus, render_jaccard_sweep, render_reward_markdown,
+    run_determinism_smoke, run_jaccard_bench, run_postmortem_diagnostic,
+    run_reward_benchmark, Iter49Mode, RewardConfig, TeacherForcingConfig,
 };
 
 fn main() {
@@ -151,6 +151,42 @@ fn main() {
             teacher: t,
         };
         run_determinism_smoke(&corpus, &cfg);
+        return;
+    }
+
+    // Iter-53 jaccard benchmark: bypass the canonical-hash top-3
+    // path (which is forward-drive-confounded per iter-52) and run
+    // the decoder-relative same-cue / cross-cue Jaccard sweep. Loops
+    // over `--seeds` (comma-separated; defaults to a single `--seed`)
+    // and prints both the per-seed table and the aggregate Δ-of-Δ.
+    if flag(&args, "--jaccard-bench") {
+        let seeds_str = parse_string(&args, "--seeds")
+            .unwrap_or_else(|| seed.to_string());
+        let seeds: Vec<u64> = seeds_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .collect();
+        if seeds.is_empty() {
+            eprintln!(
+                "--jaccard-bench: --seeds must contain at least one parseable u64 (got '{seeds_str}')",
+            );
+            std::process::exit(2);
+        }
+        eprintln!(
+            "[iter-53] jaccard sweep: seeds={seeds:?} epochs={epochs} reps={reps} \
+             teacher_forcing={teacher_on} iter46_baseline={iter46_baseline} \
+             iter49={}",
+            iter49_mode.label(),
+        );
+        let cfg = RewardConfig {
+            epochs,
+            use_reward: true,
+            seed,
+            reps_per_pair: reps,
+            teacher,
+        };
+        let sweep = run_jaccard_bench(&corpus, &cfg, &seeds);
+        print!("{}", render_jaccard_sweep(&sweep));
         return;
     }
 

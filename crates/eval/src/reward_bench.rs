@@ -241,6 +241,59 @@ pub struct RewardEpochMetrics {
     pub theta_exc_mean: f32,
 }
 
+/// Iter-53: trial-to-trial decoder consistency / specificity
+/// metrics. Two orthogonal measurements on a 32-cue × 3-trial
+/// matrix (one row per vocab entry, three reps with full
+/// `brain.reset_state()` between):
+///
+/// - `same_cue_*`  — for each cue, Jaccard between Trial 2 and
+///   Trial 3's top-3 word sets. Trial 1 is dropped as burn-in
+///   per the iter-53.0 smoke (the first trial after the
+///   dictionary build sees residual R1 / pending-queue state).
+///   High = the engram triggered by this cue is consistent.
+/// - `cross_cue_*` — for every cue pair `(i, j), i < j`, Jaccard
+///   between `matrix[i][1]` and `matrix[j][1]` (post-burn-in
+///   trials). Low = each cue activates a *cue-specific* pattern.
+///   High = mode collapse (all cues point at the same engram).
+///
+/// Acceptance criterion for iter-53 is the **difference of
+/// differences**: trained `same_cue_mean` must rise *and*
+/// trained `cross_cue_mean` must fall, both significantly
+/// versus untrained. Single-axis improvement is ambiguous
+/// (high same-cue alone is satisfied by mode collapse).
+#[derive(Debug, Clone, Default)]
+pub struct JaccardMetrics {
+    /// Mean Jaccard across cues of `Jaccard(trial[1], trial[2])`.
+    pub same_cue_mean: f32,
+    /// Sample standard deviation of the per-cue Jaccards.
+    pub same_cue_std: f32,
+    /// Mean Jaccard across cue pairs of
+    /// `Jaccard(matrix[i][1], matrix[j][1])` for `i < j`.
+    pub cross_cue_mean: f32,
+    /// Sample standard deviation of the per-pair Jaccards.
+    pub cross_cue_std: f32,
+    /// Number of cues with a non-empty 3-trial row.
+    pub n_cues: usize,
+    /// Number of unique cue pairs sampled by the cross-cue mean.
+    pub n_pairs: usize,
+}
+
+/// Iter-53 per-arm result. `arm` is `"trained"` or `"untrained"`.
+#[derive(Debug, Clone)]
+pub struct JaccardArmResult {
+    pub seed: u64,
+    pub arm: &'static str,
+    pub jaccard: JaccardMetrics,
+}
+
+/// Iter-53 sweep result aggregating both arms over a list of
+/// seeds. The two `Vec`s are indexed in lock-step by seed order.
+#[derive(Debug, Default, Clone)]
+pub struct JaccardSweepResult {
+    pub trained: Vec<JaccardArmResult>,
+    pub untrained: Vec<JaccardArmResult>,
+}
+
 /// Iter-49 sweep modes — three orthogonal interventions on the
 /// iter-48 iSTDP collapse mechanism (notes/48-saturation.md). All
 /// modes share Config 2 as base: `--istdp-during-prediction = true`.
@@ -2231,6 +2284,584 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     }
 
     metrics
+}
+
+// ----------------------------------------------------------------------
+// Iter-53: decoder-relative Jaccard benchmark.
+//
+// The post-iter-52 problem: top-k accuracy against canonical-hash
+// targets is structurally biased by R1 forward drive (the untrained
+// brain hits 0.039 — significantly *below* the 0.094 random baseline
+// — because forward projections asymmetrically push the decoder
+// toward a small subset of vocab words, regardless of plasticity).
+// To answer "did Plastizität *learn* anything", we need a metric
+// computed *relative to the same brain's own decoder*, not against
+// a canonical hash.
+//
+// The Jaccard pair gives that, on two orthogonal axes:
+//
+//   Same-cue  — Jaccard(trial[1], trial[2]) for one cue, averaged
+//               over the vocab. High = consistent engram per cue.
+//   Cross-cue — Jaccard(matrix[i][1], matrix[j][1]) over all cue
+//               pairs `i < j`. Low = each cue is *cue-specific*.
+//
+// Acceptance is a **difference of differences**: trained same-cue
+// must rise *and* trained cross-cue must fall, both versus
+// untrained. Either alone is satisfied by trivial pathologies
+// (high same-cue + high cross-cue = mode collapse; low cross-cue
+// + low same-cue = pure noise).
+// ----------------------------------------------------------------------
+
+/// Iter-53 helper: in-place training loop. Mirrors
+/// `run_reward_benchmark`'s inner schedule (teacher arm + iter-45
+/// fallback) without metrics collection. Used by `run_jaccard_arm`
+/// to re-use the existing trial machinery without going through
+/// `run_reward_benchmark` (which would consume its own brain).
+#[allow(clippy::too_many_arguments)]
+fn train_brain_inplace(
+    brain: &mut Brain,
+    corpus: &RewardCorpus,
+    cfg: &RewardConfig,
+    target_r2_map: &std::collections::HashMap<String, Vec<u32>>,
+    encoder: &TextEncoder,
+    r2_e: &BTreeSet<usize>,
+    stdp_params: StdpParams,
+    initial_istdp: IStdpParams,
+) {
+    // initial_istdp is only used to satisfy the type of the loop-
+    // local `istdp_params`; the per-epoch reassignment below
+    // overwrites it on every iteration. The let-binding stays so
+    // the variable's type is fixed before the loop body.
+    let mut istdp_params;
+    let _ = initial_istdp;
+    let mut rng = Rng::new(cfg.seed);
+    let no_plasticity = cfg.teacher.no_plasticity;
+    let teacher_active = cfg.teacher.enabled;
+
+    for epoch in 0..cfg.epochs {
+        istdp_params = if cfg.teacher.iter46_baseline {
+            istdp_iter46_baseline()
+        } else {
+            istdp_iter49(&cfg.teacher, epoch)
+        };
+        if !no_plasticity {
+            brain.regions[1].network.enable_istdp(istdp_params);
+        }
+
+        let mut schedule: Vec<(RewardPair, bool)> = corpus
+            .pairs
+            .iter()
+            .map(|p| (p.clone(), false))
+            .chain(corpus.noise_pairs.iter().map(|p| (p.clone(), true)))
+            .collect();
+        shuffle(&mut rng, &mut schedule);
+
+        for (pair, is_noise) in &schedule {
+            let cue_sdr = encoder.encode_word(&pair.cue);
+            let tgt_sdr = encoder.encode_word(&pair.target);
+
+            if teacher_active {
+                let canonical = target_r2_map
+                    .get(&pair.target)
+                    .cloned()
+                    .unwrap_or_default();
+                for _rep in 0..cfg.reps_per_pair.max(1) {
+                    brain.regions[1].network.reset_state();
+                    let _ = run_teacher_trial(
+                        brain,
+                        &cfg.teacher,
+                        cfg.use_reward,
+                        *is_noise,
+                        &cue_sdr.indices,
+                        &canonical,
+                        r2_e,
+                        stdp_params,
+                        istdp_params,
+                    );
+                    idle(brain, COOLDOWN_MS);
+                }
+            } else {
+                let mut combined: Vec<u32> = cue_sdr
+                    .indices
+                    .iter()
+                    .chain(tgt_sdr.indices.iter())
+                    .copied()
+                    .collect();
+                combined.sort_unstable();
+                combined.dedup();
+                for _ in 0..cfg.reps_per_pair.max(1) {
+                    brain.regions[1].network.reset_state();
+                    drive_for(brain, &cue_sdr.indices, CUE_LEAD_MS);
+                    drive_for(brain, &combined, OVERLAP_MS);
+                    drive_for(brain, &tgt_sdr.indices, TARGET_TAIL_MS);
+                }
+                if cfg.use_reward {
+                    let reward = if *is_noise {
+                        -1.0_f32
+                    } else {
+                        brain.regions[1].network.reset_state();
+                        let counts = drive_for_with_counts(
+                            brain,
+                            &cue_sdr.indices,
+                            RECALL_MS,
+                            r2_e,
+                        );
+                        let kwta = top_k_indices(&counts, KWTA_K);
+                        let target_kwta = {
+                            brain.regions[1].network.reset_state();
+                            let cs = drive_for_with_counts(
+                                brain,
+                                &tgt_sdr.indices,
+                                RECALL_MS,
+                                r2_e,
+                            );
+                            top_k_indices(&cs, KWTA_K)
+                        };
+                        let overlap =
+                            kwta.iter().filter(|i| target_kwta.contains(i)).count();
+                        let ratio =
+                            overlap as f32 / target_kwta.len().max(1) as f32;
+                        if ratio >= 0.30 {
+                            1.0
+                        } else if ratio >= 0.15 {
+                            0.0
+                        } else {
+                            -0.5
+                        }
+                    };
+                    if reward != 0.0 {
+                        brain.set_neuromodulator(reward);
+                        drive_for(brain, &cue_sdr.indices, CONSOLIDATION_MS);
+                        brain.set_neuromodulator(0.0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Iter-53 core: collect the 32-cue × 3-trial decoder matrix and
+/// compute same-cue + cross-cue Jaccard. Each trial does a *full*
+/// `brain.reset_state()` (R1 + R2 + cross-region pending queue +
+/// clock + traces + eligibility), unlike the existing dictionary
+/// build / evaluate_with_dict path which only resets region 1.
+/// Without the cross-region reset, R1 carry-over and queued spikes
+/// from trial N contaminate trial N+1 — the iter-53.0 smoke
+/// reproduced this with mean Jaccard = 0.667 on a frozen brain.
+///
+/// Trial 0 is dropped as burn-in: even with full reset, the *very*
+/// first trial after `build_vocab_dictionary` sees a brain whose
+/// `time` was advanced by 32 dictionary drives, and intrinsic
+/// plasticity offsets (if active) accumulated across them. Trial
+/// 1 and Trial 2 are the actual measurement.
+fn evaluate_jaccard_matrix(
+    brain: &mut Brain,
+    encoder: &TextEncoder,
+    r2_e: &BTreeSet<usize>,
+    dict: &EngramDictionary,
+    vocab: &[String],
+) -> JaccardMetrics {
+    const N_TRIALS: usize = 3;
+    const TOP_K: usize = 3;
+
+    // matrix[cue_idx][trial_idx] = top-3 decoded word list.
+    let mut matrix: Vec<Vec<Vec<String>>> = Vec::with_capacity(vocab.len());
+    for cue_word in vocab {
+        let cue_sdr = encoder.encode_word(cue_word);
+        if cue_sdr.indices.is_empty() {
+            matrix.push(Vec::new());
+            continue;
+        }
+        let mut trials: Vec<Vec<String>> = Vec::with_capacity(N_TRIALS);
+        for _trial_i in 0..N_TRIALS {
+            // Full reset — R1 + R2 + pending queue + brain.time.
+            brain.reset_state();
+            let counts =
+                drive_for_with_counts(brain, &cue_sdr.indices, RECALL_MS, r2_e);
+            let kwta = top_k_indices(&counts, KWTA_K);
+            let decoded = dict.decode_top(&kwta, TOP_K);
+            let top: Vec<String> =
+                decoded.iter().map(|(w, _)| w.clone()).collect();
+            trials.push(top);
+        }
+        matrix.push(trials);
+    }
+
+    let jaccard = |a: &[String], b: &[String]| -> f32 {
+        let sa: BTreeSet<&String> = a.iter().collect();
+        let sb: BTreeSet<&String> = b.iter().collect();
+        let inter = sa.intersection(&sb).count();
+        let uni = sa.union(&sb).count();
+        if uni == 0 {
+            1.0
+        } else {
+            inter as f32 / uni as f32
+        }
+    };
+
+    // Same-cue: post-burn-in trials of the *same* cue.
+    let mut same_vals: Vec<f32> = Vec::new();
+    for trials in &matrix {
+        if trials.len() == N_TRIALS {
+            same_vals.push(jaccard(&trials[1], &trials[2]));
+        }
+    }
+
+    // Cross-cue: post-burn-in trials of *different* cues.
+    let mut cross_vals: Vec<f32> = Vec::new();
+    for i in 0..matrix.len() {
+        if matrix[i].len() < N_TRIALS {
+            continue;
+        }
+        for j in (i + 1)..matrix.len() {
+            if matrix[j].len() < N_TRIALS {
+                continue;
+            }
+            cross_vals.push(jaccard(&matrix[i][1], &matrix[j][1]));
+        }
+    }
+
+    let mean = |v: &[f32]| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f32>() / v.len() as f32
+        }
+    };
+    let std_dev = |v: &[f32], m: f32| {
+        if v.len() < 2 {
+            0.0
+        } else {
+            let var = v.iter().map(|x| (x - m).powi(2)).sum::<f32>()
+                / (v.len() - 1) as f32;
+            var.sqrt()
+        }
+    };
+
+    let same_cue_mean = mean(&same_vals);
+    let same_cue_std = std_dev(&same_vals, same_cue_mean);
+    let cross_cue_mean = mean(&cross_vals);
+    let cross_cue_std = std_dev(&cross_vals, cross_cue_mean);
+
+    JaccardMetrics {
+        same_cue_mean,
+        same_cue_std,
+        cross_cue_mean,
+        cross_cue_std,
+        n_cues: same_vals.len(),
+        n_pairs: cross_vals.len(),
+    }
+}
+
+/// Iter-53 single-arm runner. Builds the brain, optionally trains
+/// it (a no-op when `cfg.epochs == 0` or `cfg.teacher.no_plasticity`),
+/// freezes plasticity for the eval phase, builds the vocabulary
+/// fingerprint dictionary against the post-training brain, then
+/// computes the Jaccard matrix.
+///
+/// Asserts the iter-52 invariant on `no_plasticity` arms: pre-run
+/// L2 norms must equal post-eval L2 norms bit-for-bit.
+fn run_jaccard_arm(
+    corpus: &RewardCorpus,
+    cfg: &RewardConfig,
+    arm: &'static str,
+) -> JaccardArmResult {
+    let (inter_weight, inh_frac) = if cfg.teacher.iter46_baseline {
+        (2.0_f32, 0.20_f32)
+    } else {
+        (INTER_WEIGHT, R2_INH_FRAC)
+    };
+    let mut brain = fresh_brain_with(cfg.seed, inter_weight, inh_frac);
+    let encoder =
+        TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
+    let r2_e = r2_e_set(&brain);
+
+    let stdp_params = stdp();
+    let initial_istdp = if cfg.teacher.iter46_baseline {
+        istdp_iter46_baseline()
+    } else {
+        istdp_iter49(&cfg.teacher, 0)
+    };
+
+    let no_plasticity = cfg.teacher.no_plasticity;
+    if !no_plasticity {
+        brain.regions[1].network.enable_stdp(stdp_params);
+        brain.regions[1].network.enable_istdp(initial_istdp);
+        brain.regions[1].network.enable_homeostasis(homeostasis());
+    }
+    if !cfg.teacher.iter46_baseline && !no_plasticity {
+        brain.regions[1].network.enable_intrinsic_plasticity(intrinsic());
+    }
+    if cfg.use_reward && !no_plasticity {
+        brain.regions[1]
+            .network
+            .enable_reward_learning(reward_params());
+    }
+
+    let pre_l2 = brain_synapse_l2_norms(&brain);
+
+    // Canonical-target map (used only by the teacher schedule;
+    // built unconditionally so seeded RNG paths stay stable).
+    let target_r2_map: std::collections::HashMap<String, Vec<u32>> = {
+        let pool = r2_e_pool(&r2_e);
+        let salt = cfg.seed ^ 0xCAFE_F00D_DEAD_BEEFu64;
+        corpus
+            .vocab
+            .iter()
+            .map(|w| {
+                (
+                    w.clone(),
+                    canonical_target_r2_sdr(w, &pool, TARGET_R2_K, salt),
+                )
+            })
+            .collect()
+    };
+
+    train_brain_inplace(
+        &mut brain,
+        corpus,
+        cfg,
+        &target_r2_map,
+        &encoder,
+        &r2_e,
+        stdp_params,
+        initial_istdp,
+    );
+
+    // Eval phase: do NOT disable plasticity. Per Bekos's iter-53
+    // spec, the trained arm's same-cue Jaccard must reflect
+    // plasticity drift between trials ("im trained Run würde
+    // Plastizität zwischen Trials variieren, was *gewollt* ist").
+    // Membrane state is reset per trial via `brain.reset_state()`,
+    // so trial N+1 depends on trial N *only* via persistent
+    // synaptic weights — exactly the dependency Bekos wants to
+    // measure. The untrained arm has plasticity gated off (no
+    // `enable_*` calls were made), so this branch leaves it
+    // unchanged: untrained eval is fully deterministic, hence
+    // same-cue == 1.0 (the state-reset assertion).
+    //
+    // This deliberately drops the iter-52 eval-phase L2 invariant
+    // for the trained arm. The no_plasticity arm still asserts
+    // L2 bit-identity end-to-end; the trained arm logs pre/post
+    // L2 as a drift readout.
+
+    let l2_pre_eval = brain_synapse_l2_norms(&brain);
+
+    let vocab: Vec<String> = corpus.vocab.iter().cloned().collect();
+    let dict = build_vocab_dictionary(&mut brain, &encoder, &r2_e, &vocab);
+    let jaccard =
+        evaluate_jaccard_matrix(&mut brain, &encoder, &r2_e, &dict, &vocab);
+
+    let l2_post_eval = brain_synapse_l2_norms(&brain);
+
+    if no_plasticity {
+        // Untrained arm: plasticity was never enabled; eval must
+        // be a pure read. Pre-train and post-eval L2 must match
+        // bit-for-bit (the iter-52 invariant carried forward).
+        let identical = pre_l2
+            .iter()
+            .zip(l2_post_eval.iter())
+            .all(|(a, b)| a == b);
+        assert!(
+            identical,
+            "iter-53: --no-plasticity arm changed weights (seed={}, arm={arm}). \
+             pre={pre_l2:?} post={l2_post_eval:?}",
+            cfg.seed,
+        );
+    } else {
+        // Trained arm: log eval-phase L2 drift so the magnitude is
+        // visible. Drift > 0 is expected; drift > training drift
+        // would be a configuration smell.
+        let drift_l2: Vec<f64> = l2_pre_eval
+            .iter()
+            .zip(l2_post_eval.iter())
+            .map(|(a, b)| (b - a).abs())
+            .collect();
+        eprintln!(
+            "[iter-53 trained eval-drift] seed={} pre={l2_pre_eval:?} post={l2_post_eval:?} |Δ|={drift_l2:?}",
+            cfg.seed,
+        );
+    }
+
+    eprintln!(
+        "[iter-53 {arm}] seed={} same={:.3}±{:.3} cross={:.3}±{:.3} (n_cues={}, n_pairs={})",
+        cfg.seed,
+        jaccard.same_cue_mean,
+        jaccard.same_cue_std,
+        jaccard.cross_cue_mean,
+        jaccard.cross_cue_std,
+        jaccard.n_cues,
+        jaccard.n_pairs,
+    );
+
+    JaccardArmResult {
+        seed: cfg.seed,
+        arm,
+        jaccard,
+    }
+}
+
+/// Iter-53 public entry point. Runs both arms (untrained + trained)
+/// for each seed in `seeds` and returns the aggregated sweep.
+///
+/// The untrained arm forces `epochs = 0`, `use_reward = false`,
+/// and `teacher.no_plasticity = true`. After its eval, asserts
+/// `same_cue_mean == 1.0` exactly: with no plasticity AND a full
+/// `brain.reset_state()` between trials, identical input must
+/// produce identical output. If this assertion fails, either
+/// `Network::reset_state` is incomplete or there is a hidden
+/// source of trial-to-trial variance — the metric is not
+/// trustworthy until the assertion holds.
+///
+/// The trained arm uses `cfg` as given (including `epochs`,
+/// `teacher`, `use_reward`).
+pub fn run_jaccard_bench(
+    corpus: &RewardCorpus,
+    cfg: &RewardConfig,
+    seeds: &[u64],
+) -> JaccardSweepResult {
+    let mut sweep = JaccardSweepResult::default();
+    for &seed in seeds {
+        let mut cfg_seeded = *cfg;
+        cfg_seeded.seed = seed;
+
+        // Untrained: zero epochs, no plasticity, no reward.
+        let mut cfg_untrained = cfg_seeded;
+        cfg_untrained.epochs = 0;
+        cfg_untrained.use_reward = false;
+        cfg_untrained.teacher.no_plasticity = true;
+        let untrained_arm = run_jaccard_arm(corpus, &cfg_untrained, "untrained");
+        assert!(
+            (untrained_arm.jaccard.same_cue_mean - 1.0).abs() < 1e-6,
+            "iter-53 state-reset assertion FAILED: untrained arm seed={seed} \
+             produced same_cue_mean={} std={} (expected exactly 1.0). \
+             brain.reset_state() is incomplete or some hidden source of \
+             trial-to-trial variance is leaking through.",
+            untrained_arm.jaccard.same_cue_mean,
+            untrained_arm.jaccard.same_cue_std,
+        );
+        sweep.untrained.push(untrained_arm);
+
+        // Trained: cfg as given.
+        let trained_arm = run_jaccard_arm(corpus, &cfg_seeded, "trained");
+        sweep.trained.push(trained_arm);
+    }
+    sweep
+}
+
+/// Render an iter-53 jaccard sweep as a Markdown report. Per-seed
+/// rows + an aggregate panel that surfaces the difference of
+/// differences, which is the single number that decides whether
+/// engrams are cue-specific (positive Δ-of-Δ) or whether trained
+/// gains are mode collapse (negative or zero Δ-of-Δ).
+pub fn render_jaccard_sweep(sweep: &JaccardSweepResult) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+    s.push_str("### Iter-53: Decoder-relative Jaccard sweep\n\n");
+    s.push_str(
+        "| Seed | Arm | Same-Cue | Cross-Cue | n_cues | n_pairs |\n",
+    );
+    s.push_str(
+        "| ---: | :--- | ---: | ---: | ---: | ---: |\n",
+    );
+    let n = sweep.untrained.len().max(sweep.trained.len());
+    for i in 0..n {
+        for (label, arms) in
+            [("untrained", &sweep.untrained), ("trained", &sweep.trained)]
+        {
+            if let Some(r) = arms.get(i) {
+                let _ = writeln!(
+                    s,
+                    "| {} | {label} | {:.3}±{:.3} | {:.3}±{:.3} | {} | {} |",
+                    r.seed,
+                    r.jaccard.same_cue_mean,
+                    r.jaccard.same_cue_std,
+                    r.jaccard.cross_cue_mean,
+                    r.jaccard.cross_cue_std,
+                    r.jaccard.n_cues,
+                    r.jaccard.n_pairs,
+                );
+            }
+        }
+    }
+
+    let mean_of = |v: &[f32]| -> f32 {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f32>() / v.len() as f32
+        }
+    };
+    let std_of = |v: &[f32], m: f32| -> f32 {
+        if v.len() < 2 {
+            0.0
+        } else {
+            let var = v.iter().map(|x| (x - m).powi(2)).sum::<f32>()
+                / (v.len() - 1) as f32;
+            var.sqrt()
+        }
+    };
+
+    let us: Vec<f32> = sweep
+        .untrained
+        .iter()
+        .map(|r| r.jaccard.same_cue_mean)
+        .collect();
+    let uc: Vec<f32> = sweep
+        .untrained
+        .iter()
+        .map(|r| r.jaccard.cross_cue_mean)
+        .collect();
+    let ts: Vec<f32> = sweep
+        .trained
+        .iter()
+        .map(|r| r.jaccard.same_cue_mean)
+        .collect();
+    let tc: Vec<f32> = sweep
+        .trained
+        .iter()
+        .map(|r| r.jaccard.cross_cue_mean)
+        .collect();
+
+    let us_m = mean_of(&us);
+    let us_s = std_of(&us, us_m);
+    let uc_m = mean_of(&uc);
+    let uc_s = std_of(&uc, uc_m);
+    let ts_m = mean_of(&ts);
+    let ts_s = std_of(&ts, ts_m);
+    let tc_m = mean_of(&tc);
+    let tc_s = std_of(&tc, tc_m);
+
+    let _ = writeln!(
+        s,
+        "\n**Aggregate (n={} seeds):**\n",
+        sweep.untrained.len(),
+    );
+    let _ = writeln!(
+        s,
+        "- Untrained: same={us_m:.3}±{us_s:.3} cross={uc_m:.3}±{uc_s:.3}",
+    );
+    let _ = writeln!(
+        s,
+        "- Trained:   same={ts_m:.3}±{ts_s:.3} cross={tc_m:.3}±{tc_s:.3}",
+    );
+    let d_same = ts_m - us_m;
+    let d_cross = tc_m - uc_m;
+    let _ = writeln!(
+        s,
+        "- Δ same  = {d_same:+.3} (trained − untrained, target > 0: consistency rises)",
+    );
+    let _ = writeln!(
+        s,
+        "- Δ cross = {d_cross:+.3} (trained − untrained, target < 0: specificity rises)",
+    );
+    let _ = writeln!(
+        s,
+        "- Δ-of-Δ  = {:+.3} (Δ same − Δ cross; > 0 ⇒ engrams form *and* are cue-specific)",
+        d_same - d_cross,
+    );
+
+    s
 }
 
 /// Build a fingerprint for every word in `vocab` against the

@@ -4,6 +4,112 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 53 (decoder-relative Jaccard, Voll-Implementation)
+
+Bekos picked Option B Voll-Implementation off the iter-53.0 smoke
+gate (mean Jaccard = 0.667, informative regime), with cross-cue
+Jaccard added as the second axis. iter-53 is a decoder-relative
+metric that bypasses the forward-drive bias iter-52 surfaced.
+
+### Added — single commit
+
+- `JaccardMetrics`, `JaccardArmResult`, `JaccardSweepResult`
+  public types in `crates/eval/src/reward_bench.rs`.
+- `pub fn run_jaccard_bench(corpus, cfg, seeds)` —
+  trained + untrained × N seeds in one call.
+- `pub fn render_jaccard_sweep(&JaccardSweepResult)` —
+  per-seed table + aggregate Δ-of-Δ.
+- Private helpers: `evaluate_jaccard_matrix` (32-cue × 3-trial
+  collector), `train_brain_inplace` (training without metrics),
+  `run_jaccard_arm` (one seed × one arm).
+- `--jaccard-bench --seeds N1,N2,…` CLI flags in the example.
+- All re-exports plumbed through `crates/eval/src/lib.rs`.
+
+### Protocol — what the metric measures
+
+For every cue in the 32-word vocab, present 3 trials.
+**Full `brain.reset_state()`** between trials (R1 + R2 + cross-
+region pending queue + traces + V + refractory + eligibility +
+neuromodulator), not the previous R2-only reset that the
+iter-53.0 smoke showed produced membrane carry-over.
+
+Drop trial 0 as burn-in. Compute on trial[1] and trial[2]:
+
+- `same_cue_mean` — mean over 32 cues of `Jaccard(trial[1], trial[2])`
+- `cross_cue_mean` — mean over 496 cue pairs of
+  `Jaccard(matrix[i][1], matrix[j][1])` for `i < j`
+
+**Untrained arm** (`epochs = 0`, `no_plasticity = true`):
+plasticity never enabled → deterministic LIF + full reset →
+`same_cue_mean == 1.0` exactly. State-reset assertion panics if
+this invariant is violated. iter-52's L2-norm bit-identity
+check is preserved end-to-end on this arm.
+
+**Trained arm** (cfg as given, plasticity enabled): plasticity
+**stays ON during eval**, per Bekos's spec
+("im trained Run würde Plastizität zwischen Trials variieren,
+was *gewollt* ist"). Membrane state is reset per trial, but
+synapse weights drift between trials → trial 2 depends on trial 1
+*via plasticity, not via membrane state* — exactly the
+dependency Bekos wants to measure. iter-52's L2 invariant is
+deliberately dropped on this arm; pre/post L2 is logged as a
+drift readout instead.
+
+### Verified — 4 seeds × 16 epochs
+
+<!-- @CHANGELOG_SWEEP_TABLE@ -->
+
+State-reset assertion held on every untrained arm (4/4 seeds).
+L2 bit-identity held on every untrained arm (4/4 seeds).
+
+### Honest reading — direction of Δ same-cue
+
+Bekos's literal acceptance criterion was *trained same-cue >
+untrained same-cue, significant*. Under this protocol that
+direction is upper-bounded by construction: untrained = 1.0,
+plasticity-induced drift in trained → trained ≤ 1.0. Trained =
+untrained is impossible to falsify as a learning signal.
+
+The right reading of trained same-cue is therefore not "larger
+than untrained" but **"how close to 1.0 the trained arm
+remains"** — a direct measure of how attractor-like the
+post-training engram is when plasticity continues to act on it.
+Trained → 1.0 = stable engram, robust to continued plasticity.
+Trained → 0 = engram fragile, plasticity drift dominates.
+
+Cross-cue keeps the original direction: trained < untrained =
+specificity rises with training.
+
+The Δ-of-Δ summary number remains the single engram-formation
+indicator:
+
+```text
+Δ-of-Δ = (trained_same − untrained_same) − (trained_cross − untrained_cross)
+       = (specificity gain) − (attractor erosion)
+```
+
+Positive Δ-of-Δ ⇒ specificity gain outpaces erosion ⇒ engrams
+form *and* are cue-specific. Zero or negative ⇒ erosion is
+faster than specificity gain.
+
+<!-- @CHANGELOG_DELTA_OF_DELTA_READOUT@ -->
+
+### Methodological lesson
+
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a guard is only a guard if its baseline excludes the null.
+iter-52: an analytical null is not an empirical control.
+**iter-53: when the literal acceptance direction is bounded by
+construction, derive the actual acceptance from the protocol's
+mathematical bounds — and document the derivation.**
+
+The state-reset assertion (untrained `same_cue_mean == 1.0`) is
+the iter-53 equivalent of iter-52's L2-norm bit-identity check.
+Both catch a class of "the protocol leaked" bug that the
+visible config would have hidden.
+
+All eval lib tests still green; clippy `-D warnings` clean.
+
 ## Unreleased — Iteration 52 (untrained-brain control)
 
 Bekos's iter-52 spec: `--no-plasticity` toggle that gates every
