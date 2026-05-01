@@ -505,6 +505,108 @@ fn idle(brain: &mut Brain, duration_ms: f32) {
     }
 }
 
+// ----------------------------------------------------------------------
+// Iter-46 teacher-forcing primitives. Step 2 lands the helpers; step
+// 3 plumbs them into the trial schedule. The `#[allow(dead_code)]`
+// is on the unused-as-of-step-2 leaves so clippy stays clean across
+// the intermediate commit.
+// ----------------------------------------------------------------------
+
+/// How many R2-E neurons we earmark per target word for the teacher
+/// clamp. Roughly matches the kWTA size used elsewhere in the
+/// harness so the clamped pattern stays in the same density regime
+/// as a normal recall response.
+#[allow(dead_code)]
+const TARGET_R2_K: usize = 30;
+
+/// Deterministic, stable mapping from a target word to a fixed set
+/// of R2-E neuron indices. Implemented with the same DefaultHasher
+/// the encoder uses, so the mapping is a pure function of the word
+/// + a per-corpus salt — no random drift between epochs and no
+///   trial-to-trial fingerprint variance.
+///
+/// The result is sorted, deduplicated, and constrained to the
+/// excitatory portion of R2 (the `e_pool` slice). Picking from the
+/// E-only pool keeps the clamp from accidentally pinning inhibitory
+/// cells, which would invert the rule's intended sign.
+#[allow(dead_code)]
+fn canonical_target_r2_sdr(word: &str, e_pool: &[usize], k: usize, salt: u64) -> Vec<u32> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut chosen: BTreeSet<u32> = BTreeSet::new();
+    let mut counter: u64 = 0;
+    while chosen.len() < k && counter < (k as u64) * 16 {
+        let mut hasher = DefaultHasher::new();
+        salt.hash(&mut hasher);
+        word.hash(&mut hasher);
+        counter.hash(&mut hasher);
+        let h = hasher.finish();
+        let idx = e_pool[(h as usize) % e_pool.len()] as u32;
+        chosen.insert(idx);
+        counter = counter.wrapping_add(1);
+    }
+    chosen.into_iter().collect()
+}
+
+/// Drive the brain for `duration_ms` with `cue_indices` clamped to
+/// R1 *and* `r2_target_indices` clamped directly into R2 with
+/// strength `r2_strength`. The R1 forward path runs as usual;
+/// the R2 clamp is the iter-46 teacher signal.
+///
+/// Set `r2_strength = 0.0` to disable the clamp (then the function
+/// behaves like [`drive_for`]). Pass `cue_indices = &[]` to clamp
+/// R2 in isolation — useful for debug instrumentation.
+///
+/// Returns per-R2-E spike counts so callers can assess how reliably
+/// the clamp produced the intended pattern.
+#[allow(dead_code)]
+fn drive_with_r2_clamp(
+    brain: &mut Brain,
+    cue_indices: &[u32],
+    r2_target_indices: &[u32],
+    r1_strength: f32,
+    r2_strength: f32,
+    duration_ms: f32,
+    r2_e_set: &BTreeSet<usize>,
+) -> Vec<u32> {
+    let r2_size = brain.regions[1].num_neurons();
+    let mut counts = vec![0u32; r2_size];
+
+    let mut ext1 = vec![0.0_f32; R1_N];
+    for &idx in cue_indices {
+        if (idx as usize) < R1_N {
+            ext1[idx as usize] = r1_strength;
+        }
+    }
+    let mut ext2 = vec![0.0_f32; R2_N];
+    if r2_strength != 0.0 {
+        for &idx in r2_target_indices {
+            if (idx as usize) < R2_N {
+                ext2[idx as usize] = r2_strength;
+            }
+        }
+    }
+    let externals = vec![ext1, ext2];
+    let steps = (duration_ms / DT) as usize;
+    for _ in 0..steps {
+        let spikes = brain.step(&externals);
+        for &id in &spikes[1] {
+            if r2_e_set.contains(&id) {
+                counts[id] += 1;
+            }
+        }
+    }
+    counts
+}
+
+/// Subset of the R2-E neurons in their topological order — the pool
+/// from which `canonical_target_r2_sdr` picks. Cached at brain build
+/// time so we don't filter the neuron list on every call.
+#[allow(dead_code)]
+fn r2_e_pool(r2_e_set: &BTreeSet<usize>) -> Vec<usize> {
+    r2_e_set.iter().copied().collect()
+}
+
 fn top_k_indices(counts: &[u32], k: usize) -> Vec<u32> {
     let mut paired: Vec<(u32, usize)> = counts
         .iter()
@@ -819,6 +921,64 @@ pub fn render_markdown(label: &str, metrics: &[RewardEpochMetrics]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `canonical_target_r2_sdr` must be (a) deterministic given
+    /// the same word + salt, (b) constrained to the supplied E-pool,
+    /// (c) sorted + deduplicated, (d) of size at most `k`.
+    #[test]
+    fn canonical_target_r2_sdr_is_stable_and_in_pool() {
+        let pool: Vec<usize> = (0..2_000usize).step_by(2).collect(); // 1000 indices
+        let a1 = canonical_target_r2_sdr("rust", &pool, 30, 0xCAFE);
+        let a2 = canonical_target_r2_sdr("rust", &pool, 30, 0xCAFE);
+        assert_eq!(a1, a2, "same word + salt must give the same SDR");
+        assert!(!a1.is_empty());
+        assert!(a1.len() <= 30);
+        // Sorted-unique invariant.
+        for w in a1.windows(2) {
+            assert!(w[0] < w[1]);
+        }
+        // Every index must come from the pool.
+        let pool_set: BTreeSet<u32> = pool.iter().map(|&i| i as u32).collect();
+        for idx in &a1 {
+            assert!(pool_set.contains(idx));
+        }
+        // Different word → different SDR (with overwhelming probability
+        // for a 30-of-1000 hash).
+        let b = canonical_target_r2_sdr("python", &pool, 30, 0xCAFE);
+        assert_ne!(a1, b);
+    }
+
+    /// `drive_with_r2_clamp` must actually make the clamped neurons
+    /// fire when the strength is high enough — that's the
+    /// architectural prerequisite for teacher-forcing to work at all.
+    #[test]
+    fn drive_with_r2_clamp_makes_target_neurons_fire() {
+        let mut brain = fresh_brain(7);
+        let r2_e = r2_e_set(&brain);
+        let pool = r2_e_pool(&r2_e);
+        let target = canonical_target_r2_sdr("zebra", &pool, 16, 0xCAFE);
+        // No cue, just the clamp at high strength.
+        let counts = drive_with_r2_clamp(
+            &mut brain,
+            &[],
+            &target,
+            0.0,
+            500.0,
+            20.0,
+            &r2_e,
+        );
+        let target_set: BTreeSet<u32> = target.iter().copied().collect();
+        let fired_in_target = target_set
+            .iter()
+            .filter(|&&i| counts[i as usize] > 0)
+            .count();
+        assert!(
+            fired_in_target as f32 / target.len() as f32 >= 0.5,
+            "at least half of the clamped target neurons must fire — \
+             clamp is broken if not. fired = {fired_in_target}/{}",
+            target.len(),
+        );
+    }
 
     /// Smoke test: the harness must run two epochs without panicking
     /// in either configuration, and each epoch metric block must
