@@ -4,6 +4,170 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 45 (reward-aware pair-association harness)
+
+### Added
+- `crates/eval/src/reward_bench.rs` — `RewardPair`, `RewardCorpus`,
+  `RewardConfig`, `RewardEpochMetrics`, `run_reward_benchmark`,
+  `default_reward_corpus`, `render_markdown`. Pair-association
+  task with deliberate distractors, staggered cue → target
+  training, per-trial reward delivery, per-epoch top-1 / top-3
+  readout.
+- `crates/eval/examples/reward_benchmark.rs` — CLI runner that
+  produces a side-by-side Markdown comparison of pure STDP vs
+  R-STDP across N epochs.
+- 1 new smoke test (`reward_benchmark_smoke`) — runs both arms on
+  a 4-pair sub-corpus for 2 epochs and asserts every metric is
+  finite and in [0, 1].
+- `notes/45-reward-bench.md` — full architectural rationale,
+  trial schedule, measured results, honest reading.
+
+### Verified
+The harness wires R-STDP cleanly: dopamine + eligibility tag move
+weights, both noise-only-arms have a `mean_reward = -1.0` baseline,
+and the smoke test passes in ~22 s. R-STDP shows a small
+noise-suppression advantage over pure STDP (mean noise-top-3 0.10
+vs 0.16 over 6 epochs at reps = 4) but neither configuration
+converges to above-chance pair-association accuracy in the
+training time the current architecture allows. The likely next
+experiment — teacher-forcing the target SDR directly into R2 —
+is documented in `notes/45` as a concrete follow-up.
+
+## Unreleased — Iteration 44.1 (decoder confidence floor)
+
+### Added
+- `EngramDictionary::decode_top_above(active, k, min_score)` —
+  identical to `decode_top` but **omits** engrams whose containment
+  ratio is below `min_score` instead of filling the top-k slot with
+  the next-best garbage. `decode_top` is now `decode_top_above(_,
+  k, 0.0)` so existing callers see no change.
+- `ScaleBrain::query_with_threshold` /
+  `ScaleBrain::evaluate_with_threshold` — pass-through wrappers so
+  the scale benchmark can take a confidence floor.
+- `--decode-threshold` flag on the `scale_benchmark` example.
+- Two new unit tests in `crates/encoders/src/decode.rs`
+  (`decode_top_above_filters_low_confidence_matches`,
+  `decode_top_unchanged_by_threshold_refactor`) + the regression
+  guard that `decode_top` is bit-identical to the new method at
+  threshold `0.0`.
+
+### Verified — same 32-sentence corpus, seed 42, `--iter44 off`
+
+| `--decode-threshold` | FP / Q | Token reduction | Self-recall |
+| ---: | ---: | ---: | ---: |
+| `0.0` (pre-iter-44) | 4.50 | 38.9 % | 100 % |
+| `0.10` | 4.50 | 38.9 % | 100 % |
+| **`0.20`** | **0.62** | **79.7 %** | 100 % |
+| `0.30` | 0.00 | 84.7 % | 100 % |
+
+The headline:
+- **FP / query: 4.50 → 0.62 (− 86 %)**
+- **Token reduction: 38.9 % → 79.7 % (+ 2.0×)**
+- self-recall stays at 100 %; decoder latency unchanged.
+
+The "recall of co-occurring neighbours" that fell to zero was almost
+entirely noise: the random-overlap floor for two KWTA-100 patterns
+in an R2 of 8000 E neurons is 12.5 %, so anything below that is
+statistically indistinguishable from chance. The threshold makes
+the *real* engram-orthogonality problem visible — and that's the
+gap iter-44's reward + structural mechanisms are designed to close.
+
+## Unreleased — Iteration 44 (breakthrough plasticity stack)
+
+### Added
+- **Triplet STDP** (Pfister & Gerstner 2006). Slow `pre_trace2` /
+  `post_trace2` lazy buffers on `Network`; new `StdpParams.a3_plus`,
+  `a3_minus`, `tau_x`, `tau_y` fields. Default 0 → identical to
+  pair-STDP for every pre-iter-44 configuration.
+- **Reward-modulated STDP with eligibility traces** (`crates/snn-core/src/reward.rs`).
+  Per-synapse eligibility tag, decay τ ≈ 1 s, gated by a global
+  scalar `Network::neuromodulator`. `Brain::set_neuromodulator(...)`
+  broadcasts a dopamine surrogate to every region.
+- **Metaplasticity** with the BCM sliding LTP/LTD threshold
+  (`crates/snn-core/src/metaplasticity.rs`). Per-post-neuron rate +
+  θ traces; `MetaplasticityParams::modulator(rate, θ)` multiplies
+  the STDP Δw on incoming edges.
+- **Intrinsic plasticity / spike-frequency adaptation**
+  (`crates/snn-core/src/intrinsic.rs`). Per-neuron adapt trace +
+  `v_thresh_offset` slot; the LIF integration reads
+  `v_threshold + offset` whenever the feature is on.
+- **Heterosynaptic L1 / L2 normalisation**
+  (`crates/snn-core/src/heterosynaptic.rs`). Periodic per-post
+  excitatory-incoming weight-norm cap. Defaults: L2 with target
+  1.5, applied every 200 steps.
+- **Structural plasticity** (`crates/snn-core/src/structural.rs`).
+  Pruning: E→E synapses below `prune_threshold` for `prune_age_steps`
+  evaluations are removed from the adjacency buckets and marked
+  dead. Sprouting: hot pre/post pairs with no current edge get a new
+  one at `sprout_initial`. `Network::compact_synapses()` reclaims
+  dead slots.
+- **Offline replay / consolidation**
+  (`crates/snn-core/src/replay.rs`, `Network::consolidate`,
+  `Brain::consolidate`). Drives the top-k engram cells in pulses
+  with full plasticity left on; alternates forward / reverse order
+  on successive calls.
+- `Brain::compact_synapses` — sums the per-region compaction count.
+- `crates/snn-core/tests/iter44_breakthrough.rs` — 15 new tests, one
+  positive + one regression-guard per mechanism plus a composite
+  full-stack + a passive-network regression test.
+- `notes/44-breakthrough-plasticity.md` — architectural rationale,
+  composition into the existing pipeline, references, and limits.
+
+### Changed
+- `Network::step` now decays the new traces (when their feature is
+  on), reads the BCM modulator on every STDP Δw, runs the periodic
+  heterosynaptic and structural passes, and applies the
+  reward-gated update at the end of the step. Off paths early-out
+  on a single `bool` and stay byte-identical to the pre-iter-44
+  hot loop.
+- `Network` gained: `metaplasticity`, `intrinsic`, `heterosynaptic`,
+  `structural`, `reward` as `Option<...>` configs;
+  `pre_trace2`/`post_trace2`/`eligibility`/`rate_trace`/`theta_trace`/
+  `adapt_trace`/`v_thresh_offset`/`prune_counters`/`dead_synapses`/
+  `replay_flip` as transient lazy buffers.
+- `lib.rs` re-exports `MetaplasticityParams`, `IntrinsicParams`,
+  `HeterosynapticParams`, `NormKind`, `StructuralParams`,
+  `PruneCounter`, `RewardParams`, `ReplayParams`.
+
+### Verified
+All 113 pre-existing tests still pass; the regression guard
+`classical_passive_network_unchanged_by_iter44` asserts byte-identity
+of the off-by-default hot loop. 15 new unit tests in
+`crates/snn-core/tests/iter44_breakthrough.rs`.
+
+### Benchmark
+Measured against iter-43 on the deterministic 32-sentence corpus
+(seed 42, `cargo run --release -p eval --example scale_benchmark
+-- --iter44 {off | stability | tuned | full}`):
+
+| Config | Train sec | Recall | FP / query | Latency |
+| --- | ---: | ---: | ---: | ---: |
+| `off` (iter-43 baseline) | 175 | 4.4 % | 4.50 | 16.1 ms |
+| `stability` | 236 | 4.4 % | 4.50 | 16.9 ms |
+| `tuned` | **27** | 2.7 % | 4.69 | **14.0 ms** |
+| `full` | 355 | 1.6 % | 4.81 | 44.0 ms |
+
+The iter-44 stack does **not** improve recall on this short-corpus
+benchmark — see `notes/44` for the full reading. Heterosynaptic and
+BCM scale weights uniformly per post-neuron and so don't change the
+fingerprint kWTA pattern; reward-modulated STDP / replay / BCM-θ all
+need longer training windows or a reward signal that the current
+eval harness does not emit. The mechanisms are present, unit-tested
+and ready for the *next* benchmark — multi-epoch corpora, streaming
+input with consolidation gaps, and reward-aware retrieval — none of
+which the iter-25 evaluation harness exercises.
+
+### Caveats
+- Snapshot schema gains six `Option<...>` fields and several
+  `#[serde(skip)]` lazy buffers. Old snapshots load fine
+  (`#[serde(default)]` everywhere); newly-saved snapshots store the
+  new params if their feature was on at save time.
+- Reward learning currently treats `excitatory_only = true` as the
+  default; striatal D1 vs D2 sign asymmetries are out of scope.
+- The structural sprouting walk is deterministic and bounded by
+  `max_new_per_step`; a randomised reservoir may be needed at
+  larger hot-set sizes than R2 = 10 000 currently produces.
+
 ## Unreleased — Iteration 25 (topology scaling: R2 → 10 000)
 
 ### Changed

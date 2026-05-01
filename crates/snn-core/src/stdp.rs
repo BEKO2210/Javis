@@ -1,4 +1,6 @@
-//! Pair-based Spike-Timing Dependent Plasticity.
+//! Pair- and triplet-based Spike-Timing Dependent Plasticity.
+//!
+//! ## Pair-STDP (default)
 //!
 //! Each neuron carries a pre- and post-synaptic trace that decays
 //! exponentially. On a post-synaptic spike, weights of incoming synapses
@@ -23,6 +25,25 @@
 //!   shrink as `w` approaches the bound — weights settle into a
 //!   smooth distribution between `w_min` and `w_max` instead of
 //!   piling up at the clamps. No `clamp()` call needed at all.
+//!
+//! ## Triplet-STDP (Pfister & Gerstner 2006)
+//!
+//! Set `a3_plus > 0` (and optionally `a3_minus > 0`) to switch on the
+//! triplet rule. Two extra slow traces — `pre_trace2` (τ_x ≈ 100 ms)
+//! and `post_trace2` (τ_y ≈ 125 ms) — are read *just before* their
+//! own update, so the LTP triplet term sees the post-trace history
+//! prior to the current spike, matching the original Pfister formulation.
+//!
+//! `Δw_LTP = pre_trace[pre]  * (a_plus  + a3_plus  * post_trace2_pre[post])`
+//! `Δw_LTD = post_trace[post] * (a_minus + a3_minus * pre_trace2_pre[pre])`
+//!
+//! The triplet term gives the rule the BCM-style frequency dependence
+//! that pair-STDP lacks: low-rate pre+post pairs see plain pair-STDP,
+//! high-rate burst-coincidences potentiate disproportionately, which
+//! captures the experimentally observed visual-cortex data Pair-STDP
+//! cannot fit. Defaults are `a3_plus = a3_minus = 0`, so triplet
+//! contributions vanish and behaviour is bit-identical to the
+//! pre-iter-44 pair rule.
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct StdpParams {
@@ -37,6 +58,41 @@ pub struct StdpParams {
     /// compatibility — every existing tuned test stays bit-identical.
     #[serde(default)]
     pub soft_bounds: bool,
+    /// Triplet-STDP LTP coefficient (Pfister-Gerstner 2006). Reads the
+    /// slow `post_trace2` *before* its own update at every post-spike.
+    /// `0.0` keeps pair-STDP behaviour. Typical visual-cortex fit:
+    /// `a3_plus = 6.2e-3`, `a_plus = 5e-3`.
+    #[serde(default)]
+    pub a3_plus: f32,
+    /// Triplet-STDP LTD coefficient. Reads the slow `pre_trace2` at
+    /// every pre-spike. `0.0` (default) → no triplet contribution to
+    /// LTD; the slow term is rarely needed when iSTDP is in charge of
+    /// LTD bookkeeping.
+    #[serde(default)]
+    pub a3_minus: f32,
+    /// Slow pre-trace decay (ms). Used for the LTD triplet term.
+    /// Default 100 ms — Pfister-Gerstner visual-cortex fit.
+    #[serde(default = "default_tau_x")]
+    pub tau_x: f32,
+    /// Slow post-trace decay (ms). Used for the LTP triplet term.
+    /// Default 125 ms — Pfister-Gerstner visual-cortex fit.
+    #[serde(default = "default_tau_y")]
+    pub tau_y: f32,
+}
+
+fn default_tau_x() -> f32 {
+    100.0
+}
+fn default_tau_y() -> f32 {
+    125.0
+}
+
+impl StdpParams {
+    /// True iff the triplet contribution is active. Used by `Network`
+    /// to decide whether to allocate the slow trace buffers.
+    pub fn triplet_enabled(&self) -> bool {
+        self.a3_plus != 0.0 || self.a3_minus != 0.0
+    }
 }
 
 impl Default for StdpParams {
@@ -49,6 +105,10 @@ impl Default for StdpParams {
             w_min: 0.0,
             w_max: 5.0,
             soft_bounds: false,
+            a3_plus: 0.0,
+            a3_minus: 0.0,
+            tau_x: default_tau_x(),
+            tau_y: default_tau_y(),
         }
     }
 }

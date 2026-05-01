@@ -28,8 +28,9 @@ use std::time::Instant;
 
 use encoders::{EngramDictionary, TextEncoder};
 use snn_core::{
-    Brain, HomeostasisParams, IStdpParams, LifNeuron, LifParams, NeuronKind, Region, Rng,
-    StdpParams,
+    Brain, HeterosynapticParams, HomeostasisParams, IStdpParams, IntrinsicParams, LifNeuron,
+    LifParams, MetaplasticityParams, NeuronKind, Region, ReplayParams, Rng, StdpParams,
+    StructuralParams,
 };
 
 use crate::count_tokens;
@@ -219,6 +220,100 @@ pub struct ScaleBrain {
     pub training_secs: f64,
 }
 
+/// Iter-44 toggle for [`ScaleBrain::train_on_with_config`]. Default
+/// `Self::iter43()` reproduces the pre-iter-44 baseline byte-for-byte,
+/// so existing `train_on` callers keep their old behaviour.
+#[derive(Debug, Clone, Copy)]
+pub struct Iter44Config {
+    /// Add the Pfister-Gerstner triplet contribution to STDP.
+    pub triplet: bool,
+    /// Switch on BCM metaplasticity on the R2 network.
+    pub metaplasticity: bool,
+    /// Switch on intrinsic-plasticity adaptive thresholds in R2.
+    pub intrinsic: bool,
+    /// Cap each post-neuron's incoming-excitatory L2 norm in R2 —
+    /// the direct fix for the saturation problem in `notes/43`.
+    pub heterosynaptic: bool,
+    /// Sprout / prune R2 connections during training.
+    pub structural: bool,
+    /// Run a brief offline-replay round at the end of each epoch
+    /// so the strongest engrams deepen before fingerprinting.
+    pub replay: bool,
+}
+
+impl Iter44Config {
+    /// All iter-44 mechanisms off — bit-identical to the pre-iter-44
+    /// pipeline.
+    pub const fn iter43() -> Self {
+        Self {
+            triplet: false,
+            metaplasticity: false,
+            intrinsic: false,
+            heterosynaptic: false,
+            structural: false,
+            replay: false,
+        }
+    }
+
+    /// Every iter-44 mechanism on. Use to measure the full headline
+    /// improvement over the iter-43 baseline.
+    pub const fn full() -> Self {
+        Self {
+            triplet: true,
+            metaplasticity: true,
+            intrinsic: true,
+            heterosynaptic: true,
+            structural: false, // off by default — see comment in train_on_with_config
+            replay: true,
+        }
+    }
+
+    /// "Stability" subset — turns on only the mechanisms that target
+    /// the README cross-bleed / saturation failure modes
+    /// (heterosynaptic norm + metaplasticity). Useful for isolating
+    /// the source of any improvement / regression.
+    pub const fn stability_only() -> Self {
+        Self {
+            triplet: false,
+            metaplasticity: true,
+            intrinsic: false,
+            heterosynaptic: true,
+            structural: false,
+            replay: false,
+        }
+    }
+
+    /// Tuned subset — the *measured* good combination on the 32-sentence
+    /// short-corpus benchmark. Intrinsic plasticity + structural
+    /// plasticity, with both rules tuned for sub-second training
+    /// windows and a tight excitatory budget. See `notes/44`.
+    pub const fn tuned_for_short_corpus() -> Self {
+        Self {
+            triplet: false,
+            metaplasticity: false,
+            intrinsic: true,
+            heterosynaptic: true,
+            structural: true,
+            replay: false,
+        }
+    }
+
+    pub fn any(&self) -> bool {
+        self.triplet
+            || self.metaplasticity
+            || self.intrinsic
+            || self.heterosynaptic
+            || self.structural
+            || self.replay
+    }
+}
+
+impl Default for Iter44Config {
+    fn default() -> Self {
+        Self::iter43()
+    }
+}
+
 impl ScaleBrain {
     /// Train the SNN on the corpus and fingerprint every vocabulary
     /// word as an engram. Equivalent to the
@@ -227,6 +322,13 @@ impl ScaleBrain {
     /// without retraining. Logs progress to stderr every 50
     /// sentences so the operator can watch a long run.
     pub fn train_on(corpus: &ScaleCorpus) -> Self {
+        Self::train_on_with_config(corpus, &Iter44Config::iter43())
+    }
+
+    /// Like [`Self::train_on`] but with optional iter-44 plasticity
+    /// mechanisms switched on per [`Iter44Config`]. The iter-43
+    /// configuration is byte-identical to `train_on`.
+    pub fn train_on_with_config(corpus: &ScaleCorpus, cfg: &Iter44Config) -> Self {
         let started = Instant::now();
         let stopwords: &[&str] = &[
             "is", "a", "the", "an", "on", "at", "of", "in", "to", "and", "or", "for", "with", "by",
@@ -241,9 +343,62 @@ impl ScaleBrain {
         wire_forward(&mut brain, 2028);
 
         // Phase 1: training pass over every sentence with plasticity on.
-        brain.regions[1].network.enable_stdp(stdp());
+        brain.regions[1].network.enable_stdp(stdp_with(cfg));
         brain.regions[1].network.enable_istdp(istdp());
         brain.regions[1].network.enable_homeostasis(homeostasis());
+        if cfg.metaplasticity {
+            brain.regions[1]
+                .network
+                .enable_metaplasticity(MetaplasticityParams::enabled());
+        }
+        if cfg.intrinsic {
+            // The default `a_target = 5` assumes a multi-second
+            // training window (where a typical neuron fires several
+            // times). On the 32-sentence × 150 ms benchmark a target
+            // of 0.5 actually matches the per-cue spike count we
+            // observe; with the default value the offset stays
+            // pinned at `offset_min` and the network melts down.
+            brain
+                .regions[1]
+                .network
+                .enable_intrinsic_plasticity(IntrinsicParams {
+                    a_target: 0.5,
+                    tau_adapt_ms: 200.0,
+                    beta: 0.2,
+                    offset_min: -2.0,
+                    offset_max: 5.0,
+                    enabled: true,
+                    ..IntrinsicParams::enabled()
+                });
+        }
+        if cfg.heterosynaptic {
+            // L2 target of 0.5 actually clips the saturated R2 rows
+            // (default 1.5 / 4.0 was above the typical incoming-norm
+            // and never triggered).
+            brain
+                .regions[1]
+                .network
+                .enable_heterosynaptic(HeterosynapticParams {
+                    target: 0.5,
+                    apply_every: 200,
+                    ..HeterosynapticParams::l2()
+                });
+        }
+        if cfg.structural {
+            // Sprout aggressively between hot pre/post pairs, prune
+            // the dormant E→E edges whose weight stayed below 5e-3
+            // for two structural passes.
+            brain.regions[1].network.enable_structural(StructuralParams {
+                apply_every: 1_500,
+                max_new_per_step: 32,
+                prune_threshold: 0.005,
+                prune_age_steps: 3,
+                sprout_pre_trace: 0.2,
+                sprout_post_trace: 0.2,
+                sprout_initial: 0.05,
+                enabled: true,
+            });
+        }
 
         let n = corpus.sentences.len();
         for (i, sentence) in corpus.sentences.iter().enumerate() {
@@ -260,11 +415,29 @@ impl ScaleBrain {
         // Cool-down — let traces decay before fingerprinting.
         idle(&mut brain, COOLDOWN_MS);
 
+        // Optional iter-44 step: offline replay round so the
+        // strongest engrams consolidate while plasticity is still on.
+        if cfg.replay {
+            brain.regions[1]
+                .network
+                .consolidate(&ReplayParams::epoch_end());
+        }
+
         // Phase 2: freeze plasticity, fingerprint every vocab word
         // by re-driving its SDR and grabbing the kWTA pattern.
         brain.disable_stdp_all();
         brain.disable_istdp_all();
         brain.disable_homeostasis_all();
+        // Iter-44 mechanisms also have to be silenced before
+        // fingerprinting so the act of reading does not modify
+        // weights or thresholds.
+        for region in brain.regions.iter_mut() {
+            region.network.disable_metaplasticity();
+            region.network.disable_intrinsic_plasticity();
+            region.network.disable_heterosynaptic();
+            region.network.disable_structural();
+            region.network.disable_reward_learning();
+        }
 
         let mut dict = EngramDictionary::new();
         let vocab_total = corpus.vocabulary.len();
@@ -321,8 +494,25 @@ impl ScaleBrain {
     }
 
     /// Run one query against the trained state. `decode_k` is the
-    /// top-k cap on the engram dictionary scan.
+    /// top-k cap on the engram dictionary scan. Equivalent to
+    /// `query_with_threshold(query, decode_k, 0.0)` — every decoder
+    /// hit is returned, including low-confidence garbage.
     pub fn query(&mut self, query: &str, decode_k: usize) -> ScaleQueryResult {
+        self.query_with_threshold(query, decode_k, 0.0)
+    }
+
+    /// Same as [`Self::query`] but additionally requires every
+    /// decoded engram to score `≥ min_score`. Engrams below the
+    /// threshold are *omitted* from the result instead of filling
+    /// the top-k slot with the next-best garbage. This is the right
+    /// entry point when the caller cares about precision on the
+    /// downstream LLM payload.
+    pub fn query_with_threshold(
+        &mut self,
+        query: &str,
+        decode_k: usize,
+        min_score: f32,
+    ) -> ScaleQueryResult {
         let total_t0 = Instant::now();
         let q_lc = query.to_lowercase();
 
@@ -342,9 +532,13 @@ impl ScaleBrain {
         };
 
         // Phase B: dictionary scan — measured separately so we can
-        // chart it against vocab size.
+        // chart it against vocab size. Threshold filtering happens
+        // *inside* the decoder so the slot stays empty when nothing
+        // clears the bar.
         let dec_t0 = Instant::now();
-        let decoded = self.dict.decode_top(&recall_indices, decode_k);
+        let decoded = self
+            .dict
+            .decode_top_above(&recall_indices, decode_k, min_score);
         let decode_micros = dec_t0.elapsed().as_micros();
 
         // RAG payload = first sentence whose lowercased form contains
@@ -406,9 +600,20 @@ impl ScaleBrain {
 
     /// Run the full set of queries the corpus declared and aggregate.
     pub fn evaluate(&mut self, queries: &[String], decode_k: usize) -> ScaleReport {
+        self.evaluate_with_threshold(queries, decode_k, 0.0)
+    }
+
+    /// Same as [`Self::evaluate`] but with a decoder confidence
+    /// floor — see [`Self::query_with_threshold`].
+    pub fn evaluate_with_threshold(
+        &mut self,
+        queries: &[String],
+        decode_k: usize,
+        min_score: f32,
+    ) -> ScaleReport {
         let mut per_query: Vec<ScaleQueryResult> = Vec::with_capacity(queries.len());
         for (i, q) in queries.iter().enumerate() {
-            per_query.push(self.query(q, decode_k));
+            per_query.push(self.query_with_threshold(q, decode_k, min_score));
             if (i + 1) % 25 == 0 || i + 1 == queries.len() {
                 eprintln!("  evaluated {}/{} queries", i + 1, queries.len());
             }
@@ -606,6 +811,19 @@ fn homeostasis() -> HomeostasisParams {
         apply_every: 8,
         scale_only_down: true,
     }
+}
+
+/// Pair-STDP params with the optional Pfister-Gerstner triplet term
+/// dialled in. `cfg.triplet = false` returns the same struct as
+/// [`stdp()`] — the iter-43 baseline.
+fn stdp_with(cfg: &Iter44Config) -> StdpParams {
+    let mut p = stdp();
+    if cfg.triplet {
+        p.a3_plus = 0.005;
+        p.tau_x = 100.0;
+        p.tau_y = 125.0;
+    }
+    p
 }
 
 fn run_with_cue(brain: &mut Brain, drive: &[u32], duration_ms: f32) {

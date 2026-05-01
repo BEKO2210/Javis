@@ -64,6 +64,33 @@ impl EngramDictionary {
     /// guesswork. Empty engrams are skipped. Ties are broken
     /// alphabetically so the result is deterministic.
     pub fn decode_top(&self, active_r2_indices: &[u32], k: usize) -> Vec<(String, f32)> {
+        // Equivalent to `decode_top_above(_, k, 0.0)` — every score
+        // ≥ 0 is non-negative by construction so the threshold is a
+        // no-op. Kept for backward compatibility.
+        self.decode_top_above(active_r2_indices, k, 0.0)
+    }
+
+    /// Like [`Self::decode_top`] but additionally requires
+    /// `score ≥ min_score`. Engrams that score below the threshold
+    /// are *excluded* from the returned vector entirely — the slot
+    /// is left empty rather than filled with the next-best garbage.
+    ///
+    /// This is the right entry point when the caller cares about
+    /// *precision* — e.g. building an LLM payload, where a wrong
+    /// concept silently injected into the prompt is more expensive
+    /// than a missing one. With `min_score = 0.0` the result is
+    /// identical to `decode_top`.
+    ///
+    /// `score` is `|recall ∩ stored| / |stored|` (the same
+    /// containment ratio the rest of the decoder uses), so a
+    /// threshold of e.g. `0.30` means "at least 30 % of the stored
+    /// engram bits must be active in the recall set".
+    pub fn decode_top_above(
+        &self,
+        active_r2_indices: &[u32],
+        k: usize,
+        min_score: f32,
+    ) -> Vec<(String, f32)> {
         let mut active = active_r2_indices.to_vec();
         active.sort_unstable();
         active.dedup();
@@ -72,10 +99,10 @@ impl EngramDictionary {
             .entries
             .iter()
             .filter(|(_, stored)| !stored.is_empty())
-            .map(|(word, stored)| {
+            .filter_map(|(word, stored)| {
                 let overlap = sorted_overlap(stored, &active);
                 let ratio = overlap as f32 / stored.len() as f32;
-                (word.clone(), ratio)
+                (ratio >= min_score).then(|| (word.clone(), ratio))
             })
             .collect();
         scored.sort_by(|a, b| {
@@ -243,5 +270,58 @@ mod tests {
         d.learn_concept("rust", &[1, 2, 3]);
         d.learn_concept("rust", &[10, 20, 30]);
         assert_eq!(d.get("rust"), Some(&[10, 20, 30][..]));
+    }
+
+    /// `decode_top_above` must drop every engram whose containment
+    /// score is strictly below the threshold — empty result is the
+    /// expected output when the recall set has no high-confidence
+    /// matches, *not* "the next-best garbage word".
+    #[test]
+    fn decode_top_above_filters_low_confidence_matches() {
+        let mut d = EngramDictionary::new();
+        d.learn_concept("strong", &[1, 2, 3, 4]); // 4/4 = 1.00
+        d.learn_concept("medium", &[1, 2, 3, 99]); // 3/4 = 0.75
+        d.learn_concept("weak", &[1, 2, 3, 4, 5, 6, 7, 8]); // 4/8 = 0.50
+        d.learn_concept("noise", &[100, 200, 300, 400, 500]); // 0/5 = 0.00
+
+        let active = vec![1, 2, 3, 4];
+
+        // Threshold 0.0 — same as decode_top.
+        let no_filter = d.decode_top_above(&active, 10, 0.0);
+        assert_eq!(no_filter.len(), 4);
+
+        // Threshold 0.6 — drops "weak" (0.50) and "noise" (0.00).
+        let mid = d.decode_top_above(&active, 10, 0.6);
+        let words: Vec<&str> = mid.iter().map(|(w, _)| w.as_str()).collect();
+        assert_eq!(words, vec!["strong", "medium"]);
+
+        // Threshold 0.99 — only "strong" survives.
+        let strict = d.decode_top_above(&active, 10, 0.99);
+        assert_eq!(strict.len(), 1);
+        assert_eq!(strict[0].0, "strong");
+
+        // Threshold 0.5 with k=1 — top-k still applies after filtering.
+        let capped = d.decode_top_above(&active, 1, 0.5);
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].0, "strong");
+
+        // Threshold above any real score — empty result, no garbage.
+        let empty = d.decode_top_above(&active, 10, 1.5);
+        assert!(empty.is_empty());
+    }
+
+    /// `decode_top` must remain bit-identical to its pre-threshold
+    /// behaviour: it returns exactly what `decode_top_above(_, k,
+    /// 0.0)` returns.
+    #[test]
+    fn decode_top_unchanged_by_threshold_refactor() {
+        let mut d = EngramDictionary::new();
+        d.learn_concept("a", &[1, 2, 3]);
+        d.learn_concept("b", &[1, 2, 99]);
+        d.learn_concept("c", &[100]);
+        let active = vec![1, 2, 3];
+        let plain = d.decode_top(&active, 5);
+        let via_above = d.decode_top_above(&active, 5, 0.0);
+        assert_eq!(plain, via_above);
     }
 }

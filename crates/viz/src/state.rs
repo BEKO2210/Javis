@@ -650,6 +650,30 @@ impl AppState {
         g.brain.regions[1].network.enable_stdp(stdp());
         g.brain.regions[1].network.enable_istdp(istdp());
         g.brain.regions[1].network.enable_homeostasis(homeostasis());
+        // Iter-44 breakthrough stack: opt-in via `JAVIS_ITER44=1`. The
+        // env switch is read once per training cue so a running viz
+        // session can be flipped without restart.
+        if std::env::var("JAVIS_ITER44").is_ok_and(|v| v == "1") {
+            use snn_core::{
+                HeterosynapticParams, IntrinsicParams, MetaplasticityParams, RewardParams,
+                StructuralParams,
+            };
+            g.brain.regions[1]
+                .network
+                .enable_metaplasticity(MetaplasticityParams::enabled());
+            g.brain.regions[1]
+                .network
+                .enable_intrinsic_plasticity(IntrinsicParams::enabled());
+            g.brain.regions[1]
+                .network
+                .enable_heterosynaptic(HeterosynapticParams::l2());
+            g.brain.regions[1]
+                .network
+                .enable_structural(StructuralParams::enabled());
+            g.brain.regions[1]
+                .network
+                .enable_reward_learning(RewardParams::enabled());
+        }
 
         let sdr = g.encoder.encode(&sentence);
         g.brain.reset_state();

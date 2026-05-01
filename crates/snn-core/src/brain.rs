@@ -247,6 +247,35 @@ impl Brain {
         }
     }
 
+    /// Broadcast a global neuromodulator value (dopamine surrogate)
+    /// to every region. Reward-modulated STDP in any region picks it
+    /// up on its next step.
+    pub fn set_neuromodulator(&mut self, value: f32) {
+        for region in &mut self.regions {
+            region.network.set_neuromodulator(value);
+        }
+    }
+
+    /// Run an offline consolidation round in every region, in turn.
+    /// Engram-relevant cells are driven with brief pulses while
+    /// plasticity stays on, so weights deepen along the same paths
+    /// the network would re-experience during recall.
+    pub fn consolidate(&mut self, params: &crate::replay::ReplayParams) {
+        for region in &mut self.regions {
+            region.network.consolidate(params);
+        }
+    }
+
+    /// Compact every region's synapse vector — drops every slot that
+    /// structural plasticity has marked dead. Returns the total
+    /// number of synapses that were physically removed.
+    pub fn compact_synapses(&mut self) -> usize {
+        self.regions
+            .iter_mut()
+            .map(|r| r.network.compact_synapses())
+            .sum()
+    }
+
     /// Wire an inter-region axon from `(src_region, src_neuron)` to
     /// `(dst_region, dst_neuron)`. Bounds-checks every index, the
     /// weight (finite) and the delay (positive, finite). Panics with

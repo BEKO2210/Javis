@@ -13,14 +13,15 @@ your LLM, returning a few decoded concepts instead of full document chunks.
 [![Rust edition 2021](https://img.shields.io/badge/rust-edition%202021-CE422B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3a86ff)](#license)
 [![CI](https://img.shields.io/github/actions/workflow/status/BEKO2210/Javis/ci.yml?branch=main&label=ci&logo=github)](.github/workflows/ci.yml)
-[![Tests 113/113](https://img.shields.io/badge/tests-113%2F113%20passing-3fb950)](#tests)
+[![Tests 130/130](https://img.shields.io/badge/tests-130%2F130%20passing-3fb950)](#tests)
 [![Clippy clean](https://img.shields.io/badge/clippy-0%20warnings-3fb950)](#tests)
 [![MSRV 1.86](https://img.shields.io/badge/MSRV-1.86-CE422B?logo=rust&logoColor=white)](#tests)
 [![Self-recall 100%25](https://img.shields.io/badge/self--recall-100%25-3fb950)](#performance-profile)
-[![Token reduction 35-45%25](https://img.shields.io/badge/token%20reduction-35--45%25-ffd166)](#performance-profile)
+[![Token reduction 35-80%25](https://img.shields.io/badge/token%20reduction-35--80%25-ffd166)](#performance-profile)
 [![Observability](https://img.shields.io/badge/observability-tracing%20%C2%B7%20Prometheus-7aa2ff)](#production-readiness)
 [![Container](https://img.shields.io/badge/container-Docker%20%2B%20Compose-2496ed?logo=docker&logoColor=white)](#run-with-docker)
 [![Bio inspired](https://img.shields.io/badge/bio--inspired-LIF%20%C2%B7%20STDP%20%C2%B7%20iSTDP%20%C2%B7%20BTSP-62d6ff)](#plasticity)
+[![Iter 44](https://img.shields.io/badge/iter--44-Triplet%20%C2%B7%20R--STDP%20%C2%B7%20BCM%20%C2%B7%20Replay-ff66c4)](#plasticity)
 
 </div>
 
@@ -88,6 +89,90 @@ aggressive LTD on co-active E-targets. The 113 existing tests still pass at
 the new topology. Updated cross-bleed and recall numbers are in
 [`notes/43-topology-scaling.md`](notes/43-topology-scaling.md) once the
 benchmark run completes.
+
+### What changes in iter 45 (this branch)
+
+A *reward-aware pair-association benchmark*
+(`cargo run --release -p eval --example reward_benchmark`) that
+finally lets the iter-44 R-STDP / dopamine machinery be exercised:
+16 (cue, target) pairs with 16 distractor pairs, staggered
+cue → target training, per-trial reward delivery, per-epoch
+top-1 / top-3 readout. Pure STDP is run as the baseline arm.
+
+The honest reading: **neither arm reaches above-chance accuracy in
+the available training time**. R-STDP shows a small advantage on
+noise suppression (mean noise-top-3 `0.10` vs pure STDP `0.16`)
+but the architecture's R1 → R2 forward path dominates the cue's
+R2 representation, leaving STDP too little room to grow strong
+recurrent associations. The infrastructure is in place; the next
+experiment (teacher-forcing the target SDR into R2 during
+training) is documented in
+[`notes/45`](notes/45-reward-bench.md).
+
+### What changes in iter 44.1 (this branch)
+
+A *decoder confidence floor* via `--decode-threshold` (default `0.0`
+= pre-iter-44 behaviour, recommended `0.2` for the 32-sentence
+corpus). The original `decode_top` always returned `k` results even
+when the highest scoring engram sat right at the random-overlap
+baseline (`KWTA_K / R2_E = 12.5 %`). The floor omits low-confidence
+matches instead of filling the slot with garbage.
+
+Measured on the same 32-sentence corpus, seed 42, `--iter44 off`:
+
+| `--decode-threshold` | FP / Q | Token reduction | Self-recall |
+| ---: | ---: | ---: | ---: |
+| `0.0` (pre-iter-44) | 4.50 | 38.9 % | 100 % |
+| **`0.20`** | **0.62** | **79.7 %** | 100 % |
+| `0.30` | 0.00 | 84.7 % | 100 % |
+
+That is **FP − 86 %** and **token reduction × 2.0** with no plasticity
+change at all; the SNN's engrams were already orthogonal, the decoder
+just refused to admit it.
+
+### What changes in iter 44 (this branch)
+
+Seven new biology-grade plasticity mechanisms join the existing
+LIF / STDP / iSTDP / homeostasis / BTSP stack, all opt-in and
+default-off so every pre-iter-44 test stays bit-identical.
+
+**Honest benchmark result**: on the deterministic 32-sentence corpus
+(seed 42), the new mechanisms *do not* improve recall over the
+iter-43 baseline out of the box — `off` 4.4 %, `stability` 4.4 %,
+`tuned` 2.7 %, `full` 1.6 %. Heterosynaptic / BCM scale weights
+uniformly per post and don't change the kWTA fingerprint;
+reward-modulated STDP and replay both need longer training windows
+or a reward signal the current eval harness does not provide. The
+stack is infrastructure for the *next* benchmark — multi-epoch
+streaming corpora and reward-aware retrieval — see
+[`notes/44`](notes/44-breakthrough-plasticity.md) for the full
+reading. The mechanisms themselves:
+
+1. **Triplet STDP** (Pfister-Gerstner 2006) — frequency-dependent LTP.
+2. **Reward-modulated STDP with eligibility traces** — three-factor
+   learning, gated by `Brain::set_neuromodulator(...)` (the
+   dopamine surrogate). Closes the temporal-credit-assignment loop
+   that pure pair-STDP cannot solve.
+3. **BCM metaplasticity** — sliding LTP/LTD threshold per post-neuron;
+   stops the runaway-LTP failure mode under sustained drive.
+4. **Intrinsic plasticity** — adaptive per-neuron threshold; every
+   cell drifts towards its target rate, no dead or saturated neurons.
+5. **Heterosynaptic L2 normalisation** — the direct fix for the R2
+   saturation problem in `notes/43`. Hard-bounds each post-neuron's
+   incoming-weight budget.
+6. **Structural plasticity** — sprout new edges between repeatedly
+   co-active E cells, prune persistently-dormant ones. Engram
+   capacity stops being a hard topology constant.
+7. **Offline replay / consolidation** — `Brain::consolidate(...)`
+   drives the top-k engram cells in pulses with full plasticity on,
+   the way slow-wave-sleep replay deepens hippocampal engrams.
+
+Switch the whole stack on in the live viz with
+`JAVIS_ITER44=1 cargo run -p viz --release`.
+
+The full architectural rationale, composition into the existing
+pipeline, and 15 new tests are documented in
+[`notes/44-breakthrough-plasticity.md`](notes/44-breakthrough-plasticity.md).
 
 ### Reproducibility
 
@@ -208,7 +293,7 @@ the live brain:
 
 ## Plasticity
 
-Javis composes five biologically-motivated plasticity mechanisms, each opt-in:
+Javis composes twelve biologically-motivated plasticity mechanisms, each opt-in:
 
 | Mechanism | Purpose | Reference |
 | --- | --- | --- |
@@ -218,9 +303,18 @@ Javis composes five biologically-motivated plasticity mechanisms, each opt-in:
 | **Asymmetric homeostasis** | scale-only-down multiplicative renormalisation | Turrigiano 2008 |
 | **BTSP soft bounds** | `Δw = a · trace · (w_max − w)` instead of hard clamp | Bittner 2017 / Milstein 2024 |
 | **Contextual engrams** | fingerprints captured during co-activity, not post-hoc | Tonegawa engram-cell line |
+| **Triplet STDP** *(iter-44)* | frequency-dependent LTP via slow `r2` / `o2` traces | Pfister & Gerstner 2006 |
+| **Reward-modulated STDP** *(iter-44)* | three-factor learning, dopamine-gated eligibility tag | Frémaux & Gerstner 2016; Izhikevich 2007 |
+| **Metaplasticity (BCM)** *(iter-44)* | sliding LTP/LTD threshold per post-neuron | BCM 1982; Cooper & Bear 2012 |
+| **Intrinsic plasticity (SFA)** *(iter-44)* | adaptive per-neuron threshold | Desai 1999; Chrol-Cannon 2014 |
+| **Heterosynaptic L1/L2 norm** *(iter-44)* | per-post incoming-weight budget | Royer & Paré 2003; Field 2020 |
+| **Structural plasticity** *(iter-44)* | sprout + prune to grow/shrink topology | Yang 2009; Holtmaat & Svoboda 2009 |
+| **Offline replay / consolidation** *(iter-44)* | drives top-k engram cells with plasticity on | Buzsáki 2015; Wilson & McNaughton 1994 |
 
-The math behind each lives in `crates/snn-core/src/{stdp,istdp,homeostasis}.rs`,
-the trade-offs are documented in [`notes/`](notes).
+The math behind each lives in `crates/snn-core/src/{stdp,istdp,homeostasis,
+metaplasticity,intrinsic,heterosynaptic,structural,reward,replay}.rs`,
+the trade-offs are documented in [`notes/`](notes), and the full iter-44
+rationale is in [`notes/44-breakthrough-plasticity.md`](notes/44-breakthrough-plasticity.md).
 
 ---
 
@@ -337,12 +431,13 @@ cargo test --release
 | Suite | Tests | Validates |
 | --- | ---: | --- |
 | `snn-core` | 54 | LIF dynamics, STDP & iSTDP, homeostasis, BTSP soft bounds, E/I balance, multi-region routing, snapshot serde, assembly formation, bounds-checked APIs, heap pending queue, AMPA/NMDA/GABA channels, read-only step equivalence |
-| `encoders` | 22 | SDR union/overlap, hash determinism, top-k decode, injection, full pattern completion |
+| `snn-core` iter-44 | 15 | triplet STDP, reward-modulated STDP / eligibility, BCM metaplasticity, intrinsic plasticity, heterosynaptic L2, structural sprout/prune, offline replay/consolidation, full-stack composite, passive-network regression guard |
+| `encoders` | 24 | SDR union/overlap, hash determinism, top-k decode, threshold-floor decode (iter 44.1), injection, full pattern completion |
 | `eval` | 13 | RAG-vs-Javis token efficiency, Wikipedia scaling, intra-topic recall, contextual mode, scale-bench smoke |
 | `llm` | 3 | Anthropic adapter mock contract, token heuristic |
 | `viz` | 16 | WebSocket smoke, train+recall, ask both, snapshot round-trip, `/health` + `/ready`, `/metrics`, concurrency cap, snapshot schema migration (v1→v2) |
 | Doc-tests | 3 | Public quick-start examples in `snn-core` and `encoders` |
-| **Total** | **113** | with **zero clippy warnings** workspace-wide |
+| **Total** | **130** | with **zero clippy warnings** workspace-wide |
 
 ---
 
@@ -397,6 +492,9 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 41 | AoS → SoA refactor + WS fire-and-forget: 1.40× pipeline, 2× LIF total |
 | 42 | Validation-at-scale: honest 100-sentence benchmark, FP/FN/recall metrics |
 | 43 | Topology scaling: R2 2 000→10 000, sparser connectivity, retuned iSTDP |
+| 44 | **Breakthrough plasticity stack**: triplet-STDP, R-STDP, BCM metaplasticity, intrinsic plasticity, heterosynaptic norm, structural plasticity, offline replay |
+| 44.1 | Decoder confidence floor (`--decode-threshold`): FP −86%, token reduction +2× |
+| 45 | **Reward-aware pair-association harness**: dopamine + eligibility tag exercised end-to-end, honest "no convergence yet" finding documented |
 
 ---
 
