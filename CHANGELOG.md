@@ -4,6 +4,54 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 55 (epoch sweep on decorrelated + plasticity)
+
+iter-54 landed branch M1 of the iter-55 selector
+(Δ-of-Δ = +0.160, ACCEPTANCE PASSED). Per Bekos's iter-55 spec,
+M1 mandates **keep decorrelation + plasticity combined, sweep
+training schedule** to characterise the learning curve. iter-55
+is a pure sweep run: no code changes, three configs (16, 32,
+64 epochs) × 4 seeds, all other parameters identical to iter-54.
+
+### Run
+
+Three configs, no new code:
+
+```sh
+# 16 epochs (replication of iter-54 — sanity check)
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-bench --seeds 42,7,13,99 --epochs 16 \
+  --decorrelated-init --teacher-forcing
+
+# 32 epochs
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-bench --seeds 42,7,13,99 --epochs 32 \
+  --decorrelated-init --teacher-forcing
+
+# 64 epochs
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-bench --seeds 42,7,13,99 --epochs 64 \
+  --decorrelated-init --teacher-forcing
+```
+
+### Verified — learning curve
+
+<!-- @CHANGELOG_LEARNING_CURVE@ -->
+
+State-reset assertion: PASSED on every untrained arm (12/12).
+Decorrelated invariant: PASSED on every brain construction (24/24).
+
+### Honest reading
+
+<!-- @CHANGELOG_HONEST_READING@ -->
+
+### Methodological lesson
+
+<!-- @CHANGELOG_LESSON@ -->
+
+All eval lib tests still green; clippy `-D warnings` clean
+(no code changes since iter-54).
+
 ## Unreleased — Iteration 54 (hard-decorrelated R1 → R2 init)
 
 iter-53 produced **Δ-of-Δ = −0.121, FAILED**: 16 epochs of
