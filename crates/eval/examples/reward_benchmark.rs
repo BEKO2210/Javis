@@ -46,6 +46,18 @@ fn main() {
     let noise_reward: f32 = parse_arg(&args, "--noise-reward", -1.0_f32);
     let homeostasis = flag(&args, "--homeostasis");
     let debug_trials: u32 = if flag(&args, "--debug-trial") { 3 } else { 0 };
+    // Iter-46 R1 → R2 gate. Defaults to 1.0 (no gating); pass e.g.
+    // 0.3 to halve the forward drive during the prediction phase
+    // and let recurrent learning express itself.
+    let r1r2_gate: f32 = parse_arg(
+        &args,
+        "--association-training-gate-r1r2",
+        if flag(&args, "--association-training-gate-r1r2") {
+            0.3_f32
+        } else {
+            1.0_f32
+        },
+    );
 
     let mut teacher = TeacherForcingConfig {
         enabled: teacher_on,
@@ -65,12 +77,13 @@ fn main() {
         noise_reward,
         homeostatic_normalization: homeostasis,
         debug_trials,
+        r1r2_prediction_gate: r1r2_gate,
     };
 
     let corpus = default_reward_corpus();
     eprintln!(
         "Reward benchmark: pairs={} noise_pairs={} vocab={} epochs={epochs} reps={reps} seed={seed} \
-         teacher_forcing={teacher_on} wta_k={wta_k} homeostasis={homeostasis}",
+         teacher_forcing={teacher_on} wta_k={wta_k} homeostasis={homeostasis} r1r2_gate={r1r2_gate}",
         corpus.pairs.len(),
         corpus.noise_pairs.len(),
         corpus.vocab.len(),

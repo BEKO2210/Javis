@@ -227,6 +227,18 @@ pub struct TeacherForcingConfig {
     /// Print debug info for the first 1–3 example pairs of each
     /// arm. See [`RewardConfig::debug_trials`].
     pub debug_trials: u32,
+    /// During the prediction phase only, scale the R1 cue current
+    /// by this factor. `1.0` = no gating (default); `0.3` halves
+    /// the forward drive so the cue's R2 response is more easily
+    /// dominated by recurrent associations.
+    ///
+    /// This addresses the iter-46 finding that even with a clean
+    /// pre-before-post teacher schedule, the dominant R1 → R2
+    /// forward path keeps the cue's R2 representation almost
+    /// entirely random — recurrent learning has no room to bias
+    /// it. The gate is a *training-only* knob (it's never applied
+    /// during evaluation), so it stays an honest measurement.
+    pub r1r2_prediction_gate: f32,
 }
 
 impl Default for TeacherForcingConfig {
@@ -249,6 +261,7 @@ impl Default for TeacherForcingConfig {
             noise_reward: -1.0,
             homeostatic_normalization: true,
             debug_trials: 0,
+            r1r2_prediction_gate: 1.0,
         }
     }
 }
@@ -273,6 +286,7 @@ impl TeacherForcingConfig {
             noise_reward: -1.0,
             homeostatic_normalization: false,
             debug_trials: 0,
+            r1r2_prediction_gate: 1.0,
         }
     }
     pub const fn enabled() -> Self {
@@ -719,13 +733,21 @@ fn run_teacher_trial(
     //      after the prediction window. R-STDP eligibility decay
     //      continues normally — that's fine, it's the *gated*
     //      update we want to keep silenced (modulator stays 0).
+    //
+    //      `r1r2_prediction_gate` < 1.0 attenuates the cue current
+    //      so the recurrent path (whatever STDP has shaped so far)
+    //      gets a fair shot at biasing R2 against the otherwise-
+    //      dominant R1 forward drive.
     if !cfg.plasticity_during_prediction {
         brain.regions[1].network.disable_stdp();
         brain.regions[1].network.disable_istdp();
     }
-    let pred_counts = drive_for_with_counts(
+    let pred_counts = drive_with_r2_clamp(
         brain,
         cue_sdr,
+        &[],
+        DRIVE_NA * cfg.r1r2_prediction_gate,
+        0.0,
         cfg.prediction_ms as f32,
         r2_e,
     );
