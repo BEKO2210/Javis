@@ -4,6 +4,83 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 49 (iSTDP bounds & schedule sweep)
+
+3-point parallel sweep on the *under-tuned* side of the iter-48
+collapse boundary, three orthogonal axes against the same
+attractor (Bekos protocol from notes/48-saturation, end). All
+three under Config 2 base (--istdp-during-prediction); same
+pre-fixed acceptance as iter-48 phase A:
+
+> sustained selectivity > 0 across epochs 4-16
+> AND mean target_hit at epoch 16 > mean target_hit at epoch 4
+> NO magnitude criterion — testing collapse-survival only.
+
+### Added — commit 5ba5c25
+
+- `Iter49Mode` enum (`None | WmaxCap | APlusHalf | ActivityGated`),
+  re-exported.
+- `TeacherForcingConfig.iter49_mode` + `gated_warmup_epochs` (2)
+  + `gated_ramp_epochs` (2). Default `None` reproduces iter-48.
+- `istdp_iter49(cfg, epoch)` — mode + epoch aware iSTDP builder.
+- `run_reward_benchmark` calls `enable_istdp(...)` at the start
+  of each epoch with the current value (no-op for stable modes,
+  ramped for ActivityGated).
+- CLI: `--iter49-mode {none|wmax-cap|a-plus-half|activity-gated}`.
+
+### Verified — three sweeps × 16 epochs each, full per-epoch tables in notes/49
+
+| Sweep | Mechanism | Peak sel | Collapse epoch | Steady-state | Acceptance |
+| --- | --- | ---: | ---: | ---: | :-: |
+| **A: WmaxCap** (`w_max 8.0 → 2.0`) | symptom | -0.0080 | n/a (never positive) | -0.038 | **0/3** |
+| **B: APlusHalf** (`a_plus 0.30 → 0.20`) | dynamic | +0.0184 | epoch 5 | -0.014 | **0/3** |
+| **C: ActivityGated** (a_plus = 0 first 2 ep, ramp 0→0.30) | temporal | +0.0029 | n/a (lock) | +0.003 | 3/3 (artifact) |
+
+### Honest reading
+
+**0 out of 3 sweeps produce a positive learning regime** by any
+meaningful definition.
+
+- A weakens iSTDP suppression structurally → r2_active blows up
+  to 100-119 (over [25,70] band), tgt_hit absolute is HIGHER
+  than iter-48 (2.31 vs 1.34) but selectivity is WORSE. **Bekos's
+  60 %-confidence WmaxCap hypothesis falsified.**
+- B has the same trajectory shape as iter-48 — slightly higher
+  peak, IDENTICAL collapse epoch (5). Halving a_plus delays
+  nothing.
+- C produces an entirely DIFFERENT failure mode: warmup with
+  no iSTDP lets STDP saturate E→E unopposed → r2_active locks
+  at **1400 (= entire R2-E pool, every cell fires every trial)**
+  → selectivity ≈ +0.003 trivially passes the magnitude-free
+  acceptance but is pure noise around uniform activity.
+
+The diagnostic value: **three distinct failure modes from three
+orthogonal axes of iSTDP tuning. None work.** This is information
+no single experiment could have produced.
+
+### Synthesis — iter-50 hypothesis (by elimination)
+
+**iSTDP is not the primary lever.** The 15× rate asymmetry
+between STDP `a_plus = 0.020` and iSTDP `a_plus = 0.30` (and
+10× in `w_max`: 0.8 vs 8.0) means excitatory plasticity cannot
+form selective engrams faster than iSTDP suppresses or saturates
+the network. iter-50 candidate: **raise STDP `a_plus` (0.020 →
+0.060) and/or `w_max` (0.8 → 2.0)** so E→E selective growth
+outpaces iSTDP inhibition.
+
+### Methodological note
+
+Sweep C revealed the iter-49 acceptance criteria need a
+saturation guard for iter-50:
+`r2_active_pre_teacher_mean < 0.5 × |R2_E|` at epoch 16
+(< 700 cells). Catches "trivially saturated" without
+re-introducing magnitude pressure.
+
+iter-49 infrastructure (Iter49Mode + epoch-aware iSTDP) stays
+in the repo as an A/B platform — the diagnostic value of
+"which axis fails how" doesn't disappear because no axis
+succeeded.
+
 ## Unreleased — Iteration 48 phase A (saturation postmortem)
 
 Bekos protocol from notes/48-istdp-tightening: pre-fixed 3-of-3
