@@ -4,6 +4,84 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 54 (hard-decorrelated R1 → R2 init)
+
+iter-53 produced **Δ-of-Δ = −0.121, FAILED**: 16 epochs of
+teacher-forcing on the random-FAN_OUT topology drifted weights
+plenty (eval-phase L2 +25 to +29) but produced *zero* cross-cue
+specificity gain (trained 0.058 ≈ untrained 0.058). The
+diagnosis was that forward-drive bias from a uniform random
+projection swamps any cue-specific routing plasticity might
+build. Bekos's iter-54 spec attacks the bottleneck at the
+architecture layer.
+
+### Added — single commit
+
+- `wire_forward_decorrelated(brain, encoder, vocab, seed,
+  inter_weight) -> Vec<Vec<usize>>` — partition R2-E into
+  `vocab.len()` disjoint blocks; for each R1 cell that appears
+  in *exactly one* cue SDR, fan out `FAN_OUT` times into that
+  cue's block. Shared R1 cells (multi-cue membership) are
+  dropped from connectivity entirely — the only way to
+  preserve pairwise R2-reach disjointness given a non-disjoint
+  encoder.
+- `assert_decorrelated_disjoint(brain, encoder, vocab)` —
+  end-to-end mechanical invariant: for every cue pair the set
+  of R2 cells reachable from cue *i*'s R1 SDR via any R1 → R2
+  edge must be disjoint from cue *j*'s. Iterates
+  `brain.outgoing` + `brain.inter_edges` directly (no shortcut
+  to the block allocation). Called at run-start in
+  `run_jaccard_arm` whenever `decorrelated_init = true`.
+- `TeacherForcingConfig.decorrelated_init: bool` (default
+  `false`).
+- `--decorrelated-init` CLI flag in
+  `crates/eval/examples/reward_benchmark.rs`.
+- Unit test `decorrelated_init_is_pairwise_disjoint` —
+  builds wiring against the real default corpus + encoder,
+  asserts both block-level disjointness AND end-to-end
+  reachability disjointness.
+
+### Topology numbers (iter-46/53 defaults)
+
+vocab = 32, R2-E = 1400, block_size = 43 cells per cue. The
+encoder produces ~17 unique R1 cells per word (out of ENC_K =
+20, with ~3 shared cells dropped) ⇒ ~17 × 12 = 204
+connections per cue. Total R1 → R2 edges ~6500, vs the
+random baseline's ~12000.
+
+### Verified — 4 seeds × 16 epochs
+
+<!-- @CHANGELOG_SWEEP_TABLE@ -->
+
+State-reset assertion: PASSED (4/4 seeds untrained
+same_cue_mean = 1.000 ± 0.000). Decorrelated invariant: PASSED
+(8/8 arm × seed combinations).
+
+### Honest reading
+
+<!-- @CHANGELOG_HONEST_READING@ -->
+
+### Methodological lesson
+
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a guard is only a guard if its baseline excludes the null.
+iter-52: an analytical null is not an empirical control.
+iter-53: when the literal acceptance direction is bounded by
+construction, derive it from the protocol's mathematical bounds.
+**iter-54: when the metric reports a "cleaner" number on a
+random topology than on an architecturally cleaner one, the
+metric is reading something else than what its name suggests.
+Re-derive what the metric measures under the new topology
+*before* claiming a result.**
+
+The disjointness invariant is the iter-54 equivalent of iter-52's
+L2 bit-identity check. Both catch a class of "the protocol
+leaked" bug that the visible config would have hidden.
+
+All eval lib tests still green (10/10 with the new
+`decorrelated_init_is_pairwise_disjoint`); clippy `-D warnings`
+clean.
+
 ## Unreleased — Iteration 53 (decoder-relative Jaccard, Voll-Implementation)
 
 Bekos picked Option B Voll-Implementation off the iter-53.0 smoke

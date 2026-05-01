@@ -69,6 +69,16 @@ fn main() {
     let no_plasticity =
         flag(&args, "--no-plasticity") || flag(&args, "--frozen-weights");
 
+    // Iter-54: hard-decorrelated R1 → R2 init. Replaces the random
+    // FAN_OUT wiring with disjoint-block-per-cue wiring (each vocab
+    // word's R1 SDR cells project ONLY into a dedicated R2-E
+    // block, shared cells dropped). Mechanical invariant:
+    // assert_decorrelated_disjoint ensures pairwise-disjoint R2
+    // reach across all cue pairs. iter-54 question: does this
+    // unblock the cross-cue specificity gain that iter-53 (random
+    // wiring + 16 epochs) failed to produce?
+    let decorrelated_init = flag(&args, "--decorrelated-init");
+
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
     //   wmax-cap       — symptom: iSTDP w_max 8.0 → 2.0
@@ -133,6 +143,7 @@ fn main() {
         gated_ramp_epochs: 2,
         iter46_baseline,
         no_plasticity,
+        decorrelated_init,
     };
 
     let corpus = default_reward_corpus();
@@ -173,9 +184,9 @@ fn main() {
             std::process::exit(2);
         }
         eprintln!(
-            "[iter-53] jaccard sweep: seeds={seeds:?} epochs={epochs} reps={reps} \
+            "[iter-53/54] jaccard sweep: seeds={seeds:?} epochs={epochs} reps={reps} \
              teacher_forcing={teacher_on} iter46_baseline={iter46_baseline} \
-             iter49={}",
+             decorrelated_init={decorrelated_init} iter49={}",
             iter49_mode.label(),
         );
         let cfg = RewardConfig {
