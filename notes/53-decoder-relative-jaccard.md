@@ -113,7 +113,43 @@ cargo run --release -p eval --example reward_benchmark -- \
   --jaccard-bench --seeds 42,7,13,99 --epochs 16 --teacher-forcing
 ```
 
-<!-- @SWEEP_OUTPUT@ -->
+```text
+[iter-53 untrained] seed=42 same=1.000±0.000 cross=0.058±0.137 (n_cues=32, n_pairs=496)
+[iter-53 trained eval-drift] seed=42 pre=[-0.0, 1398.74] post=[-0.0, 1425.82] |Δ|=[0.0, 27.08]
+[iter-53 trained]   seed=42 same=0.828±0.241 cross=0.056±0.123 (n_cues=32, n_pairs=496)
+
+[iter-53 untrained] seed=7  same=1.000±0.000 cross=0.058±0.134 (n_cues=32, n_pairs=496)
+[iter-53 trained eval-drift] seed=7  pre=[-0.0, 1397.12] post=[-0.0, 1421.61] |Δ|=[0.0, 24.50]
+[iter-53 trained]   seed=7  same=0.891±0.210 cross=0.056±0.114 (n_cues=32, n_pairs=496)
+
+[iter-53 untrained] seed=13 same=1.000±0.000 cross=0.056±0.121 (n_cues=32, n_pairs=496)
+[iter-53 trained eval-drift] seed=13 pre=[-0.0, 1387.14] post=[-0.0, 1412.67] |Δ|=[0.0, 25.54]
+[iter-53 trained]   seed=13 same=0.875±0.220 cross=0.062±0.134 (n_cues=32, n_pairs=496)
+
+[iter-53 untrained] seed=99 same=1.000±0.000 cross=0.062±0.126 (n_cues=32, n_pairs=496)
+[iter-53 trained eval-drift] seed=99 pre=[-0.0, 1378.61] post=[-0.0, 1407.16] |Δ|=[0.0, 28.55]
+[iter-53 trained]   seed=99 same=0.922±0.184 cross=0.059±0.121 (n_cues=32, n_pairs=496)
+```
+
+| Seed | Untrained same | Untrained cross | Trained same | Trained cross | Eval-drift L2 (R2→R2) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 1.000 ± 0.000 | 0.058 ± 0.137 | 0.828 ± 0.241 | 0.056 ± 0.123 | 27.08 |
+|  7 | 1.000 ± 0.000 | 0.058 ± 0.134 | 0.891 ± 0.210 | 0.056 ± 0.114 | 24.50 |
+| 13 | 1.000 ± 0.000 | 0.056 ± 0.121 | 0.875 ± 0.220 | 0.062 ± 0.134 | 25.54 |
+| 99 | 1.000 ± 0.000 | 0.062 ± 0.126 | 0.922 ± 0.184 | 0.059 ± 0.121 | 28.55 |
+
+**Aggregate (n = 4 seeds):**
+
+```text
+Untrained: same = 1.000 ± 0.000   cross = 0.058 ± 0.003
+Trained:   same = 0.879 ± 0.039   cross = 0.058 ± 0.003
+Δ same   = −0.121   (attractor erosion — plasticity drifts the
+                     engram between trials of the same cue)
+Δ cross  = +0.000   (no cue-specificity gain — distinct cues land
+                     on equally-overlapping top-3 sets in trained
+                     and untrained)
+Δ-of-Δ   = −0.121   (specificity gain ≪ attractor erosion)
+```
 
 ## Honest reading — direction of Δ same-cue
 
@@ -160,7 +196,88 @@ fragile under continued plasticity.
 
 ## Acceptance status
 
-<!-- @ACCEPTANCE_STATUS@ -->
+### State-reset assertion — PASSED (4/4 seeds)
+
+Untrained `same_cue_mean = 1.000 ± 0.000` on every seed. Full
+`brain.reset_state()` is complete (R1 + R2 + cross-region
+pending queue + traces + V + refractory + eligibility +
+neuromodulator). The L2-equivalent invariant for transient
+state holds.
+
+L2 bit-identity on the untrained arm — PASSED (4/4 seeds).
+The iter-52 weight-stability invariant survives the iter-53
+protocol unchanged for the no-plasticity arm.
+
+### Δ-of-Δ acceptance — FAILED (−0.121)
+
+The aggregate is `Δ-of-Δ = −0.121`: specificity gain (Δ cross
+≈ 0) is dominated by attractor erosion (Δ same = −0.121).
+
+Reading the two axes separately:
+
+1. **Plasticity is alive** in the trained brain. Eval-phase L2
+   drift is **+25 to +29 (R2→R2)** on every seed — plasticity
+   is actively modifying weights during the 32-cue × 3-trial
+   matrix collection. Same-cue Jaccard at 0.879 ± 0.039 (i.e.
+   substantially below 1.0) confirms this drift translates
+   into different decoder responses across trials.
+
+2. **The trained brain has *some* attractor structure** — same-
+   cue at 0.88 ± 0.04 means trial 2 and trial 3 of a given cue
+   share ~88 % of their top-3 words, well above the random
+   floor for two random 3-element samples from a 32-word vocab.
+   So weights did learn *something*; cues land in *some* basin
+   that's at least partially robust to continued plasticity.
+
+3. **The attractors are NOT cue-specific.** Cross-cue is **flat
+   at 0.058 ± 0.003** in both arms — distinct cues' top-3 sets
+   overlap at exactly the same rate as on a fresh forward-only
+   brain. Training redistributes weight mass and creates per-
+   cue basins, but those basins are not aligned with cue
+   identity at the decoder layer.
+
+This is a clean, honest negative result for "did teacher-
+forcing produce cue-specific engrams in 16 epochs". It is *not*
+a failure of the iter-53 instrumentation — the metric is doing
+its job, and the state-reset assertion gives it a hard floor of
+trustworthiness. The result is fully consistent with iter-52's
+finding that forward-drive bias dominates the decoder geometry:
+plasticity adds drift-with-some-attractor, but doesn't break
+the cue-uniform forward-projection baseline.
+
+### Implication for iter-54
+
+The cross-cue ≈ 0.058 ceiling on **both** arms is the bottleneck.
+iter-54 has to address cue-specificity at the architecture or
+schedule layer, not at the metric layer. Candidates (in
+roughly increasing-cost order):
+
+- **(i) Decorrelate initial R1 → R2 projections per cue.** The
+  current `wire_forward` uses the same `FAN_OUT` distribution
+  for every cue's R1 cells; if all cues activate roughly the
+  same R2 subset before training, plasticity has no asymmetric
+  signal to amplify. Per-cue topology bias (different
+  presynaptic populations, possibly orthogonal SDR projections)
+  would give STDP a starting point with cue-specific structure
+  to deepen.
+- **(ii) Reward cue-specificity directly.** The current reward
+  signal (`positive_reward_for_correct`) only credits target
+  hits. Add a term that *penalises* sharing top-3 cells across
+  cues within an epoch — i.e. push iSTDP to suppress cells
+  that fire for multiple cues. This is closer to a contrastive
+  predictive coding objective.
+- **(iii) Switch off forward drive partway through training.**
+  The R1 → R2 inter-region drive dominates the response; if
+  training had a "cue-only schedule" final phase where R2
+  recurrent dynamics alone determine the response (`r1r2_gate`
+  → 0), plasticity would have to learn cue-specific recurrent
+  attractors. The `--association-training-gate-r1r2` flag
+  exists; iter-54 could sweep its schedule.
+
+iter-53 should NOT be read as picking among these — it just
+narrows the failure mode. The cross-cue Δ ≈ 0 finding is the
+new "Mess-Frage" of iter-46…52: forward-drive bias is unbroken
+by 16 epochs of teacher-forcing on the current architecture.
 
 ## What iter-53 should NOT be read to claim
 

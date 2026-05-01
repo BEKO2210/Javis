@@ -57,7 +57,19 @@ drift readout instead.
 
 ### Verified — 4 seeds × 16 epochs
 
-<!-- @CHANGELOG_SWEEP_TABLE@ -->
+| Seed | Untrained same | Untrained cross | Trained same | Trained cross | Eval-drift L2 (R2→R2) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 1.000 ± 0.000 | 0.058 ± 0.137 | 0.828 ± 0.241 | 0.056 ± 0.123 | +27.08 |
+|  7 | 1.000 ± 0.000 | 0.058 ± 0.134 | 0.891 ± 0.210 | 0.056 ± 0.114 | +24.50 |
+| 13 | 1.000 ± 0.000 | 0.056 ± 0.121 | 0.875 ± 0.220 | 0.062 ± 0.134 | +25.54 |
+| 99 | 1.000 ± 0.000 | 0.062 ± 0.126 | 0.922 ± 0.184 | 0.059 ± 0.121 | +28.55 |
+
+Aggregate (n = 4 seeds):
+- Untrained: same = 1.000 ± 0.000  cross = 0.058 ± 0.003
+- Trained:   same = 0.879 ± 0.039  cross = 0.058 ± 0.003
+- Δ same   = **−0.121** (attractor erosion)
+- Δ cross  = **+0.000** (no specificity gain)
+- **Δ-of-Δ = −0.121 (acceptance FAILED)**
 
 State-reset assertion held on every untrained arm (4/4 seeds).
 L2 bit-identity held on every untrained arm (4/4 seeds).
@@ -92,7 +104,42 @@ Positive Δ-of-Δ ⇒ specificity gain outpaces erosion ⇒ engrams
 form *and* are cue-specific. Zero or negative ⇒ erosion is
 faster than specificity gain.
 
-<!-- @CHANGELOG_DELTA_OF_DELTA_READOUT@ -->
+**Acceptance: FAILED** (Δ-of-Δ = −0.121).
+
+Reading the two axes separately:
+
+1. **Plasticity is alive in the trained brain.** Eval-phase L2
+   drift is **+25 to +29 (R2→R2)** on every seed; plasticity
+   actively modifies weights during the matrix collection.
+   Same-cue at 0.879 (substantially below 1.000) confirms
+   this drift translates into different decoder responses
+   across trials.
+
+2. **The trained brain has *some* attractor structure.** Same-
+   cue at 0.88 ± 0.04 means trial 2 and trial 3 share ~88 %
+   of their top-3 words, well above the random floor for two
+   random 3-element samples from a 32-word vocab. So weights
+   *did* learn something — cues land in *some* basin that's
+   at least partially robust to continued plasticity.
+
+3. **The attractors are NOT cue-specific.** Cross-cue is **flat
+   at 0.058 ± 0.003** in both arms — distinct cues' top-3 sets
+   overlap at exactly the same rate as on a fresh forward-only
+   brain. Training redistributes weight mass and creates per-
+   cue basins, but those basins are not aligned with cue
+   identity at the decoder layer.
+
+This is a clean negative result for "did teacher-forcing
+produce cue-specific engrams in 16 epochs". Fully consistent
+with iter-52: forward-drive bias dominates the decoder
+geometry, and 16 epochs of teacher-forcing on the current
+architecture has not broken that uniformity.
+
+iter-54 has to address cue-specificity at the architecture or
+schedule layer, not at the metric layer. Candidates documented
+in `notes/53-decoder-relative-jaccard.md` (decorrelated initial
+projections; reward cue-specificity directly; cue-only schedule
+final phase via `--association-training-gate-r1r2`).
 
 ### Methodological lesson
 
