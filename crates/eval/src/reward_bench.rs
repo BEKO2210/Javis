@@ -241,6 +241,41 @@ pub struct RewardEpochMetrics {
     pub theta_exc_mean: f32,
 }
 
+/// Iter-49 sweep modes — three orthogonal interventions on the
+/// iter-48 iSTDP collapse mechanism (notes/48-saturation.md). All
+/// modes share Config 2 as base: `--istdp-during-prediction = true`.
+///
+/// - `WmaxCap`     — symptom: cap inhibitory weight at `w_max = 2.0`
+///   (vs iter-48's 8.0). Removes the structural ceiling against
+///   which iSTDP LTP runs unopposed.
+/// - `APlusHalf`   — dynamic: halve `a_plus` from 0.30 to 0.20
+///   (half-way back to iter-47a's 0.10). Slows wall growth so the
+///   collapse threshold is reached later (or not at all).
+/// - `ActivityGated` — temporal: `a_plus = 0` for the first
+///   `gated_warmup_epochs` (default 2), then ramp linearly to the
+///   full 0.30 over `gated_ramp_epochs` (default 2), full thereafter.
+///   Match the literature pattern "consolidate first, balance later".
+///
+/// `None` reproduces the iter-48 iSTDP exactly (committed defaults).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Iter49Mode {
+    None,
+    WmaxCap,
+    APlusHalf,
+    ActivityGated,
+}
+
+impl Iter49Mode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "iter48-baseline",
+            Self::WmaxCap => "wmax-cap-2.0",
+            Self::APlusHalf => "a_plus-half-0.20",
+            Self::ActivityGated => "activity-gated-ramp",
+        }
+    }
+}
+
 /// Iter-46 teacher-forcing configuration. When attached to a
 /// [`RewardConfig`], the trial schedule switches from "drive cue
 /// then target through R1" (iter-45) to a clean six-phase cycle:
@@ -314,6 +349,18 @@ pub struct TeacherForcingConfig {
     /// still gated by `plasticity_during_prediction`; this flag
     /// only opens iSTDP separately.
     pub istdp_during_prediction: bool,
+    /// Iter-49 sweep mode. Default `None` reproduces iter-48
+    /// behaviour exactly. See [`Iter49Mode`] for the three
+    /// candidate interventions on the iter-48 iSTDP collapse
+    /// (notes/48-saturation.md).
+    pub iter49_mode: Iter49Mode,
+    /// Iter-49 ActivityGated mode: number of warmup epochs in
+    /// which `a_plus = 0`. Default 2.
+    pub gated_warmup_epochs: u32,
+    /// Iter-49 ActivityGated mode: number of ramp epochs after
+    /// warmup, during which `a_plus` rises linearly from 0 to
+    /// the full value. Default 2.
+    pub gated_ramp_epochs: u32,
     /// During the prediction phase only, scale the R1 cue current
     /// by this factor. `1.0` = no gating (default); `0.3` halves
     /// the forward drive so the cue's R2 response is more easily
@@ -350,6 +397,9 @@ impl Default for TeacherForcingConfig {
             debug_trials: 0,
             r1r2_prediction_gate: 1.0,
             istdp_during_prediction: false,
+            iter49_mode: Iter49Mode::None,
+            gated_warmup_epochs: 2,
+            gated_ramp_epochs: 2,
         }
     }
 }
@@ -376,6 +426,9 @@ impl TeacherForcingConfig {
             debug_trials: 0,
             r1r2_prediction_gate: 1.0,
             istdp_during_prediction: false,
+            iter49_mode: Iter49Mode::None,
+            gated_warmup_epochs: 2,
+            gated_ramp_epochs: 2,
         }
     }
     pub const fn enabled() -> Self {
@@ -559,6 +612,43 @@ fn stdp() -> StdpParams {
         w_max: 0.8,
         ..StdpParams::default()
     }
+}
+
+/// Iter-49 mode-aware iSTDP builder. Takes the iter-48 params as
+/// the baseline and applies the per-mode + per-epoch override:
+///
+/// - `None`           → iter-48 params verbatim.
+/// - `WmaxCap`        → `w_max = 2.0` (vs iter-48's 8.0).
+/// - `APlusHalf`      → `a_plus = 0.20` (vs iter-48's 0.30).
+/// - `ActivityGated`  → `a_plus` ramped over `gated_warmup_epochs +
+///   gated_ramp_epochs`. During warmup `a_plus = 0`; during ramp it
+///   rises linearly from 0 to the iter-48 baseline (0.30); thereafter
+///   it stays at the baseline.
+fn istdp_iter49(cfg: &TeacherForcingConfig, epoch: usize) -> IStdpParams {
+    let mut p = istdp(); // iter-48 baseline (a_plus 0.30, tau_minus 8, w_max 8.0)
+    match cfg.iter49_mode {
+        Iter49Mode::None => {}
+        Iter49Mode::WmaxCap => {
+            p.w_max = 2.0;
+        }
+        Iter49Mode::APlusHalf => {
+            p.a_plus = 0.20;
+        }
+        Iter49Mode::ActivityGated => {
+            let warmup = cfg.gated_warmup_epochs as usize;
+            let ramp = cfg.gated_ramp_epochs.max(1) as usize;
+            let baseline = 0.30_f32;
+            p.a_plus = if epoch < warmup {
+                0.0
+            } else if epoch < warmup + ramp {
+                let r = (epoch - warmup) as f32 + 1.0;
+                baseline * r / ramp as f32
+            } else {
+                baseline
+            };
+        }
+    }
+    p
 }
 
 /// Iter-48 iSTDP retune (Vogels et al. 2011 fast-EI-balance):
@@ -1317,7 +1407,11 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     // synapse eligibility tag; without it the modulator setter is a
     // no-op even if the caller flips it on.
     let stdp_params = stdp();
-    let istdp_params = istdp();
+    // Iter-49: iSTDP params now mode-aware. Base = iter-48 baseline
+    // (`istdp()`); each mode overrides per-epoch via `istdp_iter49`.
+    // ActivityGated additionally re-enables iSTDP at the start of
+    // each epoch with the current ramp value.
+    let mut istdp_params = istdp_iter49(&cfg.teacher, 0);
     brain.regions[1].network.enable_stdp(stdp_params);
     brain.regions[1].network.enable_istdp(istdp_params);
     brain.regions[1].network.enable_homeostasis(homeostasis());
@@ -1368,6 +1462,14 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     let mut metrics: Vec<RewardEpochMetrics> = Vec::with_capacity(cfg.epochs);
 
     for epoch in 0..cfg.epochs {
+        // Iter-49 ActivityGated: re-enable iSTDP at the start of the
+        // epoch with the current ramp value. The other modes (None /
+        // WmaxCap / APlusHalf) return the same params on every epoch
+        // so the call is a no-op for them — but it is cheap enough
+        // (one parameter copy) that we don't bother branching.
+        istdp_params = istdp_iter49(&cfg.teacher, epoch);
+        brain.regions[1].network.enable_istdp(istdp_params);
+
         // Build the trial schedule for this epoch: every real pair +
         // every noise pair, shuffled.
         let mut schedule: Vec<(RewardPair, bool)> = corpus

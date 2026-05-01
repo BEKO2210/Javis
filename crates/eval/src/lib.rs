@@ -14,7 +14,7 @@ pub mod wiki_corpus;
 
 pub use reward_bench::{
     default_corpus as default_reward_corpus, render_markdown as render_reward_markdown,
-    run_postmortem_diagnostic, run_reward_benchmark, RewardConfig, RewardCorpus,
+    run_postmortem_diagnostic, run_reward_benchmark, Iter49Mode, RewardConfig, RewardCorpus,
     RewardEpochMetrics, RewardPair, TeacherForcingConfig,
 };
 pub use scale_bench::{Iter44Config, ScaleBrain, ScaleQueryResult, ScaleReport, ScaleSummary};

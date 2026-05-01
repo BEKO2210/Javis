@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use eval::{
     default_reward_corpus, render_reward_markdown, run_postmortem_diagnostic,
-    run_reward_benchmark, RewardConfig, TeacherForcingConfig,
+    run_reward_benchmark, Iter49Mode, RewardConfig, TeacherForcingConfig,
 };
 
 fn main() {
@@ -51,6 +51,26 @@ fn main() {
     // modify weights" invariant; STDP and R-STDP stay gated by
     // plasticity_during_prediction either way).
     let istdp_in_prediction = flag(&args, "--istdp-during-prediction");
+
+    // Iter-49 sweep mode. Three orthogonal interventions on the
+    // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
+    //   wmax-cap       — symptom: iSTDP w_max 8.0 → 2.0
+    //   a-plus-half    — dynamic: iSTDP a_plus 0.30 → 0.20
+    //   activity-gated — temporal: a_plus = 0 first 2 epochs, ramp
+    //                    over the next 2, then full
+    //   none / absent  — iter-48 baseline (default)
+    let iter49_mode = match parse_string(&args, "--iter49-mode").as_deref() {
+        Some("wmax-cap") => Iter49Mode::WmaxCap,
+        Some("a-plus-half") => Iter49Mode::APlusHalf,
+        Some("activity-gated") => Iter49Mode::ActivityGated,
+        Some("none") | None => Iter49Mode::None,
+        Some(other) => {
+            eprintln!(
+                "--iter49-mode must be one of: none | wmax-cap | a-plus-half | activity-gated (got '{other}')",
+            );
+            std::process::exit(2);
+        }
+    };
     // Iter-47a postmortem mode: trains for `train_epochs` epochs with
     // the configured teacher arm, then runs a single read-only
     // diagnostic trial that captures per-step prediction-phase
@@ -91,6 +111,9 @@ fn main() {
         debug_trials,
         r1r2_prediction_gate: r1r2_gate,
         istdp_during_prediction: istdp_in_prediction,
+        iter49_mode,
+        gated_warmup_epochs: 2,
+        gated_ramp_epochs: 2,
     };
 
     let corpus = default_reward_corpus();
@@ -115,10 +138,11 @@ fn main() {
     eprintln!(
         "Reward benchmark: pairs={} noise_pairs={} vocab={} epochs={epochs} reps={reps} seed={seed} \
          teacher_forcing={teacher_on} wta_k={wta_k} homeostasis={homeostasis} r1r2_gate={r1r2_gate} \
-         istdp_in_pred={istdp_in_prediction}",
+         istdp_in_pred={istdp_in_prediction} iter49={}",
         corpus.pairs.len(),
         corpus.noise_pairs.len(),
         corpus.vocab.len(),
+        iter49_mode.label(),
     );
 
     let mut output = String::new();
