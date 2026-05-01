@@ -28,7 +28,48 @@ done
 
 ### Verified — phase-length curve
 
-<!-- @CHANGELOG_PHASE_CURVE@ -->
+Aggregate (n = 4 seeds, untrained baseline = 0.459 ± 0.022 in
+all three runs; clamp = 500 nA throughout):
+
+| teacher_ms | Trained cross | std | Δ cross | Δ-of-Δ | paired t(3) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+|  40 | 0.230 | ±0.020 | −0.229 | +0.229 | ≈ −36.3 |
+|  80 | **0.408** | ±0.052 | **−0.051** | +0.051 | ≈ −3.01 (p ≈ 0.06) |
+| 120 | 0.248 | ±0.051 | −0.211 | +0.211 | ≈ −10.05 |
+
+t40 is bit-exact replication of iter-56 c500 (per-seed:
+42=0.242, 7=0.250, 13=0.208, 99=0.220 — identical).
+
+Per-seed trained cross trajectory:
+
+| Seed | t40 | t80 | t120 | 40 → 80 | 80 → 120 | 40 → 120 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 0.242 | 0.434 | 0.317 | **+0.192** (worse) | −0.117 | +0.075 (worse) |
+|  7 | 0.250 | 0.467 | 0.249 | **+0.217** (worse) | −0.218 | −0.001 (tied)  |
+| 13 | 0.208 | 0.354 | 0.233 | **+0.146** (worse) | −0.121 | +0.025 (worse) |
+| 99 | 0.220 | 0.375 | **0.194** | **+0.155** (worse) | −0.181 | **−0.026** (better) |
+
+**Phase-length is a non-monotonic axis with a catastrophic
+dip at t80.** Every seed sees t80 as substantially worse than
+both t40 and t120; t40 vs t120 is a per-seed coin flip (2 seeds
+prefer t40, 1 tied, 1 prefers t120 — seed 99 at t120 = 0.194
+is the global best per-seed value across the entire iter-53 …
+iter-57 chain). Lead-in / clamp ratios under the existing
+`lead_in = (teacher_ms/4).clamp(4, 12)` formula:
+
+| teacher_ms | lead_in | clamp_ms | lead:clamp |
+| ---: | ---: | ---: | --- |
+|  40 | 10 | 30 | 1 : 3   (uncapped)              |
+|  80 | 12 | 68 | 1 : 5.7 (lead-in capped at 12)  |
+| 120 | 12 | 108 | 1 : 9   (lead-in capped at 12)  |
+
+t40 is the only config where lead-in is uncapped — gives STDP
+the cue → target timing asymmetry. At t80 / t120 the lead-in
+is the same (12 ms) but the clamp window stretches; t80 lands
+in a "long enough to push iSTDP/homeostasis past stable, not
+long enough to recover via consolidation" regime; t120's
+longer consolidation (= teacher_ms) apparently lets the system
+re-settle to roughly the t40 level.
 
 State-reset assertion: PASSED on every untrained arm (12/12).
 Decorrelated invariant: PASSED on every brain construction
@@ -36,11 +77,78 @@ Decorrelated invariant: PASSED on every brain construction
 
 ### Honest reading
 
-<!-- @CHANGELOG_HONEST_READING@ -->
+Three layered observations:
+
+1. **Phase-length is non-monotonic with a catastrophic dip at
+   t80.** Doubling teacher_ms (40 → 80) collapses Δ cross from
+   −0.229 to −0.051 (78 % of the signal lost). Tripling
+   (40 → 120) recovers most of t40 (Δ cross −0.211, only
+   +0.018 worse than t40 in aggregate). t80 is uniformly bad
+   on every seed.
+2. **The dip mechanism is plausibly the lead-in / clamp ratio
+   cap.** The lead-in formula caps at 12 ms; at teacher_ms ≥
+   48 ms the lead-in stops scaling while the clamp window
+   keeps growing. t80's 1:5.7 lead:clamp ratio appears to
+   land in a "iSTDP/homeostasis pushed past stable but not
+   long enough to consolidate back" regime; t120's 1:9 ratio
+   plus longer consolidation phase recovers.
+3. **Same-cue stays at exactly 1.000 in 12/12 trained arms;
+   eval-drift L2 *decreases* at higher teacher_ms** (t40
+   ~0.029 → t80 ~0.0022 → t120 ~0.0023). Branch (D) firmly
+   REJECTED — phase length does not unlock attractor-
+   plasticity at eval. Post-training R2 → R2 L2 norm scales
+   with teacher_ms (seed 99: 339.78 → 481.92 → 564.85), but
+   the buildup at t80 is in the *wrong place* (degrades
+   cross-cue) while at t120 it's apparently in a more useful
+   place.
+
+Per Bekos's pre-fixed iter-58 branching matrix:
+  - branch (A) trained cross < 0.18 anywhere: single-seed only (seed 99 t120 = 0.194)
+  - branch (B) trained cross ≈ 0.20 in best, no breakthrough: ✓ secondary
+  - branch (C) trained cross > 0.23 in all configs: ✓ PRIMARY
+  - branch (D) same-cue drops below 1.0: ❌
+
+iter-58 entry: **shift the research question.** All three
+training-axes (epoch / clamp / phase-length) saturate or non-
+monotonically dip near trained cross 0.20. iter-58 should
+investigate what the ceiling *means*, not push it lower.
+
+Recommended Path 1: **geometric vs plastic limit diagnosis.**
+Compute per-cue-pair cross-cue Jaccard and inspect the
+distribution. If concentrated on a small fraction of pairs
+(encoder produces near-identical SDRs), ceiling is a vocab
+artefact. If uniform, it's a plasticity-dynamics floor.
+~5 min code, no new sweep.
+
+Parallel Path 2: **vocab-scaling stress test** (vocab 32 → 64
+at iter-54 best config) to test whether 0.20 is vocab-
+specific. ~30 min.
+
+Noise-injection / cross-topology stays valid as iter-59
+candidate.
 
 ### Methodological lesson
 
-<!-- @CHANGELOG_LESSON@ -->
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a guard is only a guard if its baseline excludes the null.
+iter-52: an analytical null is not an empirical control.
+iter-53: when the literal acceptance direction is bounded by
+construction, derive it from the protocol's mathematical bounds.
+iter-54: when the metric reports a "cleaner" number on a random
+topology than on an architecturally cleaner one, the metric is
+reading something else than what its name suggests.
+iter-55: a learning curve is not a single number; per-seed
+trajectories often reveal a saturation ceiling the aggregate hides.
+iter-56: aggregate monotonicity is not seed-level monotonicity.
+**iter-57: a 3-point sweep is the minimum for a non-monotonic
+axis. iter-57 swept teacher_ms at 40 / 80 / 120 specifically
+because Bekos's spec required it; a more "efficient" 2-point
+sweep (40 + 120 only) would have reported "phase-length is
+roughly neutral, slight regression at 120" and never seen the
+catastrophic dip at 80. Whenever an axis has a plausible
+biological non-linearity (here: the STDP lead-in / clamp
+ratio cap interacting with iSTDP recovery), the sweep needs
+≥ 3 points or the axis's shape is unobservable.**
 
 All eval lib tests still green; clippy `-D warnings` clean
 (no code changes since iter-54).
