@@ -4,6 +4,828 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 53 (decoder-relative Jaccard, Voll-Implementation)
+
+Bekos picked Option B Voll-Implementation off the iter-53.0 smoke
+gate (mean Jaccard = 0.667, informative regime), with cross-cue
+Jaccard added as the second axis. iter-53 is a decoder-relative
+metric that bypasses the forward-drive bias iter-52 surfaced.
+
+### Added — single commit
+
+- `JaccardMetrics`, `JaccardArmResult`, `JaccardSweepResult`
+  public types in `crates/eval/src/reward_bench.rs`.
+- `pub fn run_jaccard_bench(corpus, cfg, seeds)` —
+  trained + untrained × N seeds in one call.
+- `pub fn render_jaccard_sweep(&JaccardSweepResult)` —
+  per-seed table + aggregate Δ-of-Δ.
+- Private helpers: `evaluate_jaccard_matrix` (32-cue × 3-trial
+  collector), `train_brain_inplace` (training without metrics),
+  `run_jaccard_arm` (one seed × one arm).
+- `--jaccard-bench --seeds N1,N2,…` CLI flags in the example.
+- All re-exports plumbed through `crates/eval/src/lib.rs`.
+
+### Protocol — what the metric measures
+
+For every cue in the 32-word vocab, present 3 trials.
+**Full `brain.reset_state()`** between trials (R1 + R2 + cross-
+region pending queue + traces + V + refractory + eligibility +
+neuromodulator), not the previous R2-only reset that the
+iter-53.0 smoke showed produced membrane carry-over.
+
+Drop trial 0 as burn-in. Compute on trial[1] and trial[2]:
+
+- `same_cue_mean` — mean over 32 cues of `Jaccard(trial[1], trial[2])`
+- `cross_cue_mean` — mean over 496 cue pairs of
+  `Jaccard(matrix[i][1], matrix[j][1])` for `i < j`
+
+**Untrained arm** (`epochs = 0`, `no_plasticity = true`):
+plasticity never enabled → deterministic LIF + full reset →
+`same_cue_mean == 1.0` exactly. State-reset assertion panics if
+this invariant is violated. iter-52's L2-norm bit-identity
+check is preserved end-to-end on this arm.
+
+**Trained arm** (cfg as given, plasticity enabled): plasticity
+**stays ON during eval**, per Bekos's spec
+("im trained Run würde Plastizität zwischen Trials variieren,
+was *gewollt* ist"). Membrane state is reset per trial, but
+synapse weights drift between trials → trial 2 depends on trial 1
+*via plasticity, not via membrane state* — exactly the
+dependency Bekos wants to measure. iter-52's L2 invariant is
+deliberately dropped on this arm; pre/post L2 is logged as a
+drift readout instead.
+
+### Verified — 4 seeds × 16 epochs
+
+<!-- @CHANGELOG_SWEEP_TABLE@ -->
+
+State-reset assertion held on every untrained arm (4/4 seeds).
+L2 bit-identity held on every untrained arm (4/4 seeds).
+
+### Honest reading — direction of Δ same-cue
+
+Bekos's literal acceptance criterion was *trained same-cue >
+untrained same-cue, significant*. Under this protocol that
+direction is upper-bounded by construction: untrained = 1.0,
+plasticity-induced drift in trained → trained ≤ 1.0. Trained =
+untrained is impossible to falsify as a learning signal.
+
+The right reading of trained same-cue is therefore not "larger
+than untrained" but **"how close to 1.0 the trained arm
+remains"** — a direct measure of how attractor-like the
+post-training engram is when plasticity continues to act on it.
+Trained → 1.0 = stable engram, robust to continued plasticity.
+Trained → 0 = engram fragile, plasticity drift dominates.
+
+Cross-cue keeps the original direction: trained < untrained =
+specificity rises with training.
+
+The Δ-of-Δ summary number remains the single engram-formation
+indicator:
+
+```text
+Δ-of-Δ = (trained_same − untrained_same) − (trained_cross − untrained_cross)
+       = (specificity gain) − (attractor erosion)
+```
+
+Positive Δ-of-Δ ⇒ specificity gain outpaces erosion ⇒ engrams
+form *and* are cue-specific. Zero or negative ⇒ erosion is
+faster than specificity gain.
+
+<!-- @CHANGELOG_DELTA_OF_DELTA_READOUT@ -->
+
+### Methodological lesson
+
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a guard is only a guard if its baseline excludes the null.
+iter-52: an analytical null is not an empirical control.
+**iter-53: when the literal acceptance direction is bounded by
+construction, derive the actual acceptance from the protocol's
+mathematical bounds — and document the derivation.**
+
+The state-reset assertion (untrained `same_cue_mean == 1.0`) is
+the iter-53 equivalent of iter-52's L2-norm bit-identity check.
+Both catch a class of "the protocol leaked" bug that the
+visible config would have hidden.
+
+All eval lib tests still green; clippy `-D warnings` clean.
+
+## Unreleased — Iteration 52 (untrained-brain control)
+
+Bekos's iter-52 spec: `--no-plasticity` toggle that gates every
+plasticity enable, plus L2-norm bit-identity sanity assertion,
+plus 4-seed × 16-epoch run on `--iter46-baseline --no-plasticity`,
+plus pre-fixed iter-53 branching matrix.
+
+### Added — single commit
+
+- `TeacherForcingConfig.no_plasticity` field + CLI flag
+  `--no-plasticity` (alias `--frozen-weights`).
+- Plasticity-enable gate at three sites the L2 sanity caught:
+  (1) run-time setup, (2) per-epoch ActivityGated re-enable,
+  (3) mid-trial disable/enable cycles in the Arm-B-diagnostic
+  block AND the epoch readout.
+- `brain_synapse_l2_norms(brain)` helper.
+- Run-start log + run-end `assert!` of bit-identical L2 norms
+  under `no_plasticity = true`.
+
+### Verified — 4 seeds × 16 epochs, all bit-identical L2
+
+```
+seed | initial L2  | post L2     | match | top-3 mean
+ 41  | 136.5766…   | 136.5766…   |  ✓    | 0.0413
+ 42  | 136.0980…   | 136.0980…   |  ✓    | 0.0225
+ 43  | 136.3604…   | 136.3604…   |  ✓    | 0.0375
+ 44  | 136.5731…   | 136.5731…   |  ✓    | 0.0563
+```
+
+Aggregated over 64 epoch-samples:
+- Untrained top-3 mean: **0.039** (95 % CI [-0.008, 0.086])
+- iter-51 trained top-3 mean: **0.107** (95 % CI [0.069, 0.145])
+- Δ trained − untrained: **0.068, ~2.2 σ**
+- Untrained vs random 0.094: **−0.055, ~2.3 σ — significantly BELOW random**
+
+### Honest reading — Mess-Frage per Bekos's matrix
+
+The first L2-norm assertion failure on the initial run caught a
+9× weight blowup that the visible config would have hidden:
+mid-run `disable_stdp` / `enable_stdp(stdp_params)` cycles in
+the Arm-B-diagnostic and epoch-readout blocks were silently
+turning plasticity back on. After all three gate sites closed,
+all 4 seeds produced bit-identical pre/post L2 norms.
+
+Two new statistical readings emerge:
+
+1. **Plasticity is doing something measurable.** Trained 0.107
+   vs untrained 0.039 is a real Δ at ~2.2 σ. iter-51's
+   "indistinguishable from chance" was too conservative — it
+   compared trained to an analytical random model, not to an
+   empirical decoder-on-fresh-brain control.
+2. **The decoder has a bias against the correct target on a
+   fresh brain.** Untrained top-3 sits at 0.039 — significantly
+   *below* the 0.094 random baseline. With `r2_active = 180`
+   in the untrained brain (vs 145 trained), the fingerprint
+   dictionary is dominated by a uniform forward-projection
+   pattern; `decode_top` returns the same alphabetic-tiebreak
+   "default" set on every cue, almost never including the
+   correct target.
+
+Per Bekos's pre-fixed branching matrix:
+
+| Untrained top-3 | Branch | This data |
+| --- | --- | :-: |
+| ≈ 0.107 (CI overlap) | Architecture inert | ❌ |
+| ≤ 0.085 | **Measurement question** | **✓** (0.039 ≪ 0.085) |
+| ≥ 0.13 | Sign question | ❌ |
+
+### iter-53 implication — decoder-relative readout, NOT new mechanism
+
+iter-53 should NOT:
+- Build new architecture (the brain is doing something).
+- Sweep plasticity parameters (real but small lift; no
+  parameter is going to 10× the 0.068 Δ).
+- Multi-seed power-analyse trained alone (the trained-vs-
+  untrained Δ is the relevant signal, not a tighter trained-
+  alone CI).
+
+iter-53 SHOULD: replace top-3-against-fingerprint with a
+decoder-relative metric that doesn't degrade on highly
+correlated dictionaries. Two candidates, both ~30 min code:
+(a) per-trial trained-minus-untrained Δ; (b) trial-to-trial
+Jaccard consistency on 3× repeated cues.
+
+### Methodological lesson
+
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a regression guard is only a guard if its baseline
+excludes the null.
+**iter-52: an analytical null hypothesis is not the same as
+an empirical untrained control. Use the control whenever the
+decoder can have a bias.**
+
+The L2 sanity assertion that caught the 9× blowup on the first
+run was the single most leveraged 10 lines of diagnostic code
+in the whole iter-44…52 chain.
+
+All 9 eval lib tests still green; clippy `-D warnings` clean.
+
+## Unreleased — Iteration 51 Schritt 1 (Arm B saturation)
+
+Bekos protocol for iter-51 had three steps; Schritt 1 was a
+single 16-epoch run with `--iter46-baseline` to answer "is 0.19
+a stable operating point, the start of a learning curve, or a
+metastable transient?". No code change, no new commit
+infrastructure beyond the iter-50 flag.
+
+### Verified — `--epochs 16 --reps 4 --iter46-baseline`
+
+```
+Arm B (R-STDP) top-3 trajectory:
+Epoch:   0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
+top-3: 0.19 0.12 0.06 0.06 0.12 0.06 0.12 0.12 0.19 0.19 0.06 0.06 0.12 0.06 0.06 0.12
+```
+
+**top-3 mean = 0.107**, oscillates 0.06 ↔ 0.19 with no
+monotone trend. `top-1 = 0.00 every epoch`.
+
+### The hard read — `0.19` is noise, not a learning signal
+
+- Random baseline (3/32) = **0.094**
+- Arm B 16-epoch mean = **0.107**
+- Per-epoch Bernoulli StdDev with `n = 16` ≈ **0.077**
+- 95 % CI for the mean: **[0.069, 0.145]**
+- **Random 0.094 sits inside the CI.**
+
+Arm B is **statistically not distinguishable from chance** on
+the top-3 metric. The 0.19 hits in epochs 0, 8, 9 are noise
+peaks of a chance-level distribution.
+
+Secondary metrics confirm:
+- `mean reward ≈ −0.60` vs random expectation `−0.68` —
+  marginally less negative, ≈ 5–10 % "doing something" gap.
+- `r2_active = 145` stable across all 16 epochs (no learning
+  trajectory in cell counts).
+- `tgt_hit_mean = 2.4–2.8` vs random expectation
+  `145 × 30/1400 = 3.10` — sub-random throughout.
+
+### Implication — iter-52 entry, NOT Bekos's Schritt 2/3
+
+The iter-51 plan presupposed `0.19` was a real signal and asked
+"ceiling vs starting point". Data answers: **neither**. Sweeping
+parameters against a chance-level baseline is a coin-flip with
+extra steps.
+
+iter-52 entry should **statistically validate that any learning
+exists at all** before any mechanism work:
+
+1. **Multi-seed Arm B** (~ 30 min): seeds 41–45, 16 epochs
+   each. With 80 epoch-samples, SE of mean drops to ~0.009;
+   `top-3 mean > 0.11` would be 2 σ above chance.
+2. **Untrained-brain control** (~ 5 min): forward-projection
+   + random recurrent, no plasticity. If `top-3 ≈ 0.107` too,
+   the chain has been measuring the forward baseline since
+   iter-44.
+3. **Trial-to-trial consistency** (~ 30 min code): same cue
+   3×, Jaccard similarity of top-3 sets. Under chance ≈ low,
+   under learning ≈ high. One new metric, decoder-relative,
+   meaningful in BOTH paths.
+
+### Methodological lesson
+
+iter-50: "save the simplest working configuration as a
+regression guard."
+iter-51: **"a regression guard is only a guard if its baseline
+is statistically distinguishable from the null."**
+
+The whole iter-44…50 chain measured against `top-3 = 0.19`
+without ever testing whether that was above chance. Five
+iterations of methodology against an unverified baseline.
+
+This isn't a failure of methodology — Bekos's protocol forced
+exactly the 16-epoch reproduction that revealed the statistical
+situation. But it sharpens what "baseline" requires before it
+counts as evidence: a confidence interval that excludes the
+null.
+
+All 9 eval lib tests still green; clippy `-D warnings` clean.
+No code change in this iter — pure data.
+
+## Unreleased — Iteration 50 (Arm B reproduction)
+
+Bekos diagnostic: before the fourth consecutive parameter sweep
+(STDP magnitude, by iter-49 elimination) or any architecture
+extension (Pfad 2 bridge), reproduce iter-46 Arm B's reported
+top-3 = 0.19 on the current branch code. The data point
+unaddressed for 5 iterations: Arm B's 0.19 is **3× the random
+baseline** and **3× higher than every selectivity-positive arm
+in iter-47/48/49**.
+
+### Added — single commit
+
+- `--iter46-baseline` CLI flag + `TeacherForcingConfig.iter46_baseline`
+  field. When set, simultaneously reverts at runtime:
+  * `INTER_WEIGHT 1.0 → 2.0`
+  * `R2_INH_FRAC 0.30 → 0.20`
+  * `iSTDP a_plus 0.30 → 0.10`, `tau_minus 8 → 30 ms`
+  * Skips `enable_intrinsic_plasticity` (Diehl-Cook OFF)
+  * Forces `iter49_mode = None`
+- `target_r2_map` is now built unconditionally so the iter-47/48/49
+  sparsity metrics (`selectivity_index`, `target_hit_pre_teacher_*`)
+  are populated in the no-teacher Arm B path too.
+- Per-trial plasticity-OFF cue-only diagnostic sample after each
+  rep in the no-teacher branch — collects `active_samples` and
+  `target_hit_samples` for the sparsity-metric calculation.
+
+### Verified — `--epochs 4 --reps 4 --iter46-baseline`
+
+| Arm | top-3 epoch 0 | best top-3 | mean reward | selectivity |
+| --- | ---: | ---: | ---: | ---: |
+| **Arm B (R-STDP, no teacher)** | **0.19** ✓ | **0.19** | **−0.59** | −0.009 |
+| Arm A (pure STDP) | 0.00 | 0.06 | 0.00 | −0.008 |
+
+| Comparison: same 4 epochs, current iter-49 defaults |
+| --- |
+| iter-48 Config 1 (teacher on, current code): top-3 = 0.06 |
+| iter-48 Config 2 (+ istdp-during-prediction):  top-3 = 0.06 |
+
+### Outcome — (b) with critical nuance
+
+**top-3 = 0.19 reproduces in epoch 0 of Arm B.** Code drift
+hypothesis (c) **falsified**. But the iter-47/48/49 sparsity
+metrics show negative selectivity in Arm B — and a numerical
+sanity check shows why: the canonical hash R2 SDR (used as the
+ground-truth set for selectivity) is **never causally activated
+in the no-teacher path**. The "expected target_hit under uniform
+random firing" with `r2_active = 173` is `173 × 30/1400 = 3.71`;
+the observed 3.00 sits *below* random expectation. Negative
+selectivity in Arm B is not a learning signal — it's the
+chance result of comparing an arbitrary hash subset against
+unrelated firing.
+
+### Mechanistic explanation (why teacher-forcing is *worse* here)
+
+Two contributing causes:
+
+1. **Phase budget**: Arm B drives `cue + target` together for
+   ~70 ms of overlapping pre/post coincidences per rep
+   (`CUE_LEAD_MS = 40` + `OVERLAP_MS = 30` + `TARGET_TAIL_MS = 30`).
+   The 6-phase teacher schedule has only `teacher_ms = 40 ms`
+   of plasticity-on coincidence — less than half.
+2. **Trivial-learning trap**: the 250 nA R2-clamp activates
+   target cells *directly*. STDP then learns "when clamp is on,
+   target cells fire" — a tautology, not a cue→target
+   association.
+
+### Implications for iter-51
+
+**Ruled out by data:**
+- "Raise STDP a_plus" sweep on iter-49 defaults (would optimise
+  against a metric that's now known to be meaningless in the
+  no-teacher path that actually performs better)
+- Pfad-2 bridge architecture (premature; baseline is unsolved)
+
+**Ruled in:**
+- **Iter-51 = reductive Arm B parameter study**: vary
+  `reps_per_pair`, `w_max`, R-STDP `eta` one-at-a-time, measure
+  top-3 (the metric that reads in this path) over 16 epochs.
+  Find out whether 0.19 is a ceiling or a starting point.
+- **Replace `selectivity_index`** with a decoder-relative
+  measurement that's meaningful in BOTH paths (e.g. "top-3
+  against the per-epoch fingerprint dictionary") before
+  trusting it for further architectural decisions.
+
+### Methodological lesson (notes/50, full version)
+
+Five iterations of clean methodology optimised against
+`selectivity_index` in arms where the metric is structurally
+meaningless. The simplest working configuration (Arm B) was
+documented and discarded in iter-46 instead of being saved as a
+regression guard. Top-3 quietly held at 0.06 across iter-47/48/49
+while Arm B was always at 0.19 — invisible because we stopped
+running it.
+
+All 9 eval lib tests still green; clippy `-D warnings` clean.
+
+## Unreleased — Iteration 49 (iSTDP bounds & schedule sweep)
+
+3-point parallel sweep on the *under-tuned* side of the iter-48
+collapse boundary, three orthogonal axes against the same
+attractor (Bekos protocol from notes/48-saturation, end). All
+three under Config 2 base (--istdp-during-prediction); same
+pre-fixed acceptance as iter-48 phase A:
+
+> sustained selectivity > 0 across epochs 4-16
+> AND mean target_hit at epoch 16 > mean target_hit at epoch 4
+> NO magnitude criterion — testing collapse-survival only.
+
+### Added — commit 5ba5c25
+
+- `Iter49Mode` enum (`None | WmaxCap | APlusHalf | ActivityGated`),
+  re-exported.
+- `TeacherForcingConfig.iter49_mode` + `gated_warmup_epochs` (2)
+  + `gated_ramp_epochs` (2). Default `None` reproduces iter-48.
+- `istdp_iter49(cfg, epoch)` — mode + epoch aware iSTDP builder.
+- `run_reward_benchmark` calls `enable_istdp(...)` at the start
+  of each epoch with the current value (no-op for stable modes,
+  ramped for ActivityGated).
+- CLI: `--iter49-mode {none|wmax-cap|a-plus-half|activity-gated}`.
+
+### Verified — three sweeps × 16 epochs each, full per-epoch tables in notes/49
+
+| Sweep | Mechanism | Peak sel | Collapse epoch | Steady-state | Acceptance |
+| --- | --- | ---: | ---: | ---: | :-: |
+| **A: WmaxCap** (`w_max 8.0 → 2.0`) | symptom | -0.0080 | n/a (never positive) | -0.038 | **0/3** |
+| **B: APlusHalf** (`a_plus 0.30 → 0.20`) | dynamic | +0.0184 | epoch 5 | -0.014 | **0/3** |
+| **C: ActivityGated** (a_plus = 0 first 2 ep, ramp 0→0.30) | temporal | +0.0029 | n/a (lock) | +0.003 | 3/3 (artifact) |
+
+### Honest reading
+
+**0 out of 3 sweeps produce a positive learning regime** by any
+meaningful definition.
+
+- A weakens iSTDP suppression structurally → r2_active blows up
+  to 100-119 (over [25,70] band), tgt_hit absolute is HIGHER
+  than iter-48 (2.31 vs 1.34) but selectivity is WORSE. **Bekos's
+  60 %-confidence WmaxCap hypothesis falsified.**
+- B has the same trajectory shape as iter-48 — slightly higher
+  peak, IDENTICAL collapse epoch (5). Halving a_plus delays
+  nothing.
+- C produces an entirely DIFFERENT failure mode: warmup with
+  no iSTDP lets STDP saturate E→E unopposed → r2_active locks
+  at **1400 (= entire R2-E pool, every cell fires every trial)**
+  → selectivity ≈ +0.003 trivially passes the magnitude-free
+  acceptance but is pure noise around uniform activity.
+
+The diagnostic value: **three distinct failure modes from three
+orthogonal axes of iSTDP tuning. None work.** This is information
+no single experiment could have produced.
+
+### Synthesis — iter-50 hypothesis (by elimination)
+
+**iSTDP is not the primary lever.** The 15× rate asymmetry
+between STDP `a_plus = 0.020` and iSTDP `a_plus = 0.30` (and
+10× in `w_max`: 0.8 vs 8.0) means excitatory plasticity cannot
+form selective engrams faster than iSTDP suppresses or saturates
+the network. iter-50 candidate: **raise STDP `a_plus` (0.020 →
+0.060) and/or `w_max` (0.8 → 2.0)** so E→E selective growth
+outpaces iSTDP inhibition.
+
+### Methodological note
+
+Sweep C revealed the iter-49 acceptance criteria need a
+saturation guard for iter-50:
+`r2_active_pre_teacher_mean < 0.5 × |R2_E|` at epoch 16
+(< 700 cells). Catches "trivially saturated" without
+re-introducing magnitude pressure.
+
+iter-49 infrastructure (Iter49Mode + epoch-aware iSTDP) stays
+in the repo as an A/B platform — the diagnostic value of
+"which axis fails how" doesn't disappear because no axis
+succeeded.
+
+## Unreleased — Iteration 48 phase A (saturation postmortem)
+
+Bekos protocol from notes/48-istdp-tightening: pre-fixed 3-of-3
+saturation acceptance, 16 epochs, both configs, no code change,
+~5 min wallclock per config. Question: is iter-48's selectivity
+flip the start of a learning curve (⇒ B1: η-lift) or a
+metastable transient (⇒ Postmortem)?
+
+### Verified — full 16-epoch curves, both configs (notes/48-saturation.md)
+
+Identical trajectory in both configs:
+- Epochs 0–4: monotone selectivity rise to peak (Config 1
+  +0.0172 epoch 2 / Config 2 +0.0144 epoch 4), target_hit
+  reaches 1.0–1.3.
+- Epoch 5: hard collapse — selectivity → −0.006 to −0.008,
+  target_hit → 0.12, r2_active drops by ~50%.
+- Epochs 6–15: stable negative steady-state (Config 1 ≈
+  −0.012, Config 2 ≈ −0.008). w̄ stable at ~1.40 throughout,
+  wmax = 8.00 throughout, θ_E ≈ 0.003 mV / θ_I ≈ 0.004 mV
+  (operationally invisible — same as iter-47a-pm).
+
+| Acceptance | Config 1 | Config 2 |
+| A1: > 0 in ≥ 12/16 | 4/16 ❌ | 4/16 ❌ |
+| A2: epoch 13–16 ≥ 1–4 mean | ❌ | ❌ |
+| A3: target_hit > 1.5 at epoch 13–16 | 0.13 ❌ | 0.13 ❌ |
+| Total | 0/3 | 0/3 |
+
+### Honest reading
+
+The iter-48 selectivity flip is a **metastable transient**, not
+a learning curve. But it survives the postmortem as a real
+qualitative finding: 4 consecutive positive-selectivity epochs
+in BOTH configs at +0.012 to +0.017 (a regime change that no
+iter-44/45/46/47a configuration ever produced).
+
+The collapse mechanism is **iSTDP cumulative over-inhibition**,
+diagnostically distinct from any prior failure mode:
+- NOT weight runaway (w̄ stable across 16 epochs)
+- NOT cascade (r2_active DROPS at collapse, doesn't explode)
+- NOT Diehl-Cook over-correction (θ values flat through collapse)
+
+The iter-48 iSTDP parameters sit on the **over-tuned side** of
+a collapse boundary. iter-49 should explore the under-tuned
+side, not push further along the iter-48 axis. Three small,
+parallel candidate experiments (each ~5 min smoke), all in
+notes/48-saturation.md:
+
+1. iSTDP w_max 8.0 → 2.0 (cap the wall growth)
+2. iSTDP a_plus 0.30 → 0.20 (half-way back to iter-47a)
+3. Activity-gated iSTDP (a_plus = 0 for first 2 epochs, then
+   ramp — match the literature pattern "consolidate first,
+   balance later")
+
+Pre-fixed iter-49 acceptance: sustained selectivity > 0 across
+epochs 4–16, AND mean target_hit at epoch 16 > mean target_hit
+at epoch 4. No magnitude criterion yet — we are testing for
+collapse-survival, not for top-3 lift.
+
+Anomaly note from iter-48 phase 1 also resolved: Phase 3
+plasticity (--istdp-during-prediction) is *almost* but NOT
+strictly redundant. Through epoch 3 both configs are identical
+to 4 decimals; epoch 4+ they diverge slightly (Config 2 has
+tighter sparsity and softer collapse). The CLI flag stays as
+an A/B knob.
+
+## Unreleased — Iteration 48 (iSTDP-tightening, Vogels 2011)
+
+Direct response to the iter-47a postmortem (commit 432cbee),
+which ruled out k-WTA / Diehl-Cook tuning and ruled in tighter
+iSTDP. Three atomic commits + 4-epoch acceptance smoke; per
+Bekos protocol acceptance criteria fixed before phase 1.
+
+### Added
+
+- Commit `4bfacc0` — iSTDP retune for fast EI balance:
+  `R2_INH_FRAC: 0.20 → 0.30`, `IStdpParams.tau_minus: 30 → 8 ms`,
+  `IStdpParams.a_plus: 0.10 → 0.30`. INTER_WEIGHT and
+  IntrinsicParams unchanged so iter-48 isolates the iSTDP variable.
+- Commit `bdee598` — `--istdp-during-prediction` A/B flag
+  (`TeacherForcingConfig.istdp_during_prediction`, default `false`).
+  Splits iter-46's plasticity gate so iSTDP can run during the
+  prediction phase independently of STDP / R-STDP.
+- Commit `de5771c` — three new `RewardEpochMetrics` fields:
+  * `r2_active_pre_teacher_p99` — 99th percentile of per-trial
+    prediction-phase active counts. Catches avalanche tail trials
+    that p90 hides. Iter-48 acceptance criterion `< 50`.
+  * `theta_inh_mean` / `theta_exc_mean` — Diehl-Cook θ split by
+    neuron kind. Diff `θ_I − θ_E` is the iSTDP-over-correction
+    early warning.
+  * `intrinsic_mean_by_kind` helper, reuses `percentile_u32`
+    from iter-47a.
+
+### Verified — Phase 1 smoke, 4 epochs × 2 configs, seed 42
+
+| Criterion | Config 1 (default) | Config 2 (`--istdp-during-prediction`) |
+| --- | :-: | :-: |
+| `selectivity_index > 0.0` | **+0.0142 ✅** | **+0.0142 ✅** |
+| `target_hit_mean > 5` | 1.23 ❌ | 1.06 ❌ |
+| `p99(active) < 50` | 79 ❌ | 61 ❌ |
+| **Total** | **1.5 / 3** | **1.5 / 3** |
+
+Per protocol: not 3-of-3 ⇒ no Phase 2 run, no speculative pivot,
+pause and document.
+
+### Honest reading
+
+The iSTDP retuning hypothesis is **directionally confirmed by data**:
+**selectivity flipped from negative to positive for the first time
+in the iter-44/45/46/47/48 chain** (iter-46 sat at -0.04, iter-47a
+at -0.045 after collapse, iter-48 at +0.014 stable across three
+consecutive epochs in both configs). `r2_active_pre_teacher_mean`
+is in the [25, 70] band across all four epochs in both configs;
+no cascade, p99 below 110 even on worst trial vs. iter-47a's
+1599. iSTDP successfully caught the runaway recurrent dynamic.
+
+But target_hit_mean ≈ 1 (vs. criterion 5) and p99 ≈ 60–80 (vs.
+criterion 50) both miss; top-1/top-3 stay at chance because
+target_hit ≈ 1 cannot dominate a 32-entry decoder. The right
+cells are biased correctly; their absolute amplitude is still
+small.
+
+Open follow-ups for iter-49 (deliberately unanswered, per
+protocol):
+
+- Saturation at 16 epochs — does the +0.014 selectivity stabilise,
+  drift up, or collapse as iter-47a's transient peak did?
+- Why is `target_hit_mean ≈ 1` so far below the 30-cell clamp
+  target? R-STDP `eta` lift, longer teacher phase, or per-pair
+  p99 to detect bistable pairs all fit the same diagnostic
+  budget.
+
+Full per-epoch tables, both configs, in
+`notes/48-istdp-tightening.md`. All 9 eval lib tests still green;
+clippy `-D warnings` clean across the workspace.
+
+## Unreleased — Iteration 47a postmortem (saturation + cascade + θ effect size)
+
+Three diagnostic questions left after iter-47a-2's acceptance
+sweep (notes/47a) — answered with explicit instrumentation
+*before* writing iter-48 code, per Bekos's protocol:
+"lieber eine Iteration verlieren an saubere Diagnose, als drei
+Iterationen an spekulative Architekturänderungen".
+
+### Added (commit pending)
+
+- `drive_with_r2_clamp_traced(...)` — parallels
+  `drive_with_r2_clamp` but records per-step R2-E spike count
+  and per-step canonical-target hit count. Used only on the
+  postmortem path; hot training loop untouched.
+- `intrinsic_stats(brain, r2_e_set)` returns
+  `(mean, std, min, max, frac > 1 mV)` of `Network.v_thresh_offset`.
+- `run_postmortem_diagnostic(corpus, cfg, train_epochs)` —
+  trains for `train_epochs`, prints per-epoch θ + weight stats,
+  then runs ONE read-only diagnostic trial that captures the
+  prediction-phase per-step trace.
+- CLI: `--debug-cascade` switches to the postmortem path,
+  `--postmortem-train N` controls epoch count (default 4).
+
+### Verified (3 questions, full data in notes/47a-postmortem.md)
+
+**(a) Saturation test — INTER_WEIGHT = 1.0 over 16 epochs**:
+selectivity does NOT asymptote at zero and does NOT pass through.
+It approaches zero in epoch 3 (-0.0005, target_hit 2.59), then
+**collapses** in epochs 5-15 to ≈ -0.045 with target_hit 0.08.
+The mechanism is partially right then structurally unstable
+(catastrophic interference; the very cells that learn get
+suppressed).
+
+**(b) Cascade pattern at INTER_WEIGHT = 0.7**:
+12 001 R2-E spikes in 20 ms prediction window, max 219 cells/step;
+**early-vs-late ratio = 0.97** (NOT onset-burst, would be > 2.0);
+trace oscillates between ≈ 10 and ≈ 200 cells/step (synchronised
+recurrent bursting / neuronal avalanche). 0 canonical-target
+cells fire in the entire 20 ms.
+
+**(c) θ effect size**:
+At INTER_WEIGHT = 1.0, θ_mean = 0.05 mV, max = 0.86 mV,
+frac > 1 mV = 0.000 over 4 epochs — i.e. **0.3 % of the 15 mV LIF
+swing**, operationally invisible. At INTER_WEIGHT = 0.7, epochs
+0-2 identical (≈ 0.03 mV), then in epoch 3 (cascade)
+**θ_mean jumps 95× to 2.84 mV** with 99.9 % of cells > 1 mV —
+Diehl-Cook is **reactive after the cascade, not preventive**.
+
+### Iter-48 architecture, data-driven
+
+The iter-47-decision-note's default fallback (k-WTA per step) is
+**ruled out**: spike volume at 0.7 is oscillatory, not
+onset-burst; per-step k-WTA shaves peaks but does not remove the
+recurrent imbalance that drives the avalanche.
+
+The data point unambiguously at **tighter iSTDP (Vogels 2011)**
+for fast EI balance:
+- `R2_INH_FRAC: 0.20 → 0.30` (more inhibition)
+- `IStdpParams.tau_minus: 30 ms → 8 ms` (fast response)
+- `IStdpParams.a_plus: 0.10 → 0.30` (stronger LTP on silent E
+  targets)
+- Optional: enable iSTDP during prediction (CLI flag for A/B)
+- Keep INTER_WEIGHT = 1.0; Diehl-Cook stays as a tie-breaker
+  but is not the primary stabiliser.
+
+Acceptance criteria for iter-48 phase 1 to be fixed pre-run:
+selectivity > 0.0 AND target_hit_mean > 5 AND max per-step active
+< 50 after 4 epochs.
+
+## Unreleased — Iteration 47a (forward-drive scaling + adaptive threshold)
+
+Iter-46 ended with `clamp_hit_rate = 1.00` but
+`correct_minus_incorrect_margin ∈ [-0.06, -0.03]`: the teacher chain
+was alive but recurrent learning had no fair shot against the R1 → R2
+forward drive (90–180 active R2 cells per cue vs. 30 canonical
+target cells). Iter-47a tests the literature-grounded fix
+(Brunel-style INTER_WEIGHT scaling + Diehl-Cook adaptive threshold)
+through a sequential 4-epoch sweep with explicit, pre-fixed
+acceptance criteria.
+
+### Added (commit `99540d0`)
+
+- `INTER_WEIGHT 2.0 → 1.0` (after sweep evidence; see notes/47a).
+- `enable_intrinsic_plasticity(intrinsic())` on R2 with the
+  Diehl-Cook parameter set (`alpha_spike = 0.05, tau = 2000 ms,
+  target = 0, beta = 1, offset_max = 5`). Mechanism existed since
+  iter-44; iter-47 wires it into the harness.
+- `TrialOutcome.pred_target_hits` — counts canonical-target
+  neurons that fired during the prediction phase.
+- 5 new `RewardEpochMetrics` fields:
+  `r2_active_pre_teacher_{mean,p10,p90}`,
+  `target_hit_pre_teacher_mean`, `selectivity_index`.
+- `render_markdown` emits a second per-arm table with these.
+- `percentile_u32` helper.
+
+### Verified — sweep, 16 + 16 pairs, vocab 32, seed 42, 4 epochs
+
+| INTER_WEIGHT | r2_act mean | r2_act p10/p90 | tgt_hit | selectivity | margin |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.5 | 0.8 | 0 / 3 | 0.00 | -0.0005 | -0.01 |
+| **1.0** | **139** | 88 / 165 | 2.59 | -0.0005 | -0.02 |
+| 0.7 | 507 (cascade) | 8 / 1599 | 9.38 | -0.0047 | -0.02 |
+
+Acceptance criteria (4-of-4): no sweep point reached ≥ 3/4. The
+**0.7 bistability** (epochs 0-2 stable at ~10 cells, epoch 3
+explodes to mean 507 / p90 1599) is the key second-order finding —
+adaptive θ alone cannot stop a recurrent cascade once STDP-grown
+weights cross threshold.
+
+### Honest reading
+
+The forward-drive-only fix (iter-47a-2) is **insufficient**, but
+the diagnosis is dramatically sharper than iter-46's:
+
+- The forward-drive vs. recurrent-weight balance is in the right
+  order of magnitude at INTER_WEIGHT = 1.0.
+- The Diehl-Cook adaptive-threshold mechanism *does* work at the
+  per-cell level: `target_hit_mean` grew monotonically
+  1.16 → 2.59 over 4 epochs at INTER_WEIGHT = 1.0, and
+  `selectivity_index` rose from -0.022 toward 0.
+- Hard sparsity control (47a-3 = k-WTA) is **necessary, not
+  optional** — the bistability at INTER_WEIGHT = 0.7 makes that
+  explicit. This was identified pre-experiment in the
+  architecture-decision note as a fallback; Phase 1 of 47a-2
+  produced direct evidence that it is the actual next step,
+  not a downstream-iter optimisation.
+
+The iter-47 sparsity metrics (`r2_active_pre_teacher_{mean,p10,p90}`
+and `selectivity_index`) are already wired to A/B-test the k-WTA
+addition (iter-48 entry).
+
+## Unreleased — Iteration 46 (teacher-forcing + R1→R2 gate)
+
+Iter-45 documented honestly that pure STDP and R-STDP both stayed
+at random-baseline accuracy on the 16-pair association task —
+because the cue's R2 representation was almost entirely the
+random R1 → R2 forward projection, leaving recurrent learning no
+room to bias it. Iter-46 attacks the bottleneck directly: during
+training, the canonical target SDR is **clamped into R2** via a
+new dedicated driver, plasticity is gated to keep evaluation
+clean, and the per-trial diagnostics make the chain visible.
+
+### Added (5 atomic commits)
+
+- `TeacherForcingConfig` (`enabled`, `cue_ms`, `delay_ms`,
+  `prediction_ms`, `teacher_ms`, `tail_ms`,
+  `target_clamp_strength`, `plasticity_during_{prediction,teacher}`,
+  `wta_k`, three reward levels, `homeostatic_normalization`,
+  `debug_trials`, `r1r2_prediction_gate`). Default `off()` —
+  every iter-45 path stays bit-identical.
+- `RewardConfig.teacher: TeacherForcingConfig` plus
+  `with_teacher(epochs)` constructor.
+- `canonical_target_r2_sdr(word, e_pool, k, salt)` — deterministic
+  hash → fixed K-of-pool R2-E indices. Stable per `(word, salt)`,
+  no per-trial drift.
+- `drive_with_r2_clamp(brain, cue, r2_target, r1_str, r2_str,
+  dur_ms, r2_e)` — drives R1 forward *and* R2 directly, returns
+  spike counts.
+- Six-phase trial schedule: cue → delay → prediction (plasticity
+  off) → teacher (cue lead-in then clamp) → reward (from
+  prediction, never from teacher) → tail.
+- Anti-causal STDP timing fix: `lead_in = clamp(teacher_ms / 4,
+  4, 12)` ms of cue alone before the clamp — without this fix the
+  clamp's instantaneous target spikes would lead the cue's
+  delayed R2 spikes and STDP would learn the wrong direction.
+- `--association-training-gate-r1r2 [value]` CLI flag (default
+  `1.0`, flag-only sets `0.3`) to attenuate cue current during
+  the prediction phase only — training-only knob, evaluation
+  always runs at full strength.
+- Optional epoch-end homeostatic L2 normalisation of R2 → R2
+  weights, off by default (`--homeostasis`).
+- Extended `RewardEpochMetrics` with `random_top3_baseline`,
+  `mean_rank`, `mrr`, `target_clamp_hit_rate`,
+  `prediction_top3_before_teacher`, `eligibility_nonzero_count`,
+  `r2_recurrent_weight_{mean,max}`, `active_r2_units_per_cue`,
+  `correct_minus_incorrect_margin`, `decoder_micros`.
+- `--debug-trial` prints up to 3 example pair traces per epoch.
+- 2 new unit tests
+  (`canonical_target_r2_sdr_is_stable_and_in_pool`,
+  `drive_with_r2_clamp_makes_target_neurons_fire`); existing
+  smoke (`reward_benchmark_smoke`) still passes ~ 6 s.
+
+### Verified — full sweep, 16 pairs + 16 noise, vocab 32, seed 42
+
+| Arm | Description | Epoch 19 top-3 | margin | clamp | Wall |
+| --- | --- | ---: | ---: | ---: | ---: |
+| A | Pure STDP, no teacher | 0.06 | n/a | n/a | 4 min |
+| B | R-STDP, no teacher | 0.19 | n/a | n/a | 4 min |
+| C | R-STDP + teacher (step 3) | 0.00 | -0.05 | **1.00** | 7 min |
+| C′ | + step-4b lead-in (4 epochs) | 0.06 | -0.03 | **1.00** | 1 min |
+| D | + R1 → R2 gate 0.3 + homeostasis (4 ep) | 0.00 | -0.04 | **1.00** | 1 min |
+
+### Honest reading
+
+The teacher-forcing infrastructure works exactly as designed.
+**`target_clamp_hit_rate = 1.00`** across every teacher epoch —
+the clamp activates every one of the 30 canonical target
+neurons every time. The first run (arm C) produced a clean
+diagnostic surprise: `margin = -0.04` (canonical-target cells
+fire *less* than the rest under cue-only recall) — caused by
+anti-causal STDP timing, fixed in step 4b.
+
+After the timing fix, the margin stays around -0.03 to -0.05.
+With the R1 → R2 prediction gate at 0.3 plus aggressive
+homeostatic L2 normalisation, the *first* non-zero
+`prediction_top3_before_teacher = 0.02` shows up at epoch 3 —
+the right signal in the right direction, but two orders of
+magnitude below the 20 % acceptance threshold and within
+trial-to-trial variance.
+
+**The bottleneck has moved.** Iter-45 said "R1 → R2 dominates
+and we can't measure how much"; iter-46 says "R1 → R2 dominates
+to a magnitude we can now read off the per-trial spike density
+(90–180 active R2-E cells per cue when the canonical target is
+30 cells)". The honest next-iter (47) bottleneck is **the
+absolute scale of R1 → R2 vs R2 → R2**:
+
+- Reduce `INTER_WEIGHT` from 2.0 to 0.5 so STDP-grown weights
+  actually compete with forward drive.
+- Add an explicit association-bridge region between R1 and R2.
+- Make the R1 → R2 path itself learnable so teacher reward can
+  shape the input projection, not only the recurrent loop.
+
+The iter-46 harness is the platform on which any of those can
+be A/B-tested against the same scoring contract — `notes/46`
+has the full chain of measurements, the per-arm tables, and the
+diagnostic stack.
+
 ## Unreleased — Iteration 45 (reward-aware pair-association harness)
 
 ### Added

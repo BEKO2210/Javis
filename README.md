@@ -90,6 +90,61 @@ the new topology. Updated cross-bleed and recall numbers are in
 [`notes/43-topology-scaling.md`](notes/43-topology-scaling.md) once the
 benchmark run completes.
 
+### What changes in iter 47a (this branch)
+
+The iter-46 negative-margin diagnosis identified the R1 → R2 forward
+drive as the dominant factor in the cue's R2 response. Iter-47a tests
+the literature-grounded fix (Brunel scaling + Diehl-Cook adaptive
+threshold) through a sequential 4-epoch sweep with pre-fixed
+acceptance criteria. Result, on the same 16 + 16 pair / vocab-32
+corpus, seed 42:
+
+| INTER_WEIGHT | r2_act mean | tgt_hit | selectivity | margin |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.5 | 0.8 | 0.00 | -0.0005 | -0.01 |
+| 1.0 | 139 | 2.59 | -0.0005 | -0.02 |
+| 0.7 | 507 (cascade) | 9.38 | -0.0047 | -0.02 |
+
+iter-47a-2 alone does **not** flip the margin sign. But the
+diagnosis is sharper than iter-46's: at INTER_WEIGHT = 1.0,
+`target_hit_mean` grew monotonically over 4 epochs (1.16 → 2.59)
+and `selectivity_index` rose from -0.022 to -0.0005 — the right
+direction. The 0.7 bistability (recurrent cascade in epoch 3) is
+the key second-order finding: hard sparsity control (k-WTA, iter-48
+entry) is necessary, not optional. The iter-47 metrics
+(`r2_active_pre_teacher_{mean,p10,p90}`, `selectivity_index`) are
+wired to A/B-test it cleanly. See
+[`notes/47a`](notes/47a-forward-drive-and-adaptive-threshold.md).
+
+### What changes in iter 46 (this branch)
+
+The pair-association harness from iter-45 grows a *teacher-forcing*
+training arm: a deterministic per-word canonical R2-E SDR
+(`canonical_target_r2_sdr`) and a `drive_with_r2_clamp` primitive
+that injects target spikes directly into R2 — bypassing the
+random R1 → R2 forward path. Plus a six-phase trial schedule
+(cue → delay → prediction → teacher → reward → tail) with
+plasticity gating around the prediction window so evaluation
+never contaminates training, an anti-causal STDP timing fix
+(cue lead-in before the clamp), and a `--association-training-
+gate-r1r2` flag to attenuate forward drive during the prediction
+phase only.
+
+Honest result on the same 16-pair + 16-noise corpus, seed 42:
+`target_clamp_hit_rate = 1.00` across every teacher epoch (the
+clamp itself works perfectly), but `correct_minus_incorrect_margin`
+stays in `[-0.06, -0.03]` — the canonical-target cells fire
+*less* than the rest under cue-only recall, even with the
+timing fix and the R1 → R2 gate. The first non-zero
+`prediction_top3_before_teacher = 0.02` appears at epoch 3 with
+homeostasis on, but does not stabilise above the 9.4 % chance
+floor in any run. The bottleneck has moved from iter-45's "we
+can't measure it" to iter-46's "we can measure it; here is the
+number". See [`notes/46`](notes/46-teacher-forcing.md) for the
+full chain of measurements and the next-iter (47) directions
+(reduce `INTER_WEIGHT`, add an association-bridge region, or
+make R1 → R2 itself learnable).
+
 ### What changes in iter 45 (this branch)
 
 A *reward-aware pair-association benchmark*
@@ -495,6 +550,16 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 44 | **Breakthrough plasticity stack**: triplet-STDP, R-STDP, BCM metaplasticity, intrinsic plasticity, heterosynaptic norm, structural plasticity, offline replay |
 | 44.1 | Decoder confidence floor (`--decode-threshold`): FP −86%, token reduction +2× |
 | 45 | **Reward-aware pair-association harness**: dopamine + eligibility tag exercised end-to-end, honest "no convergence yet" finding documented |
+| 46 | **Teacher-forcing harness**: R2 target-clamp + 6-phase schedule + R1→R2 gate + anti-causal STDP fix; `clamp = 1.00`, but R1→R2 forward dominance survives — honest diagnosis of next bottleneck |
+| 47a | **Forward-drive scaling + adaptive θ**: INTER_WEIGHT sweep + Diehl-Cook intrinsic plasticity + 5 sparsity metrics; INTER_WEIGHT 1.0 + adaptive θ produces *first* monotone learning signal (target_hit 1.16 → 2.59), but bistability at 0.7 proves k-WTA is necessary for iter-48 |
+| 47a-pm | **Postmortem diagnostics**: 16-epoch saturation test (selectivity *collapses* in epochs 5–15) + per-step cascade trace (oscillatory bursting, NOT onset-burst, early/late ratio 0.97) + θ effect-size measurement (0.05 mV mean, < 0.3 % of 15 mV LIF swing). Reverses iter-48 plan: k-WTA out, **fast iSTDP (Vogels 2011) in** |
+| 48 | **iSTDP-tightening**: `R2_INH_FRAC 0.20→0.30`, `tau_minus 30→8 ms`, `a_plus 0.10→0.30` + new p99 / θ_E / θ_I metrics + `--istdp-during-prediction` A/B flag. Phase 1 smoke (4 ep × 2 configs): **selectivity flipped from −0.045 → +0.0142 stable** for the first time in the chain, `r2_act_mean` in [25, 70] band, no cascade. Acceptance 1.5/3 (selectivity ✅, target_hit/p99 ❌) — paused per protocol, no Phase 2 |
+| 48-sat | **Phase A saturation postmortem**: 16 epochs × both configs, identical trajectory: positive-selectivity *peak* through epochs 1–4 (no iter-44/45/46/47a config ever achieved this), **hard collapse epoch 5**, stable negative −0.008 to −0.012 thereafter. Acceptance 0/3 in both configs ⇒ Postmortem per protocol. Mechanism: **iSTDP cumulative over-inhibition** — distinct from cascade / runaway / θ-overcorrection (w̄ stable, r2_act DROPS at collapse). iter-49 should explore the *under-tuned* side of the boundary (cap w_max, halve a_plus, or activity-gate iSTDP) |
+| 49 | **iSTDP bounds & schedule sweep**: 3 orthogonal axes (WmaxCap, APlusHalf, ActivityGated), 3 distinct failure modes — A never positive (Bekos's 60 %-prior hypothesis falsified), B same collapse epoch with higher peak (+0.0184), C **hyperactivity lock** (`r2_active = 1400` = entire pool fires every trial). 0/3 produce positive learning. **iSTDP is not the primary lever** — the 15× STDP-vs-iSTDP rate asymmetry is the actual bottleneck. iter-50 hypothesis (by elimination): raise STDP `a_plus` 0.020 → 0.060 + `w_max` 0.8 → 2.0 |
+| 50 | **Arm B reproduction (Bekos diagnostic)**: `--iter46-baseline` flag reverts INTER_WEIGHT/R2_INH_FRAC/iSTDP/intrinsic at runtime. Result: **iter-46 Arm B's top-3 = 0.19 reproduces** on current branch code — **3× iter-48's 0.06 with full teacher architecture**. The `selectivity_index` metric (iter-47-49) is structurally meaningless in the no-teacher path (compares arbitrary hash SDR vs unrelated firing); 5 iterations were optimised against the wrong metric. Iter-51 = reductive Arm B parameter study, NOT a-plus sweep, NOT bridge |
+| 51 | **Arm B 16-epoch saturation (the harder read)**: top-3 oscillates 0.06↔0.19 across all 16 epochs, **mean = 0.107** vs random baseline 0.094, 95 % CI `[0.069, 0.145]` includes random — **statistically not distinguishable from chance**. The 0.19 hits in epochs 0/8/9 are noise peaks of a chance-level distribution. Top-1 = 0.00 every epoch. Mean reward 5–10 % less negative than random. **The whole iter-44…50 chain optimised against a baseline never verified to be above chance.** iter-52 = statistical validation (multi-seed + untrained control + trial-to-trial Jaccard), NOT mechanism work |
+| 52 | **Untrained-brain control (`--no-plasticity`)**: gate every `enable_*` plasticity call + L2-norm bit-identity assertion. Sanity assertion immediately caught a **9× weight blowup** in the first run from two un-gated mid-trial enable/disable cycles. After all three gate sites closed: 4 seeds × 16 epochs all bit-identical. Untrained top-3 = **0.039** (95 % CI [−0.008, 0.086]) — significantly *below* random 0.094. Trained vs untrained Δ = **0.068, ≈ 2.2 σ**: plasticity IS doing something. The iter-51 "indistinguishable from chance" reading was too conservative — wrong null. Branch: **Mess-Frage** (decoder bias on fresh brain saturates the metric). iter-53 = decoder-relative readout, NOT new mechanism, NOT parameter sweep |
+| 53 | **Decoder-relative Jaccard (Option B Voll)**: 32-cue × 3-trial matrix with full `brain.reset_state()` between trials (R1 + R2 + cross-region queue + traces, not just R2). Same-cue Jaccard = consistency, cross-cue Jaccard = specificity, Δ-of-Δ = engram formation indicator. Untrained arm (no plasticity, full reset) hits `same_cue_mean = 1.0` exactly (state-reset assertion); trained arm keeps plasticity ON during eval per Bekos's spec, so trial 2 depends on trial 1 *via plasticity, not via membrane state*. Public surface: `JaccardMetrics` / `run_jaccard_bench` / `render_jaccard_sweep` + `--jaccard-bench --seeds N1,N2,…` CLI. Direction caveat: trained same-cue ≤ untrained = 1.0 by construction — read as "how close to 1.0 the trained arm stays under continued plasticity" (engram attractor strength), not "trained higher than untrained". <!-- @README_RESULT@ --> |
 
 ---
 
