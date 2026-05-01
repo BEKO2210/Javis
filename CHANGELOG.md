@@ -4,6 +4,71 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 48 phase A (saturation postmortem)
+
+Bekos protocol from notes/48-istdp-tightening: pre-fixed 3-of-3
+saturation acceptance, 16 epochs, both configs, no code change,
+~5 min wallclock per config. Question: is iter-48's selectivity
+flip the start of a learning curve (⇒ B1: η-lift) or a
+metastable transient (⇒ Postmortem)?
+
+### Verified — full 16-epoch curves, both configs (notes/48-saturation.md)
+
+Identical trajectory in both configs:
+- Epochs 0–4: monotone selectivity rise to peak (Config 1
+  +0.0172 epoch 2 / Config 2 +0.0144 epoch 4), target_hit
+  reaches 1.0–1.3.
+- Epoch 5: hard collapse — selectivity → −0.006 to −0.008,
+  target_hit → 0.12, r2_active drops by ~50%.
+- Epochs 6–15: stable negative steady-state (Config 1 ≈
+  −0.012, Config 2 ≈ −0.008). w̄ stable at ~1.40 throughout,
+  wmax = 8.00 throughout, θ_E ≈ 0.003 mV / θ_I ≈ 0.004 mV
+  (operationally invisible — same as iter-47a-pm).
+
+| Acceptance | Config 1 | Config 2 |
+| A1: > 0 in ≥ 12/16 | 4/16 ❌ | 4/16 ❌ |
+| A2: epoch 13–16 ≥ 1–4 mean | ❌ | ❌ |
+| A3: target_hit > 1.5 at epoch 13–16 | 0.13 ❌ | 0.13 ❌ |
+| Total | 0/3 | 0/3 |
+
+### Honest reading
+
+The iter-48 selectivity flip is a **metastable transient**, not
+a learning curve. But it survives the postmortem as a real
+qualitative finding: 4 consecutive positive-selectivity epochs
+in BOTH configs at +0.012 to +0.017 (a regime change that no
+iter-44/45/46/47a configuration ever produced).
+
+The collapse mechanism is **iSTDP cumulative over-inhibition**,
+diagnostically distinct from any prior failure mode:
+- NOT weight runaway (w̄ stable across 16 epochs)
+- NOT cascade (r2_active DROPS at collapse, doesn't explode)
+- NOT Diehl-Cook over-correction (θ values flat through collapse)
+
+The iter-48 iSTDP parameters sit on the **over-tuned side** of
+a collapse boundary. iter-49 should explore the under-tuned
+side, not push further along the iter-48 axis. Three small,
+parallel candidate experiments (each ~5 min smoke), all in
+notes/48-saturation.md:
+
+1. iSTDP w_max 8.0 → 2.0 (cap the wall growth)
+2. iSTDP a_plus 0.30 → 0.20 (half-way back to iter-47a)
+3. Activity-gated iSTDP (a_plus = 0 for first 2 epochs, then
+   ramp — match the literature pattern "consolidate first,
+   balance later")
+
+Pre-fixed iter-49 acceptance: sustained selectivity > 0 across
+epochs 4–16, AND mean target_hit at epoch 16 > mean target_hit
+at epoch 4. No magnitude criterion yet — we are testing for
+collapse-survival, not for top-3 lift.
+
+Anomaly note from iter-48 phase 1 also resolved: Phase 3
+plasticity (--istdp-during-prediction) is *almost* but NOT
+strictly redundant. Through epoch 3 both configs are identical
+to 4 decimals; epoch 4+ they diverge slightly (Config 2 has
+tighter sparsity and softer collapse). The CLI flag stays as
+an A/B knob.
+
 ## Unreleased — Iteration 48 (iSTDP-tightening, Vogels 2011)
 
 Direct response to the iter-47a postmortem (commit 432cbee),
