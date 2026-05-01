@@ -434,6 +434,16 @@ pub struct TeacherForcingConfig {
     /// with `iter46_baseline = true` for the strict iter-46-Arm-B
     /// untrained variant.
     pub no_plasticity: bool,
+    /// Iter-54 hard-decorrelated R1 → R2 wiring. When `true`,
+    /// `wire_forward_decorrelated` replaces the standard random
+    /// wire-up: each vocab word's R1 SDR cells project *only* into
+    /// a disjoint block of R2-E cells, with shared cells (R1 cells
+    /// that appear in multiple cue SDRs) dropped from the
+    /// connectivity graph. The result is mechanically pairwise-
+    /// disjoint R2 reachability per cue — the iter-54 invariant
+    /// `assert_decorrelated_disjoint` asserts this end-to-end.
+    /// Default `false` keeps the iter-46/53 random-FAN_OUT topology.
+    pub decorrelated_init: bool,
     /// During the prediction phase only, scale the R1 cue current
     /// by this factor. `1.0` = no gating (default); `0.3` halves
     /// the forward drive so the cue's R2 response is more easily
@@ -475,6 +485,7 @@ impl Default for TeacherForcingConfig {
             gated_ramp_epochs: 2,
             iter46_baseline: false,
             no_plasticity: false,
+            decorrelated_init: false,
         }
     }
 }
@@ -506,6 +517,7 @@ impl TeacherForcingConfig {
             gated_ramp_epochs: 2,
             iter46_baseline: false,
             no_plasticity: false,
+            decorrelated_init: false,
         }
     }
     pub const fn enabled() -> Self {
@@ -670,6 +682,147 @@ fn wire_forward(brain: &mut Brain, seed: u64, inter_weight: f32) {
         for _ in 0..FAN_OUT {
             let dst = (rng.next_u64() as usize) % r2_size;
             brain.connect(0, src, 1, dst, inter_weight, INTER_DELAY_MS);
+        }
+    }
+}
+
+/// Iter-54 decorrelated R1 → R2 wiring. Partition the R2-E pool
+/// into `vocab.len()` disjoint blocks; for each vocab word, count
+/// every R1 cell across all encoded SDRs and connect ONLY R1 cells
+/// that appear in exactly one cue's SDR — those cells fan out
+/// `FAN_OUT` times (with replacement) into their owner-word's
+/// block. R1 cells that are shared across multiple cue SDRs are
+/// dropped from connectivity entirely. The mechanical invariant:
+/// the set of R2 cells reachable from cue *i*'s R1 SDR is disjoint
+/// from cue *j*'s for every pair (i, j); `assert_decorrelated_
+/// disjoint` enforces this end-to-end.
+///
+/// Returns the per-word block (R2-E indices) so the caller can
+/// audit / log the allocation. Any R1 cell appearing in zero cue
+/// SDRs is similarly skipped — only cells with exactly one
+/// vocab membership contribute edges.
+fn wire_forward_decorrelated(
+    brain: &mut Brain,
+    encoder: &TextEncoder,
+    vocab: &[String],
+    seed: u64,
+    inter_weight: f32,
+) -> Vec<Vec<usize>> {
+    use std::collections::BTreeMap;
+
+    // R2-E pool — same convention as canonical_target_r2_sdr.
+    let r2_e: Vec<usize> = {
+        let net = &brain.regions[1].network;
+        (0..net.neurons.len())
+            .filter(|&i| matches!(net.neurons[i].kind, NeuronKind::Excitatory))
+            .collect()
+    };
+    let n_words = vocab.len();
+    assert!(n_words > 0, "iter-54 decorrelated init: empty vocab");
+    let block_size = r2_e.len() / n_words;
+    assert!(
+        block_size > 0,
+        "iter-54 decorrelated init: R2-E pool ({}) too small for vocab size ({})",
+        r2_e.len(),
+        n_words,
+    );
+
+    let mut blocks: Vec<Vec<usize>> = Vec::with_capacity(n_words);
+    for word_idx in 0..n_words {
+        let start = word_idx * block_size;
+        let end = if word_idx == n_words - 1 {
+            r2_e.len()
+        } else {
+            (word_idx + 1) * block_size
+        };
+        blocks.push(r2_e[start..end].to_vec());
+    }
+
+    // Count + first-owner pass over all cue SDRs.
+    let mut count: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut first_owner: BTreeMap<u32, usize> = BTreeMap::new();
+    for (word_idx, word) in vocab.iter().enumerate() {
+        let r1_sdr = encoder.encode_word(word);
+        for &r1_idx in &r1_sdr.indices {
+            *count.entry(r1_idx).or_insert(0) += 1;
+            first_owner.entry(r1_idx).or_insert(word_idx);
+        }
+    }
+
+    // Wire only the R1 cells with exactly one cue membership.
+    // Iterate `count` in BTreeMap order so the wiring is
+    // deterministic given the seed.
+    let mut rng = Rng::new(seed);
+    for (&r1_idx, &c) in &count {
+        if c != 1 {
+            continue;
+        }
+        let word_idx = first_owner[&r1_idx];
+        let block = &blocks[word_idx];
+        if block.is_empty() {
+            continue;
+        }
+        for _ in 0..FAN_OUT {
+            let dst = block[(rng.next_u64() as usize) % block.len()];
+            brain.connect(
+                0,
+                r1_idx as usize,
+                1,
+                dst,
+                inter_weight,
+                INTER_DELAY_MS,
+            );
+        }
+    }
+
+    blocks
+}
+
+/// Iter-54 mechanical invariant. Verifies that for every pair of
+/// vocab words `(i, j), i < j`, the set of R2 cells reachable
+/// from cue *i*'s R1 SDR (via any direct R1 → R2 edge) is
+/// disjoint from cue *j*'s. Implemented end-to-end against the
+/// post-wiring brain state — no internal short-cut to the block
+/// allocation. Panics with the offending cue pair and the shared
+/// indices on the first violation.
+fn assert_decorrelated_disjoint(
+    brain: &Brain,
+    encoder: &TextEncoder,
+    vocab: &[String],
+) {
+    let mut targets: Vec<BTreeSet<u32>> = Vec::with_capacity(vocab.len());
+    for word in vocab {
+        let r1_sdr = encoder.encode_word(word);
+        let mut t: BTreeSet<u32> = BTreeSet::new();
+        for &r1_idx in &r1_sdr.indices {
+            let outgoing = &brain.outgoing[0][r1_idx as usize];
+            for &edge_id in outgoing {
+                let edge = brain.inter_edges[edge_id as usize];
+                if edge.dst_region == 1 {
+                    t.insert(edge.dst_neuron);
+                }
+            }
+        }
+        targets.push(t);
+    }
+    for i in 0..targets.len() {
+        for j in (i + 1)..targets.len() {
+            let inter: Vec<u32> = targets[i]
+                .intersection(&targets[j])
+                .copied()
+                .collect();
+            assert!(
+                inter.is_empty(),
+                "iter-54 decorrelated invariant violated: cues '{}' (idx {}) and '{}' (idx {}) \
+                 share {} R2 target(s) (first 10: {:?}). Either an R1 cell with multi-cue \
+                 membership leaked into wiring, or the blocks were not partitioned cleanly.",
+                vocab[i],
+                i,
+                vocab[j],
+                j,
+                inter.len(),
+                inter.iter().take(10).collect::<Vec<_>>(),
+            );
         }
     }
 }
@@ -2571,9 +2724,39 @@ fn run_jaccard_arm(
     } else {
         (INTER_WEIGHT, R2_INH_FRAC)
     };
-    let mut brain = fresh_brain_with(cfg.seed, inter_weight, inh_frac);
     let encoder =
         TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
+    let mut brain = if cfg.teacher.decorrelated_init {
+        // Iter-54: hard-decorrelated R1 → R2 wiring. Build R1 + R2
+        // *without* the standard random fan-out, then wire only
+        // R1 cells that appear in exactly one cue SDR into that
+        // cue's disjoint R2-E block.
+        let mut b = Brain::new(DT);
+        b.add_region(build_input_region());
+        b.add_region(build_memory_region(cfg.seed.wrapping_add(1), inh_frac));
+        let vocab_vec: Vec<String> = corpus.vocab.iter().cloned().collect();
+        let _blocks = wire_forward_decorrelated(
+            &mut b,
+            &encoder,
+            &vocab_vec,
+            cfg.seed.wrapping_add(2),
+            inter_weight,
+        );
+        // Hard mechanical invariant: pairwise-disjoint R2 reach
+        // across vocab cues. Equivalent in role to iter-52's L2
+        // bit-identity check, but on the topology side.
+        assert_decorrelated_disjoint(&b, &encoder, &vocab_vec);
+        eprintln!(
+            "[iter-54 {arm}] seed={} decorrelated init: vocab={} R2-E={} block_size={} (disjoint invariant ✓)",
+            cfg.seed,
+            corpus.vocab.len(),
+            r2_e_set(&b).len(),
+            r2_e_set(&b).len() / corpus.vocab.len(),
+        );
+        b
+    } else {
+        fresh_brain_with(cfg.seed, inter_weight, inh_frac)
+    };
     let r2_e = r2_e_set(&brain);
 
     let stdp_params = stdp();
@@ -3078,5 +3261,44 @@ mod tests {
                 assert!(m.mean_reward.is_finite());
             }
         }
+    }
+
+    /// Iter-54: the decorrelated init must produce pairwise-disjoint
+    /// R2 reach across the full vocab. This test runs the wiring
+    /// against the real default corpus + encoder and lets
+    /// `assert_decorrelated_disjoint` panic if the invariant is
+    /// violated. It is the unit-test mirror of the runtime
+    /// assertion in `run_jaccard_arm` — both must agree.
+    #[test]
+    fn decorrelated_init_is_pairwise_disjoint() {
+        let corpus = default_corpus();
+        let vocab_vec: Vec<String> = corpus.vocab.iter().cloned().collect();
+        let encoder =
+            TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
+        let mut brain = Brain::new(DT);
+        brain.add_region(build_input_region());
+        brain.add_region(build_memory_region(43, R2_INH_FRAC));
+        let blocks = wire_forward_decorrelated(
+            &mut brain,
+            &encoder,
+            &vocab_vec,
+            123,
+            INTER_WEIGHT,
+        );
+        assert_eq!(blocks.len(), vocab_vec.len());
+        // Block-to-block disjointness (precondition).
+        for i in 0..blocks.len() {
+            for j in (i + 1)..blocks.len() {
+                let bi: BTreeSet<usize> = blocks[i].iter().copied().collect();
+                let bj: BTreeSet<usize> = blocks[j].iter().copied().collect();
+                assert!(
+                    bi.is_disjoint(&bj),
+                    "block {i} and block {j} overlap: {:?}",
+                    bi.intersection(&bj).take(5).collect::<Vec<_>>(),
+                );
+            }
+        }
+        // End-to-end reachability disjointness (the real iter-54 invariant).
+        assert_decorrelated_disjoint(&brain, &encoder, &vocab_vec);
     }
 }

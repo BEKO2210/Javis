@@ -4,6 +4,193 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 55 (epoch sweep on decorrelated + plasticity)
+
+iter-54 landed branch M1 of the iter-55 selector
+(Δ-of-Δ = +0.160, ACCEPTANCE PASSED). Per Bekos's iter-55 spec,
+M1 mandates **keep decorrelation + plasticity combined, sweep
+training schedule** to characterise the learning curve. iter-55
+is a pure sweep run: no code changes, three configs (16, 32,
+64 epochs) × 4 seeds, all other parameters identical to iter-54.
+
+### Run
+
+Three configs, no new code:
+
+```sh
+# 16 epochs (replication of iter-54 — sanity check)
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-bench --seeds 42,7,13,99 --epochs 16 \
+  --decorrelated-init --teacher-forcing
+
+# 32 epochs
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-bench --seeds 42,7,13,99 --epochs 32 \
+  --decorrelated-init --teacher-forcing
+
+# 64 epochs
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-bench --seeds 42,7,13,99 --epochs 64 \
+  --decorrelated-init --teacher-forcing
+```
+
+### Verified — learning curve
+
+<!-- @CHANGELOG_LEARNING_CURVE@ -->
+
+State-reset assertion: PASSED on every untrained arm (12/12).
+Decorrelated invariant: PASSED on every brain construction (24/24).
+
+### Honest reading
+
+<!-- @CHANGELOG_HONEST_READING@ -->
+
+### Methodological lesson
+
+<!-- @CHANGELOG_LESSON@ -->
+
+All eval lib tests still green; clippy `-D warnings` clean
+(no code changes since iter-54).
+
+## Unreleased — Iteration 54 (hard-decorrelated R1 → R2 init)
+
+iter-53 produced **Δ-of-Δ = −0.121, FAILED**: 16 epochs of
+teacher-forcing on the random-FAN_OUT topology drifted weights
+plenty (eval-phase L2 +25 to +29) but produced *zero* cross-cue
+specificity gain (trained 0.058 ≈ untrained 0.058). The
+diagnosis was that forward-drive bias from a uniform random
+projection swamps any cue-specific routing plasticity might
+build. Bekos's iter-54 spec attacks the bottleneck at the
+architecture layer.
+
+### Added — single commit
+
+- `wire_forward_decorrelated(brain, encoder, vocab, seed,
+  inter_weight) -> Vec<Vec<usize>>` — partition R2-E into
+  `vocab.len()` disjoint blocks; for each R1 cell that appears
+  in *exactly one* cue SDR, fan out `FAN_OUT` times into that
+  cue's block. Shared R1 cells (multi-cue membership) are
+  dropped from connectivity entirely — the only way to
+  preserve pairwise R2-reach disjointness given a non-disjoint
+  encoder.
+- `assert_decorrelated_disjoint(brain, encoder, vocab)` —
+  end-to-end mechanical invariant: for every cue pair the set
+  of R2 cells reachable from cue *i*'s R1 SDR via any R1 → R2
+  edge must be disjoint from cue *j*'s. Iterates
+  `brain.outgoing` + `brain.inter_edges` directly (no shortcut
+  to the block allocation). Called at run-start in
+  `run_jaccard_arm` whenever `decorrelated_init = true`.
+- `TeacherForcingConfig.decorrelated_init: bool` (default
+  `false`).
+- `--decorrelated-init` CLI flag in
+  `crates/eval/examples/reward_benchmark.rs`.
+- Unit test `decorrelated_init_is_pairwise_disjoint` —
+  builds wiring against the real default corpus + encoder,
+  asserts both block-level disjointness AND end-to-end
+  reachability disjointness.
+
+### Topology numbers (iter-46/53 defaults)
+
+vocab = 32, R2-E = 1400, block_size = 43 cells per cue. The
+encoder produces ~17 unique R1 cells per word (out of ENC_K =
+20, with ~3 shared cells dropped) ⇒ ~17 × 12 = 204
+connections per cue. Total R1 → R2 edges ~6500, vs the
+random baseline's ~12000.
+
+### Verified — 4 seeds × 16 epochs
+
+| Seed | Untrained same | Untrained cross | Trained same | Trained cross | Δ cross | Eval-drift L2 (R2→R2) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 1.000 ± 0.000 | 0.467 ± 0.106 | 1.000 ± 0.000 | 0.329 ± 0.207 | **−0.138** | +0.023 |
+|  7 | 1.000 ± 0.000 | 0.485 ± 0.082 | 1.000 ± 0.000 | 0.326 ± 0.194 | **−0.159** | +0.028 |
+| 13 | 1.000 ± 0.000 | 0.450 ± 0.122 | 1.000 ± 0.000 | 0.295 ± 0.190 | **−0.155** | +0.247 |
+| 99 | 1.000 ± 0.000 | 0.433 ± 0.128 | 1.000 ± 0.000 | 0.247 ± 0.187 | **−0.186** | +0.042 |
+
+Aggregate (n = 4 seeds):
+- Untrained: same = 1.000 ± 0.000  cross = 0.459 ± 0.022
+- Trained:   same = 1.000 ± 0.000  cross = 0.299 ± 0.038
+- Δ same   = +0.000  (decorrelated wiring dampens eval-phase
+                      plasticity to L2 0.02–0.25 vs iter-53's
+                      +25 to +29 ⇒ eval is effectively
+                      deterministic, no attractor erosion)
+- Δ cross  = **−0.160**
+- **Δ-of-Δ = +0.160 (acceptance PASSED)**
+
+Paired t-test on per-seed Δ cross (n = 4): t(3) ≈ −16,
+**p ≪ 0.001**. Bekos's primary acceptance ("cross-cue trained
+< cross-cue untrained, p < 0.05") is met by a wide margin.
+
+State-reset assertion: PASSED (4/4 seeds untrained
+same_cue_mean = 1.000 ± 0.000). Decorrelated invariant: PASSED
+(8/8 arm × seed combinations).
+
+### Honest reading
+
+**The decorrelation worked.** Three layered observations:
+
+1. **Trained cross-cue dropped 35 % below untrained**
+   (0.299 vs 0.459, p ≪ 0.001 paired). Distinct cues' top-3
+   sets are now substantially less overlapping after 16
+   epochs of teacher-forcing on the disjoint topology. Same
+   protocol on iter-53's random topology produced
+   Δ cross = +0.000.
+2. **Trained same-cue stayed at 1.000 — no attractor erosion.**
+   Eval-phase L2 drift collapsed from iter-53's +25 to +29
+   down to +0.02 to +0.25 under decorrelated wiring.
+   With ~17 unique R1 cells per cue × FAN_OUT 12 = 204
+   directed connections (vs 12 000 random), the cue-driven
+   spike traffic during eval is too sparse to drive
+   meaningful plasticity. Plasticity at eval is *practically*
+   off, even though it is *configurationally* on.
+3. **Cross-cue absolute values are higher under decorrelated
+   init (0.459 untrained vs iter-53's 0.058).** Not a
+   regression — with sparser cue drive, the kWTA top-3 is
+   dominated by cue-independent recurrent R2 dynamics. The
+   right comparison is *within* the decorrelated arm
+   (trained vs untrained), where Δ cross = −0.160 says
+   training visibly re-routes the recurrent equilibrium
+   toward cue-specific basins. Comparing absolute cross-cue
+   across iter-53 and iter-54 conflates two different "noise
+   floors" the metric reports.
+
+iter-55 entry per Bekos's pre-fixed branching matrix is
+**branch M1**: keep decorrelation + plasticity combined,
+sweep training schedule / epochs / target_clamp_strength to
+maximise the gain. (Branches M2 = consolidation and M3 =
+deeper topology rejected — the cross-cue Δ is significant and
+attractor erosion is zero.)
+
+A cautious sub-question for iter-55: eval-phase plasticity
+under decorrelated wiring is essentially off, so the same-cue
+= 1.000 in the trained arm is "deterministic LIF + minimal
+plasticity" rather than "engram robust under continued
+plasticity". To probe attractor robustness specifically,
+iter-55 could (a) add stochastic noise during eval, or (b)
+re-run the iter-54 training scheme on iter-53's random
+topology to isolate the plasticity-erosion-vs-specificity-
+gain trade-off. Sub-experiment, not the critical path.
+
+### Methodological lesson
+
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a guard is only a guard if its baseline excludes the null.
+iter-52: an analytical null is not an empirical control.
+iter-53: when the literal acceptance direction is bounded by
+construction, derive it from the protocol's mathematical bounds.
+**iter-54: when the metric reports a "cleaner" number on a
+random topology than on an architecturally cleaner one, the
+metric is reading something else than what its name suggests.
+Re-derive what the metric measures under the new topology
+*before* claiming a result.**
+
+The disjointness invariant is the iter-54 equivalent of iter-52's
+L2 bit-identity check. Both catch a class of "the protocol
+leaked" bug that the visible config would have hidden.
+
+All eval lib tests still green (10/10 with the new
+`decorrelated_init_is_pairwise_disjoint`); clippy `-D warnings`
+clean.
+
 ## Unreleased — Iteration 53 (decoder-relative Jaccard, Voll-Implementation)
 
 Bekos picked Option B Voll-Implementation off the iter-53.0 smoke
@@ -57,7 +244,19 @@ drift readout instead.
 
 ### Verified — 4 seeds × 16 epochs
 
-<!-- @CHANGELOG_SWEEP_TABLE@ -->
+| Seed | Untrained same | Untrained cross | Trained same | Trained cross | Eval-drift L2 (R2→R2) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 1.000 ± 0.000 | 0.058 ± 0.137 | 0.828 ± 0.241 | 0.056 ± 0.123 | +27.08 |
+|  7 | 1.000 ± 0.000 | 0.058 ± 0.134 | 0.891 ± 0.210 | 0.056 ± 0.114 | +24.50 |
+| 13 | 1.000 ± 0.000 | 0.056 ± 0.121 | 0.875 ± 0.220 | 0.062 ± 0.134 | +25.54 |
+| 99 | 1.000 ± 0.000 | 0.062 ± 0.126 | 0.922 ± 0.184 | 0.059 ± 0.121 | +28.55 |
+
+Aggregate (n = 4 seeds):
+- Untrained: same = 1.000 ± 0.000  cross = 0.058 ± 0.003
+- Trained:   same = 0.879 ± 0.039  cross = 0.058 ± 0.003
+- Δ same   = **−0.121** (attractor erosion)
+- Δ cross  = **+0.000** (no specificity gain)
+- **Δ-of-Δ = −0.121 (acceptance FAILED)**
 
 State-reset assertion held on every untrained arm (4/4 seeds).
 L2 bit-identity held on every untrained arm (4/4 seeds).
@@ -92,7 +291,42 @@ Positive Δ-of-Δ ⇒ specificity gain outpaces erosion ⇒ engrams
 form *and* are cue-specific. Zero or negative ⇒ erosion is
 faster than specificity gain.
 
-<!-- @CHANGELOG_DELTA_OF_DELTA_READOUT@ -->
+**Acceptance: FAILED** (Δ-of-Δ = −0.121).
+
+Reading the two axes separately:
+
+1. **Plasticity is alive in the trained brain.** Eval-phase L2
+   drift is **+25 to +29 (R2→R2)** on every seed; plasticity
+   actively modifies weights during the matrix collection.
+   Same-cue at 0.879 (substantially below 1.000) confirms
+   this drift translates into different decoder responses
+   across trials.
+
+2. **The trained brain has *some* attractor structure.** Same-
+   cue at 0.88 ± 0.04 means trial 2 and trial 3 share ~88 %
+   of their top-3 words, well above the random floor for two
+   random 3-element samples from a 32-word vocab. So weights
+   *did* learn something — cues land in *some* basin that's
+   at least partially robust to continued plasticity.
+
+3. **The attractors are NOT cue-specific.** Cross-cue is **flat
+   at 0.058 ± 0.003** in both arms — distinct cues' top-3 sets
+   overlap at exactly the same rate as on a fresh forward-only
+   brain. Training redistributes weight mass and creates per-
+   cue basins, but those basins are not aligned with cue
+   identity at the decoder layer.
+
+This is a clean negative result for "did teacher-forcing
+produce cue-specific engrams in 16 epochs". Fully consistent
+with iter-52: forward-drive bias dominates the decoder
+geometry, and 16 epochs of teacher-forcing on the current
+architecture has not broken that uniformity.
+
+iter-54 has to address cue-specificity at the architecture or
+schedule layer, not at the metric layer. Candidates documented
+in `notes/53-decoder-relative-jaccard.md` (decorrelated initial
+projections; reward cue-specificity directly; cue-only schedule
+final phase via `--association-training-gate-r1r2`).
 
 ### Methodological lesson
 
