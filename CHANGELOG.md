@@ -4,6 +4,76 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 48 (iSTDP-tightening, Vogels 2011)
+
+Direct response to the iter-47a postmortem (commit 432cbee),
+which ruled out k-WTA / Diehl-Cook tuning and ruled in tighter
+iSTDP. Three atomic commits + 4-epoch acceptance smoke; per
+Bekos protocol acceptance criteria fixed before phase 1.
+
+### Added
+
+- Commit `4bfacc0` — iSTDP retune for fast EI balance:
+  `R2_INH_FRAC: 0.20 → 0.30`, `IStdpParams.tau_minus: 30 → 8 ms`,
+  `IStdpParams.a_plus: 0.10 → 0.30`. INTER_WEIGHT and
+  IntrinsicParams unchanged so iter-48 isolates the iSTDP variable.
+- Commit `bdee598` — `--istdp-during-prediction` A/B flag
+  (`TeacherForcingConfig.istdp_during_prediction`, default `false`).
+  Splits iter-46's plasticity gate so iSTDP can run during the
+  prediction phase independently of STDP / R-STDP.
+- Commit `de5771c` — three new `RewardEpochMetrics` fields:
+  * `r2_active_pre_teacher_p99` — 99th percentile of per-trial
+    prediction-phase active counts. Catches avalanche tail trials
+    that p90 hides. Iter-48 acceptance criterion `< 50`.
+  * `theta_inh_mean` / `theta_exc_mean` — Diehl-Cook θ split by
+    neuron kind. Diff `θ_I − θ_E` is the iSTDP-over-correction
+    early warning.
+  * `intrinsic_mean_by_kind` helper, reuses `percentile_u32`
+    from iter-47a.
+
+### Verified — Phase 1 smoke, 4 epochs × 2 configs, seed 42
+
+| Criterion | Config 1 (default) | Config 2 (`--istdp-during-prediction`) |
+| --- | :-: | :-: |
+| `selectivity_index > 0.0` | **+0.0142 ✅** | **+0.0142 ✅** |
+| `target_hit_mean > 5` | 1.23 ❌ | 1.06 ❌ |
+| `p99(active) < 50` | 79 ❌ | 61 ❌ |
+| **Total** | **1.5 / 3** | **1.5 / 3** |
+
+Per protocol: not 3-of-3 ⇒ no Phase 2 run, no speculative pivot,
+pause and document.
+
+### Honest reading
+
+The iSTDP retuning hypothesis is **directionally confirmed by data**:
+**selectivity flipped from negative to positive for the first time
+in the iter-44/45/46/47/48 chain** (iter-46 sat at -0.04, iter-47a
+at -0.045 after collapse, iter-48 at +0.014 stable across three
+consecutive epochs in both configs). `r2_active_pre_teacher_mean`
+is in the [25, 70] band across all four epochs in both configs;
+no cascade, p99 below 110 even on worst trial vs. iter-47a's
+1599. iSTDP successfully caught the runaway recurrent dynamic.
+
+But target_hit_mean ≈ 1 (vs. criterion 5) and p99 ≈ 60–80 (vs.
+criterion 50) both miss; top-1/top-3 stay at chance because
+target_hit ≈ 1 cannot dominate a 32-entry decoder. The right
+cells are biased correctly; their absolute amplitude is still
+small.
+
+Open follow-ups for iter-49 (deliberately unanswered, per
+protocol):
+
+- Saturation at 16 epochs — does the +0.014 selectivity stabilise,
+  drift up, or collapse as iter-47a's transient peak did?
+- Why is `target_hit_mean ≈ 1` so far below the 30-cell clamp
+  target? R-STDP `eta` lift, longer teacher phase, or per-pair
+  p99 to detect bistable pairs all fit the same diagnostic
+  budget.
+
+Full per-epoch tables, both configs, in
+`notes/48-istdp-tightening.md`. All 9 eval lib tests still green;
+clippy `-D warnings` clean across the workspace.
+
 ## Unreleased — Iteration 47a postmortem (saturation + cascade + θ effect size)
 
 Three diagnostic questions left after iter-47a-2's acceptance

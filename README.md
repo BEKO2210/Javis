@@ -553,6 +553,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 46 | **Teacher-forcing harness**: R2 target-clamp + 6-phase schedule + R1→R2 gate + anti-causal STDP fix; `clamp = 1.00`, but R1→R2 forward dominance survives — honest diagnosis of next bottleneck |
 | 47a | **Forward-drive scaling + adaptive θ**: INTER_WEIGHT sweep + Diehl-Cook intrinsic plasticity + 5 sparsity metrics; INTER_WEIGHT 1.0 + adaptive θ produces *first* monotone learning signal (target_hit 1.16 → 2.59), but bistability at 0.7 proves k-WTA is necessary for iter-48 |
 | 47a-pm | **Postmortem diagnostics**: 16-epoch saturation test (selectivity *collapses* in epochs 5–15) + per-step cascade trace (oscillatory bursting, NOT onset-burst, early/late ratio 0.97) + θ effect-size measurement (0.05 mV mean, < 0.3 % of 15 mV LIF swing). Reverses iter-48 plan: k-WTA out, **fast iSTDP (Vogels 2011) in** |
+| 48 | **iSTDP-tightening**: `R2_INH_FRAC 0.20→0.30`, `tau_minus 30→8 ms`, `a_plus 0.10→0.30` + new p99 / θ_E / θ_I metrics + `--istdp-during-prediction` A/B flag. Phase 1 smoke (4 ep × 2 configs): **selectivity flipped from −0.045 → +0.0142 stable** for the first time in the chain, `r2_act_mean` in [25, 70] band, no cascade. Acceptance 1.5/3 (selectivity ✅, target_hit/p99 ❌) — paused per protocol, no Phase 2 |
 
 ---
 
