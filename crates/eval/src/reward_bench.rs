@@ -361,6 +361,15 @@ pub struct TeacherForcingConfig {
     /// warmup, during which `a_plus` rises linearly from 0 to
     /// the full value. Default 2.
     pub gated_ramp_epochs: u32,
+    /// Iter-50 diagnostic: revert all iter-47/48/49 drift to
+    /// reproduce the iter-46 Arm B baseline (R-STDP only, no
+    /// teacher, no iSTDP-tightening, no Diehl-Cook, original
+    /// INTER_WEIGHT 2.0 and R2_INH_FRAC 0.20). Used to answer
+    /// the open question why iter-46 Arm B reported top-3 = 0.19
+    /// while every iter-47/48/49 selectivity stays under 0.02.
+    /// When `true`, also forces `iter49_mode = None`,
+    /// `enabled = false`, and skips `enable_intrinsic_plasticity`.
+    pub iter46_baseline: bool,
     /// During the prediction phase only, scale the R1 cue current
     /// by this factor. `1.0` = no gating (default); `0.3` halves
     /// the forward drive so the cue's R2 response is more easily
@@ -400,6 +409,7 @@ impl Default for TeacherForcingConfig {
             iter49_mode: Iter49Mode::None,
             gated_warmup_epochs: 2,
             gated_ramp_epochs: 2,
+            iter46_baseline: false,
         }
     }
 }
@@ -429,6 +439,7 @@ impl TeacherForcingConfig {
             iter49_mode: Iter49Mode::None,
             gated_warmup_epochs: 2,
             gated_ramp_epochs: 2,
+            iter46_baseline: false,
         }
     }
     pub const fn enabled() -> Self {
@@ -554,11 +565,11 @@ fn build_input_region() -> Region {
     region
 }
 
-fn build_memory_region(seed: u64) -> Region {
+fn build_memory_region(seed: u64, inh_frac: f32) -> Region {
     let mut rng = Rng::new(seed);
     let mut region = Region::new("R2", DT);
     let net = &mut region.network;
-    let n_inh = (R2_N as f32 * R2_INH_FRAC) as usize;
+    let n_inh = (R2_N as f32 * inh_frac) as usize;
     let n_exc = R2_N - n_inh;
     for _ in 0..n_exc {
         net.add_neuron(LifNeuron::excitatory(LifParams::default()));
@@ -586,22 +597,31 @@ fn build_memory_region(seed: u64) -> Region {
     region
 }
 
-fn wire_forward(brain: &mut Brain, seed: u64) {
+fn wire_forward(brain: &mut Brain, seed: u64, inter_weight: f32) {
     let mut rng = Rng::new(seed);
     let r2_size = brain.regions[1].num_neurons();
     for src in 0..R1_N {
         for _ in 0..FAN_OUT {
             let dst = (rng.next_u64() as usize) % r2_size;
-            brain.connect(0, src, 1, dst, INTER_WEIGHT, INTER_DELAY_MS);
+            brain.connect(0, src, 1, dst, inter_weight, INTER_DELAY_MS);
         }
     }
 }
 
 fn fresh_brain(seed: u64) -> Brain {
+    fresh_brain_with(seed, INTER_WEIGHT, R2_INH_FRAC)
+}
+
+/// Iter-50 variant: build the brain with explicit override values
+/// for `INTER_WEIGHT` and `R2_INH_FRAC`. Used by the
+/// `--iter46-baseline` diagnostic to reproduce the original
+/// iter-46 topology (2.0 / 0.20) instead of the iter-47/49
+/// drift values (1.0 / 0.30).
+fn fresh_brain_with(seed: u64, inter_weight: f32, inh_frac: f32) -> Brain {
     let mut brain = Brain::new(DT);
     brain.add_region(build_input_region());
-    brain.add_region(build_memory_region(seed.wrapping_add(1)));
-    wire_forward(&mut brain, seed.wrapping_add(2));
+    brain.add_region(build_memory_region(seed.wrapping_add(1), inh_frac));
+    wire_forward(&mut brain, seed.wrapping_add(2), inter_weight);
     brain
 }
 
@@ -611,6 +631,20 @@ fn stdp() -> StdpParams {
         a_minus: 0.015,
         w_max: 0.8,
         ..StdpParams::default()
+    }
+}
+
+/// Iter-50 diagnostic: the *original* iter-46 iSTDP parameter set.
+/// Used by `--iter46-baseline` to reproduce the iter-46 Arm B
+/// configuration verbatim, *before* the iter-48 tightening
+/// (`a_plus 0.10 → 0.30`, `tau_minus 30 → 8 ms`).
+fn istdp_iter46_baseline() -> IStdpParams {
+    IStdpParams {
+        a_plus: 0.10,
+        a_minus: 1.10,
+        tau_minus: 30.0,
+        w_min: 0.0,
+        w_max: 8.0,
     }
 }
 
@@ -1399,7 +1433,17 @@ pub fn run_postmortem_diagnostic(
 }
 
 pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<RewardEpochMetrics> {
-    let mut brain = fresh_brain(cfg.seed);
+    // Iter-50 diagnostic: when iter46_baseline is set, build the
+    // brain with the original iter-46 INTER_WEIGHT (2.0) and
+    // R2_INH_FRAC (0.20) instead of the iter-47/49 drift values
+    // (1.0 / 0.30). This is the topology Arm B saw when it
+    // reported top-3 = 0.19 in iter-46.
+    let (inter_weight_used, inh_frac_used) = if cfg.teacher.iter46_baseline {
+        (2.0_f32, 0.20_f32)
+    } else {
+        (INTER_WEIGHT, R2_INH_FRAC)
+    };
+    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used);
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
     let r2_e = r2_e_set(&brain);
 
@@ -1411,7 +1455,15 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     // (`istdp()`); each mode overrides per-epoch via `istdp_iter49`.
     // ActivityGated additionally re-enables iSTDP at the start of
     // each epoch with the current ramp value.
-    let mut istdp_params = istdp_iter49(&cfg.teacher, 0);
+    //
+    // Iter-50 diagnostic: when iter46_baseline is set, use the
+    // original iter-46 iSTDP parameter set (a_plus 0.10,
+    // tau_minus 30 ms) instead of iter-48's tightened values.
+    let mut istdp_params = if cfg.teacher.iter46_baseline {
+        istdp_iter46_baseline()
+    } else {
+        istdp_iter49(&cfg.teacher, 0)
+    };
     brain.regions[1].network.enable_stdp(stdp_params);
     brain.regions[1].network.enable_istdp(istdp_params);
     brain.regions[1].network.enable_homeostasis(homeostasis());
@@ -1420,7 +1472,12 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     // INTER_WEIGHT alone risks variance blow-up (some cues over,
     // some under-active). Tracked in metrics:
     // r2_active_pre_teacher (mean, p10, p90), selectivity_index.
-    brain.regions[1].network.enable_intrinsic_plasticity(intrinsic());
+    //
+    // Iter-50 diagnostic: skip when iter46_baseline is set, since
+    // iter-46 Arm B did not enable intrinsic plasticity.
+    if !cfg.teacher.iter46_baseline {
+        brain.regions[1].network.enable_intrinsic_plasticity(intrinsic());
+    }
     if cfg.use_reward {
         brain.regions[1]
             .network
@@ -1430,8 +1487,14 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     // Iter-46: pre-compute the canonical target-R2 SDR for every
     // word in the corpus. The mapping is stable per (word, salt)
     // and never recomputed per trial.
+    //
+    // Iter-50 diagnostic: built unconditionally (cheap hash op)
+    // so the iter-47/48/49 sparsity metrics
+    // (selectivity_index, target_hit_pre_teacher_mean) are also
+    // populated in the iter-46 Arm B path. The map is used only
+    // for clamp/scoring; it does not change the trial schedule.
     let teacher_active = cfg.teacher.enabled;
-    let target_r2_map: std::collections::HashMap<String, Vec<u32>> = if teacher_active {
+    let target_r2_map: std::collections::HashMap<String, Vec<u32>> = {
         let pool = r2_e_pool(&r2_e);
         let salt = cfg.seed ^ 0xCAFE_F00D_DEAD_BEEFu64;
         corpus
@@ -1444,8 +1507,6 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                 )
             })
             .collect()
-    } else {
-        std::collections::HashMap::new()
     };
 
     // Fingerprint the vocabulary once *before* any training so the
@@ -1467,7 +1528,14 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
         // WmaxCap / APlusHalf) return the same params on every epoch
         // so the call is a no-op for them — but it is cheap enough
         // (one parameter copy) that we don't bother branching.
-        istdp_params = istdp_iter49(&cfg.teacher, epoch);
+        //
+        // Iter-50 diagnostic: when iter46_baseline is set, use the
+        // original iter-46 iSTDP every epoch (no ramp).
+        istdp_params = if cfg.teacher.iter46_baseline {
+            istdp_iter46_baseline()
+        } else {
+            istdp_iter49(&cfg.teacher, epoch)
+        };
         brain.regions[1].network.enable_istdp(istdp_params);
 
         // Build the trial schedule for this epoch: every real pair +
@@ -1630,6 +1698,43 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                     }
                     total_reward += reward;
                     reward_trials += 1;
+                }
+
+                // Iter-50 diagnostic: collect the same per-trial
+                // sparsity samples the teacher path collects, so
+                // selectivity_index / target_hit_pre_teacher_mean
+                // are populated for the iter-46 Arm B path too.
+                // Plasticity-OFF read using step_immutable would be
+                // cleaner; here we toggle STDP/iSTDP off for the
+                // brief sample to keep weights stable, then back on.
+                if !*is_noise {
+                    let canonical = target_r2_map
+                        .get(&pair.target)
+                        .cloned()
+                        .unwrap_or_default();
+                    brain.regions[1].network.disable_stdp();
+                    brain.regions[1].network.disable_istdp();
+                    brain.regions[1].network.reset_state();
+                    let pred_counts = drive_for_with_counts(
+                        &mut brain,
+                        &cue_sdr.indices,
+                        RECALL_MS,
+                        &r2_e,
+                    );
+                    brain.regions[1].network.enable_stdp(stdp_params);
+                    brain.regions[1].network.enable_istdp(istdp_params);
+                    let target_set: BTreeSet<u32> =
+                        canonical.iter().copied().collect();
+                    let active = pred_counts.iter().filter(|&&c| c > 0).count() as u32;
+                    let target_hits = pred_counts
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, &c)| {
+                            c > 0 && target_set.contains(&(*i as u32))
+                        })
+                        .count() as u32;
+                    active_samples.push(active);
+                    target_hit_samples.push(target_hits);
                 }
 
                 idle(&mut brain, COOLDOWN_MS);

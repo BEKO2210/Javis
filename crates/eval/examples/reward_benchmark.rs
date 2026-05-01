@@ -52,6 +52,13 @@ fn main() {
     // plasticity_during_prediction either way).
     let istdp_in_prediction = flag(&args, "--istdp-during-prediction");
 
+    // Iter-50 diagnostic: --iter46-baseline reverts INTER_WEIGHT,
+    // R2_INH_FRAC, iSTDP params, and skips IntrinsicParams to
+    // reproduce the original iter-46 Arm B configuration on the
+    // current branch code. Forces iter49_mode = none and ignores
+    // teacher_forcing.
+    let iter46_baseline = flag(&args, "--iter46-baseline");
+
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
     //   wmax-cap       — symptom: iSTDP w_max 8.0 → 2.0
@@ -114,6 +121,7 @@ fn main() {
         iter49_mode,
         gated_warmup_epochs: 2,
         gated_ramp_epochs: 2,
+        iter46_baseline,
     };
 
     let corpus = default_reward_corpus();
@@ -138,7 +146,7 @@ fn main() {
     eprintln!(
         "Reward benchmark: pairs={} noise_pairs={} vocab={} epochs={epochs} reps={reps} seed={seed} \
          teacher_forcing={teacher_on} wta_k={wta_k} homeostasis={homeostasis} r1r2_gate={r1r2_gate} \
-         istdp_in_pred={istdp_in_prediction} iter49={}",
+         istdp_in_pred={istdp_in_prediction} iter49={} iter46_baseline={iter46_baseline}",
         corpus.pairs.len(),
         corpus.noise_pairs.len(),
         corpus.vocab.len(),

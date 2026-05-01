@@ -4,6 +4,102 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 50 (Arm B reproduction)
+
+Bekos diagnostic: before the fourth consecutive parameter sweep
+(STDP magnitude, by iter-49 elimination) or any architecture
+extension (Pfad 2 bridge), reproduce iter-46 Arm B's reported
+top-3 = 0.19 on the current branch code. The data point
+unaddressed for 5 iterations: Arm B's 0.19 is **3× the random
+baseline** and **3× higher than every selectivity-positive arm
+in iter-47/48/49**.
+
+### Added — single commit
+
+- `--iter46-baseline` CLI flag + `TeacherForcingConfig.iter46_baseline`
+  field. When set, simultaneously reverts at runtime:
+  * `INTER_WEIGHT 1.0 → 2.0`
+  * `R2_INH_FRAC 0.30 → 0.20`
+  * `iSTDP a_plus 0.30 → 0.10`, `tau_minus 8 → 30 ms`
+  * Skips `enable_intrinsic_plasticity` (Diehl-Cook OFF)
+  * Forces `iter49_mode = None`
+- `target_r2_map` is now built unconditionally so the iter-47/48/49
+  sparsity metrics (`selectivity_index`, `target_hit_pre_teacher_*`)
+  are populated in the no-teacher Arm B path too.
+- Per-trial plasticity-OFF cue-only diagnostic sample after each
+  rep in the no-teacher branch — collects `active_samples` and
+  `target_hit_samples` for the sparsity-metric calculation.
+
+### Verified — `--epochs 4 --reps 4 --iter46-baseline`
+
+| Arm | top-3 epoch 0 | best top-3 | mean reward | selectivity |
+| --- | ---: | ---: | ---: | ---: |
+| **Arm B (R-STDP, no teacher)** | **0.19** ✓ | **0.19** | **−0.59** | −0.009 |
+| Arm A (pure STDP) | 0.00 | 0.06 | 0.00 | −0.008 |
+
+| Comparison: same 4 epochs, current iter-49 defaults |
+| --- |
+| iter-48 Config 1 (teacher on, current code): top-3 = 0.06 |
+| iter-48 Config 2 (+ istdp-during-prediction):  top-3 = 0.06 |
+
+### Outcome — (b) with critical nuance
+
+**top-3 = 0.19 reproduces in epoch 0 of Arm B.** Code drift
+hypothesis (c) **falsified**. But the iter-47/48/49 sparsity
+metrics show negative selectivity in Arm B — and a numerical
+sanity check shows why: the canonical hash R2 SDR (used as the
+ground-truth set for selectivity) is **never causally activated
+in the no-teacher path**. The "expected target_hit under uniform
+random firing" with `r2_active = 173` is `173 × 30/1400 = 3.71`;
+the observed 3.00 sits *below* random expectation. Negative
+selectivity in Arm B is not a learning signal — it's the
+chance result of comparing an arbitrary hash subset against
+unrelated firing.
+
+### Mechanistic explanation (why teacher-forcing is *worse* here)
+
+Two contributing causes:
+
+1. **Phase budget**: Arm B drives `cue + target` together for
+   ~70 ms of overlapping pre/post coincidences per rep
+   (`CUE_LEAD_MS = 40` + `OVERLAP_MS = 30` + `TARGET_TAIL_MS = 30`).
+   The 6-phase teacher schedule has only `teacher_ms = 40 ms`
+   of plasticity-on coincidence — less than half.
+2. **Trivial-learning trap**: the 250 nA R2-clamp activates
+   target cells *directly*. STDP then learns "when clamp is on,
+   target cells fire" — a tautology, not a cue→target
+   association.
+
+### Implications for iter-51
+
+**Ruled out by data:**
+- "Raise STDP a_plus" sweep on iter-49 defaults (would optimise
+  against a metric that's now known to be meaningless in the
+  no-teacher path that actually performs better)
+- Pfad-2 bridge architecture (premature; baseline is unsolved)
+
+**Ruled in:**
+- **Iter-51 = reductive Arm B parameter study**: vary
+  `reps_per_pair`, `w_max`, R-STDP `eta` one-at-a-time, measure
+  top-3 (the metric that reads in this path) over 16 epochs.
+  Find out whether 0.19 is a ceiling or a starting point.
+- **Replace `selectivity_index`** with a decoder-relative
+  measurement that's meaningful in BOTH paths (e.g. "top-3
+  against the per-epoch fingerprint dictionary") before
+  trusting it for further architectural decisions.
+
+### Methodological lesson (notes/50, full version)
+
+Five iterations of clean methodology optimised against
+`selectivity_index` in arms where the metric is structurally
+meaningless. The simplest working configuration (Arm B) was
+documented and discarded in iter-46 instead of being saved as a
+regression guard. Top-3 quietly held at 0.06 across iter-47/48/49
+while Arm B was always at 0.19 — invisible because we stopped
+running it.
+
+All 9 eval lib tests still green; clippy `-D warnings` clean.
+
 ## Unreleased — Iteration 49 (iSTDP bounds & schedule sweep)
 
 3-point parallel sweep on the *under-tuned* side of the iter-48
