@@ -282,6 +282,16 @@ pub struct TeacherForcingConfig {
     /// Print debug info for the first 1–3 example pairs of each
     /// arm. See [`RewardConfig::debug_trials`].
     pub debug_trials: u32,
+    /// Iter-48 A/B knob: keep iSTDP active during the prediction
+    /// phase. Default `false` preserves the iter-46 invariant
+    /// "evaluation does not modify weights"; setting it `true`
+    /// lets inhibitory plasticity respond to the cue *during*
+    /// the read-out, which the iter-47a postmortem identified as
+    /// the natural test for "does iSTDP catch the cascade in time
+    /// or only after the trial". Excitatory STDP and R-STDP are
+    /// still gated by `plasticity_during_prediction`; this flag
+    /// only opens iSTDP separately.
+    pub istdp_during_prediction: bool,
     /// During the prediction phase only, scale the R1 cue current
     /// by this factor. `1.0` = no gating (default); `0.3` halves
     /// the forward drive so the cue's R2 response is more easily
@@ -317,6 +327,7 @@ impl Default for TeacherForcingConfig {
             homeostatic_normalization: true,
             debug_trials: 0,
             r1r2_prediction_gate: 1.0,
+            istdp_during_prediction: false,
         }
     }
 }
@@ -342,6 +353,7 @@ impl TeacherForcingConfig {
             homeostatic_normalization: false,
             debug_trials: 0,
             r1r2_prediction_gate: 1.0,
+            istdp_during_prediction: false,
         }
     }
     pub const fn enabled() -> Self {
@@ -937,8 +949,19 @@ fn run_teacher_trial(
     //      so the recurrent path (whatever STDP has shaped so far)
     //      gets a fair shot at biasing R2 against the otherwise-
     //      dominant R1 forward drive.
-    if !cfg.plasticity_during_prediction {
+    // Iter-48 A/B: iSTDP is gated separately from STDP / R-STDP.
+    // The default (`istdp_during_prediction = false`) preserves
+    // the iter-46 invariant. Setting it `true` lets inhibitory
+    // plasticity respond to the cue *during* the read-out — the
+    // natural test for "does iSTDP catch the cascade in time"
+    // identified by the iter-47a postmortem.
+    let suppress_stdp = !cfg.plasticity_during_prediction;
+    let suppress_istdp =
+        !cfg.plasticity_during_prediction && !cfg.istdp_during_prediction;
+    if suppress_stdp {
         brain.regions[1].network.disable_stdp();
+    }
+    if suppress_istdp {
         brain.regions[1].network.disable_istdp();
     }
     let pred_counts = drive_with_r2_clamp(
@@ -950,8 +973,10 @@ fn run_teacher_trial(
         cfg.prediction_ms as f32,
         r2_e,
     );
-    if !cfg.plasticity_during_prediction {
+    if suppress_stdp {
         brain.regions[1].network.enable_stdp(rest_stdp);
+    }
+    if suppress_istdp {
         brain.regions[1].network.enable_istdp(rest_istdp);
     }
     let pred_topk = top_k_indices(&pred_counts, cfg.wta_k.max(1));

@@ -46,6 +46,11 @@ fn main() {
     let noise_reward: f32 = parse_arg(&args, "--noise-reward", -1.0_f32);
     let homeostasis = flag(&args, "--homeostasis");
     let debug_trials: u32 = if flag(&args, "--debug-trial") { 3 } else { 0 };
+    // Iter-48 A/B: keep iSTDP active during the prediction phase
+    // (default OFF — preserves iter-46's "evaluation does not
+    // modify weights" invariant; STDP and R-STDP stay gated by
+    // plasticity_during_prediction either way).
+    let istdp_in_prediction = flag(&args, "--istdp-during-prediction");
     // Iter-47a postmortem mode: trains for `train_epochs` epochs with
     // the configured teacher arm, then runs a single read-only
     // diagnostic trial that captures per-step prediction-phase
@@ -85,6 +90,7 @@ fn main() {
         homeostatic_normalization: homeostasis,
         debug_trials,
         r1r2_prediction_gate: r1r2_gate,
+        istdp_during_prediction: istdp_in_prediction,
     };
 
     let corpus = default_reward_corpus();
@@ -108,7 +114,8 @@ fn main() {
 
     eprintln!(
         "Reward benchmark: pairs={} noise_pairs={} vocab={} epochs={epochs} reps={reps} seed={seed} \
-         teacher_forcing={teacher_on} wta_k={wta_k} homeostasis={homeostasis} r1r2_gate={r1r2_gate}",
+         teacher_forcing={teacher_on} wta_k={wta_k} homeostasis={homeostasis} r1r2_gate={r1r2_gate} \
+         istdp_in_pred={istdp_in_prediction}",
         corpus.pairs.len(),
         corpus.noise_pairs.len(),
         corpus.vocab.len(),
