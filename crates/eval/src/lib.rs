@@ -6,11 +6,16 @@
 //! would each system actually send to a downstream LLM for a given
 //! query?
 
+pub mod reward_bench;
 pub mod scale_bench;
 pub mod scale_corpus;
 pub mod token_efficiency;
 pub mod wiki_corpus;
 
+pub use reward_bench::{
+    default_corpus as default_reward_corpus, render_markdown as render_reward_markdown,
+    run_reward_benchmark, RewardConfig, RewardCorpus, RewardEpochMetrics, RewardPair,
+};
 pub use scale_bench::{Iter44Config, ScaleBrain, ScaleQueryResult, ScaleReport, ScaleSummary};
 pub use scale_corpus::{build_scale_corpus, ScaleCorpus};
 pub use wiki_corpus::{wiki_corpus, wiki_queries};

@@ -90,6 +90,25 @@ the new topology. Updated cross-bleed and recall numbers are in
 [`notes/43-topology-scaling.md`](notes/43-topology-scaling.md) once the
 benchmark run completes.
 
+### What changes in iter 45 (this branch)
+
+A *reward-aware pair-association benchmark*
+(`cargo run --release -p eval --example reward_benchmark`) that
+finally lets the iter-44 R-STDP / dopamine machinery be exercised:
+16 (cue, target) pairs with 16 distractor pairs, staggered
+cue → target training, per-trial reward delivery, per-epoch
+top-1 / top-3 readout. Pure STDP is run as the baseline arm.
+
+The honest reading: **neither arm reaches above-chance accuracy in
+the available training time**. R-STDP shows a small advantage on
+noise suppression (mean noise-top-3 `0.10` vs pure STDP `0.16`)
+but the architecture's R1 → R2 forward path dominates the cue's
+R2 representation, leaving STDP too little room to grow strong
+recurrent associations. The infrastructure is in place; the next
+experiment (teacher-forcing the target SDR into R2 during
+training) is documented in
+[`notes/45`](notes/45-reward-bench.md).
+
 ### What changes in iter 44.1 (this branch)
 
 A *decoder confidence floor* via `--decode-threshold` (default `0.0`
@@ -474,6 +493,8 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 42 | Validation-at-scale: honest 100-sentence benchmark, FP/FN/recall metrics |
 | 43 | Topology scaling: R2 2 000→10 000, sparser connectivity, retuned iSTDP |
 | 44 | **Breakthrough plasticity stack**: triplet-STDP, R-STDP, BCM metaplasticity, intrinsic plasticity, heterosynaptic norm, structural plasticity, offline replay |
+| 44.1 | Decoder confidence floor (`--decode-threshold`): FP −86%, token reduction +2× |
+| 45 | **Reward-aware pair-association harness**: dopamine + eligibility tag exercised end-to-end, honest "no convergence yet" finding documented |
 
 ---
 

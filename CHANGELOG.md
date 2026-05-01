@@ -4,6 +4,35 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 45 (reward-aware pair-association harness)
+
+### Added
+- `crates/eval/src/reward_bench.rs` — `RewardPair`, `RewardCorpus`,
+  `RewardConfig`, `RewardEpochMetrics`, `run_reward_benchmark`,
+  `default_reward_corpus`, `render_markdown`. Pair-association
+  task with deliberate distractors, staggered cue → target
+  training, per-trial reward delivery, per-epoch top-1 / top-3
+  readout.
+- `crates/eval/examples/reward_benchmark.rs` — CLI runner that
+  produces a side-by-side Markdown comparison of pure STDP vs
+  R-STDP across N epochs.
+- 1 new smoke test (`reward_benchmark_smoke`) — runs both arms on
+  a 4-pair sub-corpus for 2 epochs and asserts every metric is
+  finite and in [0, 1].
+- `notes/45-reward-bench.md` — full architectural rationale,
+  trial schedule, measured results, honest reading.
+
+### Verified
+The harness wires R-STDP cleanly: dopamine + eligibility tag move
+weights, both noise-only-arms have a `mean_reward = -1.0` baseline,
+and the smoke test passes in ~22 s. R-STDP shows a small
+noise-suppression advantage over pure STDP (mean noise-top-3 0.10
+vs 0.16 over 6 epochs at reps = 4) but neither configuration
+converges to above-chance pair-association accuracy in the
+training time the current architecture allows. The likely next
+experiment — teacher-forcing the target SDR directly into R2 —
+is documented in `notes/45` as a concrete follow-up.
+
 ## Unreleased — Iteration 44.1 (decoder confidence floor)
 
 ### Added
