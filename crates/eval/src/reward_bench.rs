@@ -640,6 +640,139 @@ fn shuffle<T>(rng: &mut Rng, v: &mut [T]) {
     }
 }
 
+/// Iter-46 six-phase trial. Returns the prediction-phase top-k
+/// (computed *before* teacher-forcing) so the caller can score
+/// recall and feed reward without contaminating the eval signal.
+///
+/// Plasticity is silenced during the prediction phase by toggling
+/// the `Network`'s STDP / iSTDP / R-STDP setters around the
+/// prediction window. The teacher phase clamps the canonical
+/// target SDR directly into R2 so STDP picks up clean
+/// pre→post coincidences between cue-driven cells and the
+/// teacher-clamped target cells.
+#[allow(clippy::too_many_arguments)]
+fn run_teacher_trial(
+    brain: &mut Brain,
+    cfg: &TeacherForcingConfig,
+    use_reward: bool,
+    is_noise: bool,
+    cue_sdr: &[u32],
+    target_r2_sdr: &[u32],
+    r2_e: &BTreeSet<usize>,
+    rest_stdp: StdpParams,
+    rest_istdp: IStdpParams,
+) -> TrialOutcome {
+    let mut outcome = TrialOutcome::default();
+
+    // ---- Phase 1: cue alone (R1 forward path).
+    drive_for(brain, cue_sdr, cfg.cue_ms as f32);
+
+    // ---- Phase 2: delay (no input).
+    idle(brain, cfg.delay_ms as f32);
+
+    // ---- Phase 3: prediction. Plasticity off so the test does not
+    //      mutate weights. We toggle STDP / iSTDP off, then back on
+    //      after the prediction window. R-STDP eligibility decay
+    //      continues normally — that's fine, it's the *gated*
+    //      update we want to keep silenced (modulator stays 0).
+    if !cfg.plasticity_during_prediction {
+        brain.regions[1].network.disable_stdp();
+        brain.regions[1].network.disable_istdp();
+    }
+    let pred_counts = drive_for_with_counts(
+        brain,
+        cue_sdr,
+        cfg.prediction_ms as f32,
+        r2_e,
+    );
+    if !cfg.plasticity_during_prediction {
+        brain.regions[1].network.enable_stdp(rest_stdp);
+        brain.regions[1].network.enable_istdp(rest_istdp);
+    }
+    let pred_topk = top_k_indices(&pred_counts, cfg.wta_k.max(1));
+    outcome.prediction_topk = pred_topk.clone();
+    outcome.prediction_active_count =
+        pred_counts.iter().filter(|&&c| c > 0).count() as u32;
+
+    // ---- Phase 4: teacher. Cue + R2 target clamp. Plasticity ON
+    //      (it is by default; this matches the iter-45 reps loop).
+    if !cfg.plasticity_during_teacher {
+        brain.regions[1].network.disable_stdp();
+        brain.regions[1].network.disable_istdp();
+    }
+    let teacher_counts = drive_with_r2_clamp(
+        brain,
+        cue_sdr,
+        target_r2_sdr,
+        DRIVE_NA,
+        cfg.target_clamp_strength,
+        cfg.teacher_ms as f32,
+        r2_e,
+    );
+    if !cfg.plasticity_during_teacher {
+        brain.regions[1].network.enable_stdp(rest_stdp);
+        brain.regions[1].network.enable_istdp(rest_istdp);
+    }
+    // Diagnostic: how reliably did the clamp drive the intended set?
+    let target_set: BTreeSet<u32> = target_r2_sdr.iter().copied().collect();
+    let clamp_hit = target_set
+        .iter()
+        .filter(|&&i| teacher_counts[i as usize] > 0)
+        .count();
+    outcome.target_clamp_hits = clamp_hit as u32;
+    outcome.target_clamp_size = target_r2_sdr.len() as u32;
+
+    // ---- Phase 5: reward. Score the *prediction* against the
+    //      canonical target — teacher activation does NOT count.
+    let target_in_topk = pred_topk
+        .iter()
+        .any(|i| target_set.contains(i));
+    let any_wrong_topk = pred_topk
+        .iter()
+        .any(|i| !target_set.contains(i));
+    let reward = if !use_reward {
+        0.0
+    } else if is_noise {
+        cfg.noise_reward
+    } else if target_in_topk {
+        cfg.positive_reward_for_correct
+    } else if any_wrong_topk {
+        cfg.negative_reward_for_false_topk
+    } else {
+        // Empty prediction or all targets — neutral.
+        0.0
+    };
+    outcome.prediction_correct = target_in_topk && !is_noise;
+    outcome.reward_value = reward;
+
+    if use_reward && reward != 0.0 && cfg.reward_after_teacher {
+        brain.set_neuromodulator(reward);
+        // Brief consolidation drive — same length as the teacher
+        // phase, cue alone (no clamp) so the modulator gates the
+        // eligibility tag built up during the teacher window.
+        drive_for(brain, cue_sdr, cfg.teacher_ms as f32);
+        brain.set_neuromodulator(0.0);
+    }
+
+    // ---- Phase 6: tail (let traces decay).
+    idle(brain, cfg.tail_ms as f32);
+
+    outcome
+}
+
+/// Per-trial diagnostics that the teacher schedule emits.
+/// All fields default to zero so the caller can accumulate them
+/// across a whole epoch without special cases.
+#[derive(Debug, Default, Clone)]
+struct TrialOutcome {
+    prediction_topk: Vec<u32>,
+    prediction_active_count: u32,
+    target_clamp_hits: u32,
+    target_clamp_size: u32,
+    prediction_correct: bool,
+    reward_value: f32,
+}
+
 // ----------------------------------------------------------------------
 // The harness. Three phases per trial: paired training, evaluation,
 // optional reward delivery.
@@ -656,14 +789,37 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     // Plasticity setup. `enable_reward_learning` allocates the per-
     // synapse eligibility tag; without it the modulator setter is a
     // no-op even if the caller flips it on.
-    brain.regions[1].network.enable_stdp(stdp());
-    brain.regions[1].network.enable_istdp(istdp());
+    let stdp_params = stdp();
+    let istdp_params = istdp();
+    brain.regions[1].network.enable_stdp(stdp_params);
+    brain.regions[1].network.enable_istdp(istdp_params);
     brain.regions[1].network.enable_homeostasis(homeostasis());
     if cfg.use_reward {
         brain.regions[1]
             .network
             .enable_reward_learning(reward_params());
     }
+
+    // Iter-46: pre-compute the canonical target-R2 SDR for every
+    // word in the corpus. The mapping is stable per (word, salt)
+    // and never recomputed per trial.
+    let teacher_active = cfg.teacher.enabled;
+    let target_r2_map: std::collections::HashMap<String, Vec<u32>> = if teacher_active {
+        let pool = r2_e_pool(&r2_e);
+        let salt = cfg.seed ^ 0xCAFE_F00D_DEAD_BEEFu64;
+        corpus
+            .vocab
+            .iter()
+            .map(|w| {
+                (
+                    w.clone(),
+                    canonical_target_r2_sdr(w, &pool, TARGET_R2_K, salt),
+                )
+            })
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
 
     // Fingerprint the vocabulary once *before* any training so the
     // dictionary contains the encoder's address-side mapping. The
@@ -693,96 +849,102 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
         let mut reward_trials = 0usize;
 
         for (pair, is_noise) in &schedule {
-            // -- Phase 1: cue-then-target staggered training,
-            //    repeated `reps_per_pair` times. Drive cue alone, then
-            //    cue + target overlap, then target alone. The
-            //    lead/overlap/tail schedule gives STDP a clean
-            //    pre-before-post timing asymmetry so it grows
-            //    `cue → target` weights preferentially. Each
-    //        single presentation is too short to outpace the
-            //    dominant R1 → R2 forward drive; the reps loop is what
-            //    actually produces learnable recurrent weight changes.
             let cue_sdr = encoder.encode_word(&pair.cue);
             let tgt_sdr = encoder.encode_word(&pair.target);
-            let mut combined: Vec<u32> = cue_sdr
-                .indices
-                .iter()
-                .chain(tgt_sdr.indices.iter())
-                .copied()
-                .collect();
-            combined.sort_unstable();
-            combined.dedup();
-            for _ in 0..cfg.reps_per_pair.max(1) {
-                brain.regions[1].network.reset_state();
-                drive_for(&mut brain, &cue_sdr.indices, CUE_LEAD_MS);
-                drive_for(&mut brain, &combined, OVERLAP_MS);
-                drive_for(&mut brain, &tgt_sdr.indices, TARGET_TAIL_MS);
-            }
 
-            // -- Phase 2: reward delivery. We don't yet know whether
-            //    the brain learnt this pair correctly — running the
-            //    full vocabulary fingerprint here would (a) take
-            //    forever and (b) erase the eligibility tag. Instead
-            //    we use a *cheap* proxy: the immediate post-training
-            //    R2 activity already encodes the cue→target
-            //    coincidence. The eligibility-tagged weights pick up
-            //    the modulator regardless of the proxy's accuracy;
-            //    bad proxies just move the reward sign somewhat
-            //    randomly, which is fine because R-STDP averages
-            //    over many trials.
-            //
-            //    For real pairs, we test cue alone and ask "did the
-            //    target's SDR drive R2 activity into the same set of
-            //    cells we just trained on?" Specifically, count how
-            //    much overlap the cue-alone recall has with the
-            //    *target* SDR's expected forward projection.
-            //    For noise pairs, the reward is always negative
-            //    because we *want* the noise (cue, distractor) link
-            //    suppressed.
-            if cfg.use_reward {
-                let reward = if *is_noise {
-                    -1.0_f32
-                } else {
-                    // Quick proxy: drive cue, see if any target-bin
-                    // R2 cells fire above baseline. The proxy doesn't
-                    // need to be perfect — it just needs to point in
-                    // the right direction more often than not.
+            if teacher_active {
+                // -- Iter-46: six-phase trial with R2 target clamp.
+                //    See `run_teacher_trial`. The schedule cleanly
+                //    separates training (teacher phase, plasticity
+                //    on) from evaluation (prediction phase,
+                //    plasticity off). The reward is computed from
+                //    the prediction *before* the teacher fires, so
+                //    teacher-induced activation never counts as
+                //    recall success.
+                let canonical = target_r2_map.get(&pair.target).cloned().unwrap_or_default();
+                for _ in 0..cfg.reps_per_pair.max(1) {
                     brain.regions[1].network.reset_state();
-                    let counts =
-                        drive_for_with_counts(&mut brain, &cue_sdr.indices, RECALL_MS, &r2_e);
-                    let kwta = top_k_indices(&counts, KWTA_K);
-                    let target_kwta = {
+                    let outcome = run_teacher_trial(
+                        &mut brain,
+                        &cfg.teacher,
+                        cfg.use_reward,
+                        *is_noise,
+                        &cue_sdr.indices,
+                        &canonical,
+                        &r2_e,
+                        stdp_params,
+                        istdp_params,
+                    );
+                    if cfg.use_reward {
+                        total_reward += outcome.reward_value;
+                        reward_trials += 1;
+                    }
+                    idle(&mut brain, COOLDOWN_MS);
+                }
+            } else {
+                // -- Iter-45 fallback: cue-then-target staggered
+                //    training, no R2 clamp.
+                let mut combined: Vec<u32> = cue_sdr
+                    .indices
+                    .iter()
+                    .chain(tgt_sdr.indices.iter())
+                    .copied()
+                    .collect();
+                combined.sort_unstable();
+                combined.dedup();
+                for _ in 0..cfg.reps_per_pair.max(1) {
+                    brain.regions[1].network.reset_state();
+                    drive_for(&mut brain, &cue_sdr.indices, CUE_LEAD_MS);
+                    drive_for(&mut brain, &combined, OVERLAP_MS);
+                    drive_for(&mut brain, &tgt_sdr.indices, TARGET_TAIL_MS);
+                }
+
+                // Iter-45 reward: cue-vs-target overlap proxy, then
+                // brief consolidation drive with the modulator set.
+                if cfg.use_reward {
+                    let reward = if *is_noise {
+                        -1.0_f32
+                    } else {
                         brain.regions[1].network.reset_state();
-                        let cs = drive_for_with_counts(
+                        let counts = drive_for_with_counts(
                             &mut brain,
-                            &tgt_sdr.indices,
+                            &cue_sdr.indices,
                             RECALL_MS,
                             &r2_e,
                         );
-                        top_k_indices(&cs, KWTA_K)
+                        let kwta = top_k_indices(&counts, KWTA_K);
+                        let target_kwta = {
+                            brain.regions[1].network.reset_state();
+                            let cs = drive_for_with_counts(
+                                &mut brain,
+                                &tgt_sdr.indices,
+                                RECALL_MS,
+                                &r2_e,
+                            );
+                            top_k_indices(&cs, KWTA_K)
+                        };
+                        let overlap =
+                            kwta.iter().filter(|i| target_kwta.contains(i)).count();
+                        let ratio = overlap as f32 / target_kwta.len().max(1) as f32;
+                        if ratio >= 0.30 {
+                            1.0
+                        } else if ratio >= 0.15 {
+                            0.0
+                        } else {
+                            -0.5
+                        }
                     };
-                    let overlap = kwta.iter().filter(|i| target_kwta.contains(i)).count();
-                    let ratio = overlap as f32 / target_kwta.len().max(1) as f32;
-                    if ratio >= 0.30 {
-                        1.0
-                    } else if ratio >= 0.15 {
-                        0.0
-                    } else {
-                        -0.5
+                    if reward != 0.0 {
+                        brain.set_neuromodulator(reward);
+                        drive_for(&mut brain, &cue_sdr.indices, CONSOLIDATION_MS);
+                        brain.set_neuromodulator(0.0);
                     }
-                };
-                if reward != 0.0 {
-                    brain.set_neuromodulator(reward);
-                    drive_for(&mut brain, &cue_sdr.indices, CONSOLIDATION_MS);
-                    brain.set_neuromodulator(0.0);
+                    total_reward += reward;
+                    reward_trials += 1;
                 }
-                total_reward += reward;
-                reward_trials += 1;
-            }
 
-            // Brief idle so eligibility and traces decay before the
-            // next trial.
-            idle(&mut brain, COOLDOWN_MS);
+                idle(&mut brain, COOLDOWN_MS);
+            }
         }
 
         // ---- Epoch readout: build the dictionary *once* against the
