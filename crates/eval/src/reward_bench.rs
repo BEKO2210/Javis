@@ -100,8 +100,12 @@ pub struct RewardCorpus {
     pub vocab: BTreeSet<String>,
 }
 
-/// Per-epoch readout.
-#[derive(Debug, Clone)]
+/// Per-epoch readout. Iter-45 fields are the ones the original
+/// table used; iter-46 adds the diagnostic metrics needed to
+/// distinguish "the brain learnt the association" from "the
+/// teacher activated the target during training" — the
+/// distinction the original harness could not make.
+#[derive(Debug, Clone, Default)]
 pub struct RewardEpochMetrics {
     pub epoch: usize,
     /// Fraction of `pairs` whose target is the *single* top-decoded
@@ -118,6 +122,46 @@ pub struct RewardEpochMetrics {
     /// Lower is better — the brain should *not* learn the distractor
     /// associations.
     pub noise_top3_rate: f32,
+
+    // ---- iter-46 diagnostics ------------------------------------
+
+    /// Random top-3 baseline — `decode_k / vocab_size`. Anything
+    /// at or below this is statistically indistinguishable from
+    /// chance.
+    pub random_top3_baseline: f32,
+    /// Mean rank of the correct target across all real pairs.
+    /// 1.0 = perfect, larger = worse. NaN if no decoder hits.
+    pub mean_rank: f32,
+    /// Mean reciprocal rank — the right metric when "is the answer
+    /// somewhere in the list" matters more than top-k binary.
+    pub mrr: f32,
+    /// Fraction of teacher-clamped target neurons that actually
+    /// fired during the teacher phase. < 0.5 means the clamp is
+    /// not strong enough to override R1's forward drive.
+    pub target_clamp_hit_rate: f32,
+    /// Top-3 fraction measured *during the prediction phase*,
+    /// before teacher firing. The cleanest signal of "the brain
+    /// learnt the association without help".
+    pub prediction_top3_before_teacher: f32,
+    /// Number of synapses with a non-zero eligibility tag at the
+    /// end of the epoch. > 0 means R-STDP machinery is alive.
+    pub eligibility_nonzero_count: u32,
+    /// Mean R2 → R2 weight at the end of the epoch.
+    pub r2_recurrent_weight_mean: f32,
+    /// Max R2 → R2 weight (a runaway-LTP early-warning).
+    pub r2_recurrent_weight_max: f32,
+    /// Mean active R2-E units when *cue alone* is presented at
+    /// final eval. Compared against KWTA_K to spot runaway
+    /// activity.
+    pub active_r2_units_per_cue: f32,
+    /// `correct_pair_weight_mean − incorrect_pair_weight_mean` —
+    /// the cleanest single number for "is the brain
+    /// preferentially strengthening the *right* associations?".
+    pub correct_minus_incorrect_margin: f32,
+    /// Wall-time of the final-eval decoder pass (microseconds).
+    /// Useful to see whether iter-46 is slower than iter-45's
+    /// dictionary-rebuild.
+    pub decoder_micros: u128,
 }
 
 /// Iter-46 teacher-forcing configuration. When attached to a
@@ -847,6 +891,12 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
 
         let mut total_reward = 0.0_f32;
         let mut reward_trials = 0usize;
+        // Iter-46 per-epoch accumulators.
+        let mut clamp_hit_total: u64 = 0;
+        let mut clamp_size_total: u64 = 0;
+        let mut prediction_top3_hits: u32 = 0;
+        let mut prediction_top3_total: u32 = 0;
+        let mut debug_emitted: u32 = 0;
 
         for (pair, is_noise) in &schedule {
             let cue_sdr = encoder.encode_word(&pair.cue);
@@ -862,7 +912,7 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                 //    teacher-induced activation never counts as
                 //    recall success.
                 let canonical = target_r2_map.get(&pair.target).cloned().unwrap_or_default();
-                for _ in 0..cfg.reps_per_pair.max(1) {
+                for rep in 0..cfg.reps_per_pair.max(1) {
                     brain.regions[1].network.reset_state();
                     let outcome = run_teacher_trial(
                         &mut brain,
@@ -878,6 +928,47 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                     if cfg.use_reward {
                         total_reward += outcome.reward_value;
                         reward_trials += 1;
+                    }
+                    // Iter-46 trial diagnostics.
+                    clamp_hit_total += outcome.target_clamp_hits as u64;
+                    clamp_size_total += outcome.target_clamp_size as u64;
+                    if !*is_noise {
+                        // Did the prediction-phase top-k contain *any*
+                        // canonical target neuron? (top3 in name —
+                        // wta_k controls actual k.)
+                        let target_set: BTreeSet<u32> =
+                            canonical.iter().copied().collect();
+                        if outcome
+                            .prediction_topk
+                            .iter()
+                            .any(|i| target_set.contains(i))
+                        {
+                            prediction_top3_hits += 1;
+                        }
+                        prediction_top3_total += 1;
+                    }
+                    // Debug: print the first `debug_trials` real-pair
+                    // diagnostics each epoch so the operator can see
+                    // the clamp / prediction / reward chain.
+                    if cfg.teacher.debug_trials > 0
+                        && debug_emitted < cfg.teacher.debug_trials
+                        && !*is_noise
+                        && rep == 0
+                    {
+                        eprintln!(
+                            "  [debug epoch={epoch} pair=({}, {})] \
+                             clamp={}/{} pred_active={} pred_topk={:?} \
+                             pred_correct={} reward={:+.2}",
+                            pair.cue,
+                            pair.target,
+                            outcome.target_clamp_hits,
+                            outcome.target_clamp_size,
+                            outcome.prediction_active_count,
+                            outcome.prediction_topk,
+                            outcome.prediction_correct,
+                            outcome.reward_value,
+                        );
+                        debug_emitted += 1;
                     }
                     idle(&mut brain, COOLDOWN_MS);
                 }
@@ -947,35 +1038,139 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
             }
         }
 
-        // ---- Epoch readout: build the dictionary *once* against the
-        //      current weights, then probe every real pair top-1 /
-        //      top-3 and every noise pair distractor-top-3. Doing
-        //      this per-epoch (rather than per-trial as the original
-        //      design did) cuts the wall-time by ≈ 30× and gives
-        //      every word the same fixed reference fingerprint.
+        // ---- Epoch readout. Two parallel evaluations:
+        //
+        //   * iter-45 path (always run): build a dictionary by
+        //     fingerprinting every vocab word against the current
+        //     state, score top-1/top-3 against that dictionary.
+        //
+        //   * iter-46 path (teacher_active only): score against the
+        //     *canonical* target SDR map. A real pair is "correct"
+        //     iff cue-only recall has ≥ ε overlap with the canonical
+        //     target — that's the cleanest "did the brain learn the
+        //     association" question, untouched by per-epoch
+        //     fingerprint drift.
+        //
+        // Plasticity is silenced for the duration of the readout
+        // so the test does not contaminate the next epoch's
+        // training.
+        let saved_modulator = brain.regions[1].network.neuromodulator;
+        brain.regions[1].network.disable_stdp();
+        brain.regions[1].network.disable_istdp();
+        brain.set_neuromodulator(0.0);
+
+        let dec_t0 = std::time::Instant::now();
         let dict = build_vocab_dictionary(&mut brain, &encoder, &r2_e, &vocab);
         let mut top1 = 0usize;
         let mut top3 = 0usize;
-        let mut noise_hits = 0usize;
+        let mut rank_sum = 0.0_f32;
+        let mut rr_sum = 0.0_f32;
+        let mut active_total: u64 = 0;
+        let mut active_n: u32 = 0;
+        let mut correct_pair_w_sum = 0.0_f64;
+        let mut correct_pair_w_count = 0_usize;
+        let mut incorrect_pair_w_sum = 0.0_f64;
+        let mut incorrect_pair_w_count = 0_usize;
         for pair in &corpus.pairs {
-            let (in_top1, in_top3) =
-                evaluate_with_dict(&mut brain, &encoder, &r2_e, &dict, &pair.cue, &pair.target);
-            if in_top1 {
-                top1 += 1;
+            let cue_sdr = encoder.encode_word(&pair.cue);
+            if cue_sdr.indices.is_empty() {
+                continue;
             }
-            if in_top3 {
-                top3 += 1;
+            brain.regions[1].network.reset_state();
+            let counts =
+                drive_for_with_counts(&mut brain, &cue_sdr.indices, RECALL_MS, &r2_e);
+            active_total += counts.iter().filter(|&&c| c > 0).count() as u64;
+            active_n += 1;
+            let kwta = top_k_indices(&counts, KWTA_K);
+            if kwta.is_empty() {
+                continue;
+            }
+            // Iter-45 dictionary scoring (rank etc.).
+            let decoded = dict.decode_top(&kwta, 16);
+            let rank = decoded
+                .iter()
+                .position(|(w, _)| w == &pair.target)
+                .map(|p| p + 1);
+            if let Some(r) = rank {
+                rank_sum += r as f32;
+                rr_sum += 1.0 / r as f32;
+                if r == 1 {
+                    top1 += 1;
+                }
+                if r <= 3 {
+                    top3 += 1;
+                }
+            } else {
+                // Missing — count as last-rank for the average.
+                rank_sum += vocab.len() as f32;
+            }
+            // Iter-46 canonical-target margin: the cue-driven
+            // R2 spike count averaged over correct vs incorrect
+            // target neurons.
+            if teacher_active {
+                if let Some(canonical) = target_r2_map.get(&pair.target) {
+                    let target_set: BTreeSet<u32> =
+                        canonical.iter().copied().collect();
+                    let (mut correct_sum, mut correct_n, mut incorrect_sum, mut incorrect_n) =
+                        (0u64, 0u32, 0u64, 0u32);
+                    for (i, &c) in counts.iter().enumerate() {
+                        if !r2_e.contains(&i) {
+                            continue;
+                        }
+                        if target_set.contains(&(i as u32)) {
+                            correct_sum += c as u64;
+                            correct_n += 1;
+                        } else {
+                            incorrect_sum += c as u64;
+                            incorrect_n += 1;
+                        }
+                    }
+                    if correct_n > 0 {
+                        correct_pair_w_sum += correct_sum as f64 / correct_n as f64;
+                        correct_pair_w_count += 1;
+                    }
+                    if incorrect_n > 0 {
+                        incorrect_pair_w_sum += incorrect_sum as f64 / incorrect_n as f64;
+                        incorrect_pair_w_count += 1;
+                    }
+                }
             }
         }
+        let mut noise_hits = 0usize;
         for pair in &corpus.noise_pairs {
-            // For noise pairs, the "correct" answer is the *real*
-            // target, not the distractor — so a noise hit means the
-            // brain incorrectly placed the *distractor* target in
-            // the top-3 when given that cue.
             let (_, distractor_in_top3) =
                 evaluate_with_dict(&mut brain, &encoder, &r2_e, &dict, &pair.cue, &pair.target);
             if distractor_in_top3 {
                 noise_hits += 1;
+            }
+        }
+        let decoder_micros = dec_t0.elapsed().as_micros();
+
+        // Restore plasticity for the next epoch.
+        brain.regions[1].network.enable_stdp(stdp_params);
+        brain.regions[1].network.enable_istdp(istdp_params);
+        brain.set_neuromodulator(saved_modulator);
+
+        // Optional iter-46 homeostatic normalisation: re-scale
+        // R2 → R2 weights so their L2 norm matches a fixed
+        // budget. Stops repeated teacher-forcing from blowing up
+        // a few super-weights.
+        if cfg.teacher.enabled && cfg.teacher.homeostatic_normalization {
+            let net = &mut brain.regions[1].network;
+            let mut sumsq: f64 = 0.0;
+            for s in &net.synapses {
+                sumsq += (s.weight as f64) * (s.weight as f64);
+            }
+            let norm = sumsq.sqrt() as f32;
+            // Target = max of the initial random weight L2 (computed
+            // empirically as ≈ √(num_synapses · mean_w²) ≈ 12 — but
+            // we don't recompute it; just cap drift via factor < 1).
+            let target = 1.5_f32 * norm.min(20.0);
+            if norm > target && norm > 0.0 {
+                let factor = target / norm;
+                for s in net.synapses.iter_mut() {
+                    s.weight *= factor;
+                }
             }
         }
 
@@ -986,6 +1181,43 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
         } else {
             total_reward / reward_trials as f32
         };
+        // R2 → R2 weight stats — only synapses inside region 1.
+        let net = &brain.regions[1].network;
+        let mut w_sum = 0.0_f64;
+        let mut w_max = 0.0_f32;
+        for s in &net.synapses {
+            w_sum += s.weight as f64;
+            if s.weight > w_max {
+                w_max = s.weight;
+            }
+        }
+        let w_mean = if net.synapses.is_empty() {
+            0.0
+        } else {
+            (w_sum / net.synapses.len() as f64) as f32
+        };
+        let elig_nonzero = net.eligibility.iter().filter(|&&e| e != 0.0).count() as u32;
+        let correct_w = if correct_pair_w_count > 0 {
+            (correct_pair_w_sum / correct_pair_w_count as f64) as f32
+        } else {
+            0.0
+        };
+        let incorrect_w = if incorrect_pair_w_count > 0 {
+            (incorrect_pair_w_sum / incorrect_pair_w_count as f64) as f32
+        } else {
+            0.0
+        };
+        let pred_top3 = if prediction_top3_total > 0 {
+            prediction_top3_hits as f32 / prediction_top3_total as f32
+        } else {
+            0.0
+        };
+        let clamp_rate = if clamp_size_total > 0 {
+            clamp_hit_total as f32 / clamp_size_total as f32
+        } else {
+            0.0
+        };
+
         metrics.push(RewardEpochMetrics {
             epoch,
             top1_accuracy: if pairs_n > 0.0 {
@@ -1004,6 +1236,25 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
             } else {
                 0.0
             },
+            random_top3_baseline: 3.0 / vocab.len().max(1) as f32,
+            mean_rank: if pairs_n > 0.0 {
+                rank_sum / pairs_n
+            } else {
+                f32::NAN
+            },
+            mrr: if pairs_n > 0.0 { rr_sum / pairs_n } else { 0.0 },
+            target_clamp_hit_rate: clamp_rate,
+            prediction_top3_before_teacher: pred_top3,
+            eligibility_nonzero_count: elig_nonzero,
+            r2_recurrent_weight_mean: w_mean,
+            r2_recurrent_weight_max: w_max,
+            active_r2_units_per_cue: if active_n > 0 {
+                active_total as f32 / active_n as f32
+            } else {
+                0.0
+            },
+            correct_minus_incorrect_margin: correct_w - incorrect_w,
+            decoder_micros,
         });
     }
 
@@ -1065,16 +1316,41 @@ fn evaluate_with_dict(
 }
 
 /// Render the per-epoch table as a single Markdown block — useful
-/// for pasting into release notes.
+/// for pasting into release notes. Includes the iter-46
+/// diagnostics (clamp hit rate, prediction-before-teacher,
+/// margin, eligibility count, weight stats).
 pub fn render_markdown(label: &str, metrics: &[RewardEpochMetrics]) -> String {
     let mut s = String::new();
     s.push_str(&format!("### {label}\n\n"));
-    s.push_str("| Epoch | top-1 | top-3 | mean reward | noise top-3 |\n");
-    s.push_str("| ---: | ---: | ---: | ---: | ---: |\n");
+    if let Some(first) = metrics.first() {
+        s.push_str(&format!(
+            "_random top-3 baseline: {:.3}_\n\n",
+            first.random_top3_baseline,
+        ));
+    }
+    s.push_str(
+        "| Epoch | top-1 | top-3 | MRR | mean rwd | noise t3 | \
+         pred-t3 | clamp | margin | elig | w̄ | wmax | dec µs |\n",
+    );
+    s.push_str(
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+    );
     for m in metrics {
         s.push_str(&format!(
-            "| {:>3} | {:.2} | {:.2} | {:>+5.2} | {:.2} |\n",
-            m.epoch, m.top1_accuracy, m.top3_accuracy, m.mean_reward, m.noise_top3_rate,
+            "| {:>3} | {:.2} | {:.2} | {:.2} | {:>+5.2} | {:.2} | {:.2} | {:.2} | {:>+5.2} | {:>5} | {:.2} | {:.2} | {:>5} |\n",
+            m.epoch,
+            m.top1_accuracy,
+            m.top3_accuracy,
+            m.mrr,
+            m.mean_reward,
+            m.noise_top3_rate,
+            m.prediction_top3_before_teacher,
+            m.target_clamp_hit_rate,
+            m.correct_minus_incorrect_margin,
+            m.eligibility_nonzero_count,
+            m.r2_recurrent_weight_mean,
+            m.r2_recurrent_weight_max,
+            m.decoder_micros,
         ));
     }
     s
