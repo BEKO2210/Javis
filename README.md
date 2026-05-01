@@ -90,6 +90,32 @@ the new topology. Updated cross-bleed and recall numbers are in
 [`notes/43-topology-scaling.md`](notes/43-topology-scaling.md) once the
 benchmark run completes.
 
+### What changes in iter 47a (this branch)
+
+The iter-46 negative-margin diagnosis identified the R1 → R2 forward
+drive as the dominant factor in the cue's R2 response. Iter-47a tests
+the literature-grounded fix (Brunel scaling + Diehl-Cook adaptive
+threshold) through a sequential 4-epoch sweep with pre-fixed
+acceptance criteria. Result, on the same 16 + 16 pair / vocab-32
+corpus, seed 42:
+
+| INTER_WEIGHT | r2_act mean | tgt_hit | selectivity | margin |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.5 | 0.8 | 0.00 | -0.0005 | -0.01 |
+| 1.0 | 139 | 2.59 | -0.0005 | -0.02 |
+| 0.7 | 507 (cascade) | 9.38 | -0.0047 | -0.02 |
+
+iter-47a-2 alone does **not** flip the margin sign. But the
+diagnosis is sharper than iter-46's: at INTER_WEIGHT = 1.0,
+`target_hit_mean` grew monotonically over 4 epochs (1.16 → 2.59)
+and `selectivity_index` rose from -0.022 to -0.0005 — the right
+direction. The 0.7 bistability (recurrent cascade in epoch 3) is
+the key second-order finding: hard sparsity control (k-WTA, iter-48
+entry) is necessary, not optional. The iter-47 metrics
+(`r2_active_pre_teacher_{mean,p10,p90}`, `selectivity_index`) are
+wired to A/B-test it cleanly. See
+[`notes/47a`](notes/47a-forward-drive-and-adaptive-threshold.md).
+
 ### What changes in iter 46 (this branch)
 
 The pair-association harness from iter-45 grows a *teacher-forcing*
@@ -525,6 +551,7 @@ Every iteration is logged in [`notes/`](notes). Each note explains
 | 44.1 | Decoder confidence floor (`--decode-threshold`): FP −86%, token reduction +2× |
 | 45 | **Reward-aware pair-association harness**: dopamine + eligibility tag exercised end-to-end, honest "no convergence yet" finding documented |
 | 46 | **Teacher-forcing harness**: R2 target-clamp + 6-phase schedule + R1→R2 gate + anti-causal STDP fix; `clamp = 1.00`, but R1→R2 forward dominance survives — honest diagnosis of next bottleneck |
+| 47a | **Forward-drive scaling + adaptive θ**: INTER_WEIGHT sweep + Diehl-Cook intrinsic plasticity + 5 sparsity metrics; INTER_WEIGHT 1.0 + adaptive θ produces *first* monotone learning signal (target_hit 1.16 → 2.59), but bistability at 0.7 proves k-WTA is necessary for iter-48 |
 
 ---
 

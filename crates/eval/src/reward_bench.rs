@@ -60,13 +60,22 @@ const R2_N: usize = 2_000;
 const R2_INH_FRAC: f32 = 0.20;
 const R2_P_CONNECT: f32 = 0.05;
 const FAN_OUT: usize = 12;
-/// Iter-47a: reduced from 2.0 → 0.5 to give recurrent R2→R2 weights
-/// (max ~0.8 under STDP) a fighting chance against the forward
-/// drive sum (FAN_OUT × INTER_WEIGHT). Combined with intrinsic
-/// plasticity on R2 (Diehl & Cook 2015 adaptive threshold) to keep
-/// the R2 active-cell count in a sparse band per cue, instead of
-/// 90–180 cells dominated by the forward path.
-const INTER_WEIGHT: f32 = 0.5;
+/// Iter-47a-2 sweep finding (notes/47):
+///
+/// - 2.0 (iter-46 baseline): 90–180 active R2 cells, margin negative.
+/// - 0.5: signal-death, 0.8–3 cells, no learning substrate.
+/// - 1.0: 96–139 cells, still above band but tgt-hit grows
+///   monotonically (1.16 → 2.59 over 4 epochs); selectivity rises
+///   from -0.022 toward 0.
+/// - 0.7: BISTABLE — epochs 0-2 stable at ~10 cells, epoch 3
+///   explodes to 507 mean / 1599 p90 (recurrent cascade,
+///   Litwin-Kumar 2014). Adaptive θ alone cannot prevent the
+///   exponential blow-up.
+///
+/// Held at 1.0 because that is the most stable sweep point with a
+/// monotone learning signal. The hard sparsity cap (47a-3, k-WTA)
+/// addresses the bistability on top of this.
+const INTER_WEIGHT: f32 = 1.0;
 const INTER_DELAY_MS: f32 = 2.0;
 const ENC_N: u32 = R1_N as u32;
 const ENC_K: u32 = 20;

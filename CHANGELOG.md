@@ -4,6 +4,68 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 47a (forward-drive scaling + adaptive threshold)
+
+Iter-46 ended with `clamp_hit_rate = 1.00` but
+`correct_minus_incorrect_margin ∈ [-0.06, -0.03]`: the teacher chain
+was alive but recurrent learning had no fair shot against the R1 → R2
+forward drive (90–180 active R2 cells per cue vs. 30 canonical
+target cells). Iter-47a tests the literature-grounded fix
+(Brunel-style INTER_WEIGHT scaling + Diehl-Cook adaptive threshold)
+through a sequential 4-epoch sweep with explicit, pre-fixed
+acceptance criteria.
+
+### Added (commit `99540d0`)
+
+- `INTER_WEIGHT 2.0 → 1.0` (after sweep evidence; see notes/47a).
+- `enable_intrinsic_plasticity(intrinsic())` on R2 with the
+  Diehl-Cook parameter set (`alpha_spike = 0.05, tau = 2000 ms,
+  target = 0, beta = 1, offset_max = 5`). Mechanism existed since
+  iter-44; iter-47 wires it into the harness.
+- `TrialOutcome.pred_target_hits` — counts canonical-target
+  neurons that fired during the prediction phase.
+- 5 new `RewardEpochMetrics` fields:
+  `r2_active_pre_teacher_{mean,p10,p90}`,
+  `target_hit_pre_teacher_mean`, `selectivity_index`.
+- `render_markdown` emits a second per-arm table with these.
+- `percentile_u32` helper.
+
+### Verified — sweep, 16 + 16 pairs, vocab 32, seed 42, 4 epochs
+
+| INTER_WEIGHT | r2_act mean | r2_act p10/p90 | tgt_hit | selectivity | margin |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.5 | 0.8 | 0 / 3 | 0.00 | -0.0005 | -0.01 |
+| **1.0** | **139** | 88 / 165 | 2.59 | -0.0005 | -0.02 |
+| 0.7 | 507 (cascade) | 8 / 1599 | 9.38 | -0.0047 | -0.02 |
+
+Acceptance criteria (4-of-4): no sweep point reached ≥ 3/4. The
+**0.7 bistability** (epochs 0-2 stable at ~10 cells, epoch 3
+explodes to mean 507 / p90 1599) is the key second-order finding —
+adaptive θ alone cannot stop a recurrent cascade once STDP-grown
+weights cross threshold.
+
+### Honest reading
+
+The forward-drive-only fix (iter-47a-2) is **insufficient**, but
+the diagnosis is dramatically sharper than iter-46's:
+
+- The forward-drive vs. recurrent-weight balance is in the right
+  order of magnitude at INTER_WEIGHT = 1.0.
+- The Diehl-Cook adaptive-threshold mechanism *does* work at the
+  per-cell level: `target_hit_mean` grew monotonically
+  1.16 → 2.59 over 4 epochs at INTER_WEIGHT = 1.0, and
+  `selectivity_index` rose from -0.022 toward 0.
+- Hard sparsity control (47a-3 = k-WTA) is **necessary, not
+  optional** — the bistability at INTER_WEIGHT = 0.7 makes that
+  explicit. This was identified pre-experiment in the
+  architecture-decision note as a fallback; Phase 1 of 47a-2
+  produced direct evidence that it is the actual next step,
+  not a downstream-iter optimisation.
+
+The iter-47 sparsity metrics (`r2_active_pre_teacher_{mean,p10,p90}`
+and `selectivity_index`) are already wired to A/B-test the k-WTA
+addition (iter-48 entry).
+
 ## Unreleased — Iteration 46 (teacher-forcing + R1→R2 gate)
 
 Iter-45 documented honestly that pure STDP and R-STDP both stayed
