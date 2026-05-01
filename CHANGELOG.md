@@ -36,18 +36,84 @@ cargo run --release -p eval --example reward_benchmark -- \
 
 ### Verified — learning curve
 
-<!-- @CHANGELOG_LEARNING_CURVE@ -->
+Aggregate (n = 4 seeds, untrained baseline = 0.459 ± 0.022 in
+all three runs):
+
+| Epochs | Trained same | Trained cross | Δ cross | Δ-of-Δ | paired t(3) | per-doubling Δ cross |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 1.000 ± 0.000 | 0.299 ± 0.038 | −0.160 | +0.160 | ≈ −16.0 | (baseline)         |
+| 32 | 1.000 ± 0.000 | 0.245 ± 0.041 | −0.214 | +0.214 | ≈ −20.4 | −0.054 (16 → 32)   |
+| 64 | 0.996 ± 0.008 | 0.229 ± 0.058 | −0.230 | +0.226 | ≈ −11.6 | −0.016 (32 → 64)   |
+
+Per-seed trained cross trajectory:
+
+| Seed | ep16 | ep32 | ep64 | 16 → 32 | 32 → 64 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 0.329 | 0.277 | 0.246 | −0.052 | −0.031 |
+|  7 | 0.326 | 0.281 | 0.281 | −0.045 | **±0.000** (flat)        |
+| 13 | 0.295 | 0.225 | 0.245 | −0.070 | **+0.020** (regression!) |
+| 99 | 0.247 | 0.196 | 0.146 | −0.051 | −0.050                   |
+
+Per-doubling marginal gain ratio = 0.30 ⇒ asymptote estimate
+trained cross ≈ 0.22 (geometric series). 16-epoch result is a
+**bit-exact replication of iter-54** (same seeds, same code).
 
 State-reset assertion: PASSED on every untrained arm (12/12).
 Decorrelated invariant: PASSED on every brain construction (24/24).
 
 ### Honest reading
 
-<!-- @CHANGELOG_HONEST_READING@ -->
+Three layered observations:
+
+1. **Δ cross is monotone in the aggregate, with diminishing
+   returns.** −0.054 per epoch-doubling between 16 → 32, then
+   −0.016 between 32 → 64. The ratio of those (≈ 0.30)
+   suggests an asymptote near trained cross ≈ 0.21 — roughly
+   half the untrained baseline (0.459).
+2. **The aggregate hides per-seed instability.** Seeds 42 and
+   99 keep improving at every doubling; seed 7 plateaus at
+   ep32 and stays flat at ep64; seed 13 *worsens* between
+   ep32 and ep64 (0.225 → 0.245, single-seed catastrophic-
+   interference signature). Saturation is the dominant
+   pattern; small-scale interference is the secondary one.
+3. **Same-cue stays at exactly 1.000 in 11/12 trained arms.**
+   The single exception is seed 99 at 64 epochs (same =
+   0.984, eval-drift L2 = 0.0015). Seed 99 is also the seed
+   with the strongest specificity gain (0.146 trained cross
+   at ep64) — when the engram becomes "alive enough" to
+   perturb the eval response, it also becomes the most cue-
+   specific. Constructive plasticity surviving past the
+   saturation point on a single seed.
+
+Per Bekos's iter-55 spec branching matrix, this lands in
+**branch (ii) Saturation as primary**, with **branch (iv) as
+secondary** (eval-phase plasticity essentially still under
+decorrelated wiring). Branches (i) is partial (Δ cross
+monotone but same-cue stays at 1.0); (iii) is single-seed-only.
+
+iter-56 entry: **Achse B Clamp-Strength-Sweep** as the
+critical path, with noise-injection eval / cross-topology as
+a parallel sub-question for iter-57.
 
 ### Methodological lesson
 
-<!-- @CHANGELOG_LESSON@ -->
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a guard is only a guard if its baseline excludes the null.
+iter-52: an analytical null is not an empirical control.
+iter-53: when the literal acceptance direction is bounded by
+construction, derive it from the protocol's mathematical bounds.
+iter-54: when the metric reports a "cleaner" number on a random
+topology than on an architecturally cleaner one, the metric is
+reading something else than what its name suggests.
+**iter-55: a learning curve is not a single number — per-
+doubling marginal gain + per-seed regression cases together
+identify saturation more reliably than the aggregate Δ alone.
+The aggregate Δ-of-Δ improved monotonically across all three
+configs (16: +0.160, 32: +0.214, 64: +0.226), which would
+suggest "keep training". The per-seed view shows seed 13
+regressed at ep64 and seed 7 plateaued at ep32, putting the
+saturation ceiling where the aggregate alone would have hidden
+it.**
 
 All eval lib tests still green; clippy `-D warnings` clean
 (no code changes since iter-54).
