@@ -4,6 +4,58 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 58 (Jaccard floor geometry vs plasticity diagnosis)
+
+iter-55 / iter-56 / iter-57 swept three orthogonal training
+axes (epoch / clamp / phase-length) on the iter-54 decorrelated
++ teacher-forcing architecture. All three saturate near
+trained cross **≈ 0.20** with diminishing returns. The ≈ 0.20
+cross-cue floor is no longer plausibly "we just haven't trained
+enough" — it has held against 4× epochs, 4× clamp, 3×
+teacher_ms, and the non-monotonic t80 catastrophe.
+
+iter-58 is therefore *not* another optimisation iteration. It
+is a **diagnosis**: what *is* the 0.20 floor? Geometric (encoder
+/ SDR / dictionary collision artefact) or architectural
+(plasticity / topology limit)?
+
+### Added — single commit
+
+- `pub struct JaccardPairSample` (cue_a, cue_b, jaccard, top_a,
+  top_b) — one entry per (i < j) cue pair from the trained-arm
+  trial-1 decoded top-3 sets.
+- `pub struct JaccardFloorReport` (per-seed per-pair list +
+  standard aggregate).
+- `evaluate_jaccard_matrix_with_pairs` — per-pair-emitting
+  variant of the iter-53 evaluator.
+- `pub fn run_jaccard_floor_diagnosis(corpus, cfg, seeds)` —
+  trained arm at the passed config × N seeds, mirroring
+  `run_jaccard_arm`'s brain construction + training.
+- `pub fn render_jaccard_floor_diagnosis(reports, threshold,
+  top_n)` — Markdown report with the three cuts Bekos's spec
+  asks for: distribution stats (min / p25 / median / p75 /
+  p90 / p95 / max) + top-N high-overlap pairs + per-cue
+  frequency in pairs ≥ threshold.
+- `pub fn default_corpus_v64()` — vocab = 64 corpus extending
+  the iter-46…57 set with 16 more programming-language pairs.
+- CLI: `--jaccard-floor-diagnosis` + `--corpus-vocab 32 | 64`
+  + `--floor-threshold` + `--floor-top-n`.
+
+### Verified — Path 1 (vocab=32) and Path 2 (vocab=64) results
+
+<!-- @CHANGELOG_RESULTS@ -->
+
+### Honest reading
+
+<!-- @CHANGELOG_HONEST_READING@ -->
+
+### Methodological lesson
+
+<!-- @CHANGELOG_LESSON@ -->
+
+All eval lib tests still green (10/10); clippy `-D warnings`
+clean.
+
 ## Unreleased — Iteration 57 (phase-length sweep on decorrelated + c500)
 
 iter-56 landed branch (α) of the iter-57 selector — clamp axis

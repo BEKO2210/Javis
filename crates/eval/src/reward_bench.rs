@@ -291,6 +291,36 @@ pub struct JaccardSweepResult {
     pub untrained: Vec<JaccardArmResult>,
 }
 
+/// Iter-58 per-cue-pair Jaccard sample. One entry per
+/// `(cue_a, cue_b)` pair with `i < j` in the vocab order, plus
+/// the post-burn-in trial[1] decoded top-3 sets so the floor-
+/// diagnosis can spot encoder collisions ("which cues share
+/// most of their top-3 lists").
+#[derive(Debug, Clone)]
+pub struct JaccardPairSample {
+    pub cue_a: String,
+    pub cue_b: String,
+    pub jaccard: f32,
+    pub top_a: Vec<String>,
+    pub top_b: Vec<String>,
+}
+
+/// Iter-58 floor-diagnosis report for one (seed, trained-arm)
+/// run at a fixed config. Emits the full per-pair Jaccard list
+/// alongside the standard aggregate metrics so the caller can
+/// inspect the *distribution* (min/p25/median/p75/p90/p95/max)
+/// and identify the cue pairs that drive the residual cross-cue
+/// floor.
+#[derive(Debug, Clone)]
+pub struct JaccardFloorReport {
+    pub seed: u64,
+    pub n_cues: usize,
+    pub n_pairs: usize,
+    pub same_cue_mean: f32,
+    pub cross_cue_mean: f32,
+    pub per_pair: Vec<JaccardPairSample>,
+}
+
 /// Iter-49 sweep modes — three orthogonal interventions on the
 /// iter-48 iSTDP collapse mechanism (notes/48-saturation.md). All
 /// modes share Config 2 as base: `--istdp-during-prediction = true`.
@@ -605,6 +635,76 @@ pub fn default_corpus() -> RewardCorpus {
     // Distractor pairs: shift the targets by 1 so each cue is paired
     // with the *wrong* target. Pure STDP that sees these alongside the
     // real pairs will end up partially associating the wrong target.
+    let n = raw_pairs.len();
+    let noise_pairs: Vec<RewardPair> = (0..n)
+        .map(|i| RewardPair {
+            cue: raw_pairs[i].0.to_string(),
+            target: raw_pairs[(i + 1) % n].1.to_string(),
+        })
+        .collect();
+    let mut vocab = BTreeSet::new();
+    for p in pairs.iter().chain(noise_pairs.iter()) {
+        vocab.insert(p.cue.clone());
+        vocab.insert(p.target.clone());
+    }
+    RewardCorpus {
+        pairs,
+        noise_pairs,
+        vocab,
+    }
+}
+
+/// Iter-58 vocab=64 stress-test corpus. Same construction as
+/// [`default_corpus`] but with 32 real (cue, target) pairs
+/// instead of 16, doubling the resulting vocabulary to 64
+/// distinct words. The extra 16 pairs are programming-language
+/// associations chosen to be lexically and phonetically
+/// distinct from the original 16, so the encoder produces
+/// well-separated SDRs at the larger size.
+pub fn default_corpus_v64() -> RewardCorpus {
+    let raw_pairs = [
+        // -- Original iter-46/53/54/55/56/57 set (16 pairs) --
+        ("rust", "ownership"),
+        ("python", "dynamic"),
+        ("cpp", "pointer"),
+        ("java", "jvm"),
+        ("haskell", "functional"),
+        ("ocaml", "inference"),
+        ("go", "channels"),
+        ("scala", "tuple"),
+        ("kotlin", "coroutine"),
+        ("ruby", "block"),
+        ("erlang", "actor"),
+        ("clojure", "macro"),
+        ("swift", "optional"),
+        ("zig", "comptime"),
+        ("lisp", "lambda"),
+        ("scheme", "continuation"),
+        // -- Iter-58 extension to vocab=64 (16 more pairs) --
+        ("typescript", "generics"),
+        ("perl", "regex"),
+        ("php", "include"),
+        ("lua", "table"),
+        ("crystal", "fiber"),
+        ("nim", "compile"),
+        ("dart", "isolate"),
+        ("racket", "syntax"),
+        ("elixir", "supervisor"),
+        ("groovy", "closure"),
+        ("julia", "broadcast"),
+        ("matlab", "matrix"),
+        ("fortran", "array"),
+        ("cobol", "division"),
+        ("ada", "task"),
+        ("prolog", "unify"),
+    ];
+    let pairs: Vec<RewardPair> = raw_pairs
+        .iter()
+        .map(|(c, t)| RewardPair {
+            cue: c.to_string(),
+            target: t.to_string(),
+        })
+        .collect();
     let n = raw_pairs.len();
     let noise_pairs: Vec<RewardPair> = (0..n)
         .map(|i| RewardPair {
@@ -2672,6 +2772,116 @@ fn evaluate_jaccard_matrix(
     }
 }
 
+/// Iter-58 floor-diagnosis variant of `evaluate_jaccard_matrix`.
+/// Identical 32-cue × 3-trial matrix collection (same full
+/// `brain.reset_state()` per trial, same trial-1-vs-trial-2
+/// post-burn-in protocol), but additionally emits the per-cue-
+/// pair Jaccard list with cue names + decoded top-3 sets so the
+/// caller can inspect the *shape* of the cross-cue distribution
+/// (concentrated on a few SDR-collision pairs vs uniform across
+/// the vocab).
+fn evaluate_jaccard_matrix_with_pairs(
+    brain: &mut Brain,
+    encoder: &TextEncoder,
+    r2_e: &BTreeSet<usize>,
+    dict: &EngramDictionary,
+    vocab: &[String],
+) -> (JaccardMetrics, Vec<JaccardPairSample>) {
+    const N_TRIALS: usize = 3;
+    const TOP_K: usize = 3;
+
+    let mut matrix: Vec<Vec<Vec<String>>> = Vec::with_capacity(vocab.len());
+    for cue_word in vocab {
+        let cue_sdr = encoder.encode_word(cue_word);
+        if cue_sdr.indices.is_empty() {
+            matrix.push(Vec::new());
+            continue;
+        }
+        let mut trials: Vec<Vec<String>> = Vec::with_capacity(N_TRIALS);
+        for _trial_i in 0..N_TRIALS {
+            brain.reset_state();
+            let counts = drive_for_with_counts(brain, &cue_sdr.indices, RECALL_MS, r2_e);
+            let kwta = top_k_indices(&counts, KWTA_K);
+            let decoded = dict.decode_top(&kwta, TOP_K);
+            let top: Vec<String> = decoded.iter().map(|(w, _)| w.clone()).collect();
+            trials.push(top);
+        }
+        matrix.push(trials);
+    }
+
+    let jaccard = |a: &[String], b: &[String]| -> f32 {
+        let sa: BTreeSet<&String> = a.iter().collect();
+        let sb: BTreeSet<&String> = b.iter().collect();
+        let inter = sa.intersection(&sb).count();
+        let uni = sa.union(&sb).count();
+        if uni == 0 {
+            1.0
+        } else {
+            inter as f32 / uni as f32
+        }
+    };
+
+    let mut same_vals: Vec<f32> = Vec::new();
+    for trials in &matrix {
+        if trials.len() == N_TRIALS {
+            same_vals.push(jaccard(&trials[1], &trials[2]));
+        }
+    }
+
+    let mut cross_vals: Vec<f32> = Vec::new();
+    let mut per_pair: Vec<JaccardPairSample> = Vec::new();
+    for i in 0..matrix.len() {
+        if matrix[i].len() < N_TRIALS {
+            continue;
+        }
+        for j in (i + 1)..matrix.len() {
+            if matrix[j].len() < N_TRIALS {
+                continue;
+            }
+            let j_val = jaccard(&matrix[i][1], &matrix[j][1]);
+            cross_vals.push(j_val);
+            per_pair.push(JaccardPairSample {
+                cue_a: vocab[i].clone(),
+                cue_b: vocab[j].clone(),
+                jaccard: j_val,
+                top_a: matrix[i][1].clone(),
+                top_b: matrix[j][1].clone(),
+            });
+        }
+    }
+
+    let mean = |v: &[f32]| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f32>() / v.len() as f32
+        }
+    };
+    let std_dev = |v: &[f32], m: f32| {
+        if v.len() < 2 {
+            0.0
+        } else {
+            let var = v.iter().map(|x| (x - m).powi(2)).sum::<f32>() / (v.len() - 1) as f32;
+            var.sqrt()
+        }
+    };
+
+    let same_cue_mean = mean(&same_vals);
+    let same_cue_std = std_dev(&same_vals, same_cue_mean);
+    let cross_cue_mean = mean(&cross_vals);
+    let cross_cue_std = std_dev(&cross_vals, cross_cue_mean);
+
+    let metrics = JaccardMetrics {
+        same_cue_mean,
+        same_cue_std,
+        cross_cue_mean,
+        cross_cue_std,
+        n_cues: same_vals.len(),
+        n_pairs: cross_vals.len(),
+    };
+    (metrics, per_pair)
+}
+
 /// Iter-53 single-arm runner. Builds the brain, optionally trains
 /// it (a no-op when `cfg.epochs == 0` or `cfg.teacher.no_plasticity`),
 /// freezes plasticity for the eval phase, builds the vocabulary
@@ -2893,6 +3103,280 @@ pub fn run_jaccard_bench(
         sweep.trained.push(trained_arm);
     }
     sweep
+}
+
+/// Iter-58 floor-diagnosis runner. Builds the *trained* arm at the
+/// passed config (mirroring `run_jaccard_arm`'s setup verbatim),
+/// then uses the per-pair-emitting evaluator to return one
+/// [`JaccardFloorReport`] per seed. The aggregate diagnostic
+/// (cross-seed averaged distribution, top-N high-overlap pairs,
+/// per-cue frequency) is computed by the caller from the per-seed
+/// reports — keeps this function side-effect-light and lets the
+/// CLI render whichever cuts of the data Bekos's spec asks for.
+///
+/// `cfg.epochs == 0` would degenerate to the untrained arm, which
+/// is *not* the floor-diagnosis target — the function panics in
+/// that case so a misconfigured CLI invocation fails loud.
+pub fn run_jaccard_floor_diagnosis(
+    corpus: &RewardCorpus,
+    cfg: &RewardConfig,
+    seeds: &[u64],
+) -> Vec<JaccardFloorReport> {
+    assert!(
+        cfg.epochs > 0 && !cfg.teacher.no_plasticity,
+        "iter-58 floor diagnosis requires a trained arm (epochs > 0 \
+         and not no_plasticity)",
+    );
+    let mut reports: Vec<JaccardFloorReport> = Vec::with_capacity(seeds.len());
+    for &seed in seeds {
+        let mut cfg_seeded = *cfg;
+        cfg_seeded.seed = seed;
+
+        // -- Brain construction (mirrors run_jaccard_arm) ---------
+        let (inter_weight, inh_frac) = if cfg_seeded.teacher.iter46_baseline {
+            (2.0_f32, 0.20_f32)
+        } else {
+            (INTER_WEIGHT, R2_INH_FRAC)
+        };
+        let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
+        let mut brain = if cfg_seeded.teacher.decorrelated_init {
+            let mut b = Brain::new(DT);
+            b.add_region(build_input_region());
+            b.add_region(build_memory_region(
+                cfg_seeded.seed.wrapping_add(1),
+                inh_frac,
+            ));
+            let vocab_vec: Vec<String> = corpus.vocab.iter().cloned().collect();
+            let _blocks = wire_forward_decorrelated(
+                &mut b,
+                &encoder,
+                &vocab_vec,
+                cfg_seeded.seed.wrapping_add(2),
+                inter_weight,
+            );
+            assert_decorrelated_disjoint(&b, &encoder, &vocab_vec);
+            eprintln!(
+                "[iter-58 floor] seed={} decorrelated init: vocab={} R2-E={} block_size={} (disjoint invariant ✓)",
+                cfg_seeded.seed,
+                corpus.vocab.len(),
+                r2_e_set(&b).len(),
+                r2_e_set(&b).len() / corpus.vocab.len(),
+            );
+            b
+        } else {
+            fresh_brain_with(cfg_seeded.seed, inter_weight, inh_frac)
+        };
+        let r2_e = r2_e_set(&brain);
+
+        let stdp_params = stdp();
+        let initial_istdp = if cfg_seeded.teacher.iter46_baseline {
+            istdp_iter46_baseline()
+        } else {
+            istdp_iter49(&cfg_seeded.teacher, 0)
+        };
+        brain.regions[1].network.enable_stdp(stdp_params);
+        brain.regions[1].network.enable_istdp(initial_istdp);
+        brain.regions[1].network.enable_homeostasis(homeostasis());
+        if !cfg_seeded.teacher.iter46_baseline {
+            brain.regions[1]
+                .network
+                .enable_intrinsic_plasticity(intrinsic());
+        }
+        if cfg_seeded.use_reward {
+            brain.regions[1]
+                .network
+                .enable_reward_learning(reward_params());
+        }
+
+        let target_r2_map: std::collections::HashMap<String, Vec<u32>> = {
+            let pool = r2_e_pool(&r2_e);
+            let salt = cfg_seeded.seed ^ 0xCAFE_F00D_DEAD_BEEFu64;
+            corpus
+                .vocab
+                .iter()
+                .map(|w| {
+                    (
+                        w.clone(),
+                        canonical_target_r2_sdr(w, &pool, TARGET_R2_K, salt),
+                    )
+                })
+                .collect()
+        };
+
+        train_brain_inplace(
+            &mut brain,
+            corpus,
+            &cfg_seeded,
+            &target_r2_map,
+            &encoder,
+            &r2_e,
+            stdp_params,
+            initial_istdp,
+        );
+
+        let vocab: Vec<String> = corpus.vocab.iter().cloned().collect();
+        let dict = build_vocab_dictionary(&mut brain, &encoder, &r2_e, &vocab);
+        let (metrics, per_pair) =
+            evaluate_jaccard_matrix_with_pairs(&mut brain, &encoder, &r2_e, &dict, &vocab);
+
+        eprintln!(
+            "[iter-58 floor] seed={} same={:.3}±{:.3} cross={:.3}±{:.3} (n_cues={}, n_pairs={})",
+            cfg_seeded.seed,
+            metrics.same_cue_mean,
+            metrics.same_cue_std,
+            metrics.cross_cue_mean,
+            metrics.cross_cue_std,
+            metrics.n_cues,
+            metrics.n_pairs,
+        );
+
+        reports.push(JaccardFloorReport {
+            seed: cfg_seeded.seed,
+            n_cues: metrics.n_cues,
+            n_pairs: metrics.n_pairs,
+            same_cue_mean: metrics.same_cue_mean,
+            cross_cue_mean: metrics.cross_cue_mean,
+            per_pair,
+        });
+    }
+    reports
+}
+
+/// Iter-58 floor-diagnosis renderer. Takes a slice of per-seed
+/// reports and emits a Markdown report covering the three cuts
+/// Bekos's spec asks for:
+/// 1. **Distribution stats** of the cross-seed averaged per-pair
+///    Jaccard (min / p25 / median / p75 / p90 / p95 / max).
+/// 2. **Top-N high-overlap pairs** (default N = 10).
+/// 3. **Per-cue frequency in high-overlap pairs**: how many of
+///    each cue's `vocab − 1` partners exceed the threshold.
+pub fn render_jaccard_floor_diagnosis(
+    reports: &[JaccardFloorReport],
+    threshold: f32,
+    top_n: usize,
+) -> String {
+    use std::collections::BTreeMap;
+    use std::fmt::Write;
+
+    let mut s = String::new();
+    s.push_str("### Iter-58: Jaccard floor diagnosis\n\n");
+    if reports.is_empty() {
+        s.push_str("_no reports — empty seeds list?_\n");
+        return s;
+    }
+
+    // Group per-pair samples by (cue_a, cue_b) and average across seeds.
+    type PairKey = (String, String);
+    let mut sums: BTreeMap<PairKey, (f32, u32)> = BTreeMap::new();
+    for r in reports {
+        for sample in &r.per_pair {
+            let key = (sample.cue_a.clone(), sample.cue_b.clone());
+            let entry = sums.entry(key).or_insert((0.0, 0));
+            entry.0 += sample.jaccard;
+            entry.1 += 1;
+        }
+    }
+    let averaged: Vec<(PairKey, f32)> = sums
+        .into_iter()
+        .map(|(k, (sum, n))| (k, sum / n as f32))
+        .collect();
+    let n_pairs = averaged.len();
+
+    let _ = writeln!(
+        s,
+        "_n_seeds = {}, n_pairs (averaged) = {}, threshold for high-overlap = {:.2}_\n",
+        reports.len(),
+        n_pairs,
+        threshold,
+    );
+
+    let _ = writeln!(s, "**Per-seed aggregate:**\n");
+    let _ = writeln!(
+        s,
+        "| Seed | same_cue_mean | cross_cue_mean | n_cues | n_pairs |"
+    );
+    let _ = writeln!(s, "| ---: | ---: | ---: | ---: | ---: |");
+    for r in reports {
+        let _ = writeln!(
+            s,
+            "| {} | {:.3} | {:.3} | {} | {} |",
+            r.seed, r.same_cue_mean, r.cross_cue_mean, r.n_cues, r.n_pairs,
+        );
+    }
+    s.push('\n');
+
+    // -- (1) Distribution of cross-seed-averaged per-pair Jaccards.
+    let mut sorted: Vec<f32> = averaged.iter().map(|(_, j)| *j).collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pick = |frac: f32| -> f32 {
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        let idx = ((sorted.len() as f32 - 1.0) * frac).round() as usize;
+        sorted[idx.min(sorted.len() - 1)]
+    };
+    let _ = writeln!(s, "**Cross-seed averaged per-pair distribution:**\n");
+    let _ = writeln!(s, "| min | p25 | median | p75 | p90 | p95 | max |",);
+    let _ = writeln!(s, "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+    let _ = writeln!(
+        s,
+        "| {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} |",
+        pick(0.0),
+        pick(0.25),
+        pick(0.50),
+        pick(0.75),
+        pick(0.90),
+        pick(0.95),
+        pick(1.0),
+    );
+    s.push('\n');
+
+    // -- (2) Top-N high-overlap pairs (cross-seed averaged).
+    let mut top: Vec<&(PairKey, f32)> = averaged.iter().collect();
+    top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let top_n_actual = top_n.min(top.len());
+    let _ = writeln!(
+        s,
+        "**Top-{top_n_actual} high-overlap pairs (averaged across seeds):**\n"
+    );
+    let _ = writeln!(s, "| Rank | cue_a | cue_b | mean Jaccard |");
+    let _ = writeln!(s, "| ---: | :--- | :--- | ---: |");
+    for (rank, ((a, b), j)) in top.iter().take(top_n_actual).enumerate() {
+        let _ = writeln!(s, "| {} | {} | {} | {:.3} |", rank + 1, a, b, j);
+    }
+    s.push('\n');
+
+    // -- (3) Per-cue frequency in pairs above threshold.
+    let mut high_count: BTreeMap<String, u32> = BTreeMap::new();
+    for ((a, b), j) in averaged.iter() {
+        if *j >= threshold {
+            *high_count.entry(a.clone()).or_insert(0) += 1;
+            *high_count.entry(b.clone()).or_insert(0) += 1;
+        }
+    }
+    if high_count.is_empty() {
+        let _ = writeln!(
+            s,
+            "**Cue frequency in pairs ≥ {threshold:.2}:** no pairs cross the threshold.\n",
+        );
+    } else {
+        let mut counts: Vec<(String, u32)> = high_count.into_iter().collect();
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let _ = writeln!(
+            s,
+            "**Cue frequency in pairs ≥ {threshold:.2} (out of vocab−1 = {} possible partners):**\n",
+            reports[0].n_cues.saturating_sub(1).max(1),
+        );
+        let _ = writeln!(s, "| Cue | high-overlap partners |");
+        let _ = writeln!(s, "| :--- | ---: |");
+        let show = counts.len().min(20);
+        for (cue, n) in counts.into_iter().take(show) {
+            let _ = writeln!(s, "| {cue} | {n} |");
+        }
+        s.push('\n');
+    }
+
+    s
 }
 
 /// Render an iter-53 jaccard sweep as a Markdown report. Per-seed

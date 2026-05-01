@@ -17,9 +17,10 @@
 use std::time::Instant;
 
 use eval::{
-    default_reward_corpus, render_jaccard_sweep, render_reward_markdown, run_determinism_smoke,
-    run_jaccard_bench, run_postmortem_diagnostic, run_reward_benchmark, Iter49Mode, RewardConfig,
-    TeacherForcingConfig,
+    default_reward_corpus, default_reward_corpus_v64, render_jaccard_floor_diagnosis,
+    render_jaccard_sweep, render_reward_markdown, run_determinism_smoke, run_jaccard_bench,
+    run_jaccard_floor_diagnosis, run_postmortem_diagnostic, run_reward_benchmark, Iter49Mode,
+    RewardConfig, TeacherForcingConfig,
 };
 
 fn main() {
@@ -145,7 +146,21 @@ fn main() {
         decorrelated_init,
     };
 
-    let corpus = default_reward_corpus();
+    // Iter-58 vocab-scaling stress test: --corpus-vocab 32 (default;
+    // iter-46…57 corpus, 16 real + 16 noise pairs ⇒ 32-word vocab) vs
+    // --corpus-vocab 64 (iter-58 extension, 32 real + 32 noise pairs
+    // ⇒ 64-word vocab). Used to test whether the ~0.20 cross-cue
+    // floor scales with vocab (geometric / encoder limit) or stays
+    // fixed (architecture / plasticity limit).
+    let corpus_vocab: u32 = parse_arg(&args, "--corpus-vocab", 32_u32);
+    let corpus = match corpus_vocab {
+        32 => default_reward_corpus(),
+        64 => default_reward_corpus_v64(),
+        other => {
+            eprintln!("--corpus-vocab must be 32 or 64 (got '{other}')",);
+            std::process::exit(2);
+        }
+    };
 
     // Iter-53 determinism smoke (Bekos's pre-implementation gate):
     // bypass everything else, run the 1-cue × 3-trial determinism
@@ -196,6 +211,48 @@ fn main() {
         };
         let sweep = run_jaccard_bench(&corpus, &cfg, &seeds);
         print!("{}", render_jaccard_sweep(&sweep));
+        return;
+    }
+
+    // Iter-58 floor-diagnosis branch: run the trained arm at the
+    // best-known config across `--seeds`, emit the per-pair Jaccard
+    // distribution + top-N high-overlap pairs + per-cue frequency.
+    // Used to diagnose whether the ≈0.20 cross-cue floor is a
+    // geometric / encoder / dictionary collision artefact (then
+    // concentrated on a few SDR-collision pairs) or an architecture
+    // / plasticity limit (then uniform across the vocab).
+    if flag(&args, "--jaccard-floor-diagnosis") {
+        let seeds_str = parse_string(&args, "--seeds").unwrap_or_else(|| seed.to_string());
+        let seeds: Vec<u64> = seeds_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .collect();
+        if seeds.is_empty() {
+            eprintln!(
+                "--jaccard-floor-diagnosis: --seeds must contain at least one parseable u64 (got '{seeds_str}')",
+            );
+            std::process::exit(2);
+        }
+        let threshold: f32 = parse_arg(&args, "--floor-threshold", 0.5_f32);
+        let top_n: usize = parse_arg(&args, "--floor-top-n", 10_usize);
+        eprintln!(
+            "[iter-58 floor] seeds={seeds:?} epochs={epochs} reps={reps} \
+             teacher_forcing={teacher_on} decorrelated_init={decorrelated_init} \
+             corpus_vocab={corpus_vocab} clamp={target_clamp} teacher_ms={teacher_ms} \
+             threshold={threshold} top_n={top_n}",
+        );
+        let cfg = RewardConfig {
+            epochs,
+            use_reward: true,
+            seed,
+            reps_per_pair: reps,
+            teacher,
+        };
+        let reports = run_jaccard_floor_diagnosis(&corpus, &cfg, &seeds);
+        print!(
+            "{}",
+            render_jaccard_floor_diagnosis(&reports, threshold, top_n),
+        );
         return;
     }
 
