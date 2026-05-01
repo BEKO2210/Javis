@@ -217,6 +217,28 @@ pub struct RewardEpochMetrics {
     /// `< 0` ⇒ targets fire under-proportionally (the iter-46
     ///         symptom that iter-47 must flip).
     pub selectivity_index: f32,
+
+    // ---- iter-48 cascade-stability diagnostics ------------------
+
+    /// 99th percentile of `prediction_active_count` across the
+    /// epoch's real-pair trials. Iter-47a postmortem identified
+    /// avalanches as the dominant failure mode — p99 is a tight
+    /// upper bound that catches them while p90 still looks clean.
+    /// Iter-48 acceptance criterion: `< 50`.
+    pub r2_active_pre_teacher_p99: u32,
+    /// Mean threshold offset (`v_thresh_offset`) over R2-E
+    /// **inhibitory** cells at the end of the epoch. Iter-48
+    /// early warning: if iSTDP over-corrects, the inhibitory
+    /// pool will silence itself faster than the excitatory pool,
+    /// and θ_inh will drift toward zero (or the floor) faster
+    /// than θ_exc. Read together with `r2_recurrent_weight_mean`
+    /// to spot the iSTDP runaway.
+    pub theta_inh_mean: f32,
+    /// Mean threshold offset over R2-E **excitatory** cells —
+    /// the comparison reference for `theta_inh_mean`. The diff
+    /// (`theta_inh_mean - theta_exc_mean`) is the iter-48 EI-
+    /// balance early-warning number.
+    pub theta_exc_mean: f32,
 }
 
 /// Iter-46 teacher-forcing configuration. When attached to a
@@ -832,6 +854,35 @@ fn drive_with_r2_clamp_traced(
         per_step_target.push(step_target);
     }
     (counts, per_step_active, per_step_target)
+}
+
+/// Iter-48: split the adaptive-threshold mean by neuron kind so
+/// the E/I balance asymmetry is readable. Returns
+/// `(mean_over_E, mean_over_I)` of `Network.v_thresh_offset`.
+/// If the offset buffer is empty (intrinsic plasticity off) both
+/// values are 0.
+fn intrinsic_mean_by_kind(brain: &Brain) -> (f32, f32) {
+    let net = &brain.regions[1].network;
+    if net.v_thresh_offset.is_empty() {
+        return (0.0, 0.0);
+    }
+    let (mut e_sum, mut e_n, mut i_sum, mut i_n) = (0.0_f64, 0_u32, 0.0_f64, 0_u32);
+    for (i, n) in net.neurons.iter().enumerate() {
+        let v = net.v_thresh_offset[i] as f64;
+        match n.kind {
+            NeuronKind::Excitatory => {
+                e_sum += v;
+                e_n += 1;
+            }
+            NeuronKind::Inhibitory => {
+                i_sum += v;
+                i_n += 1;
+            }
+        }
+    }
+    let e = if e_n > 0 { (e_sum / e_n as f64) as f32 } else { 0.0 };
+    let i = if i_n > 0 { (i_sum / i_n as f64) as f32 } else { 0.0 };
+    (e, i)
 }
 
 /// Iter-47a postmortem (c): summary statistics for the per-neuron
@@ -1746,6 +1797,20 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                     sum / active_samples.len() as f32
                 }
             },
+            // ---- iter-48 cascade-stability ----
+            r2_active_pre_teacher_p99: {
+                let mut s = active_samples.clone();
+                s.sort_unstable();
+                percentile_u32(&s, 0.99)
+            },
+            theta_inh_mean: {
+                let (_e, i) = intrinsic_mean_by_kind(&brain);
+                i
+            },
+            theta_exc_mean: {
+                let (e, _i) = intrinsic_mean_by_kind(&brain);
+                e
+            },
         });
     }
 
@@ -1851,20 +1916,23 @@ pub fn render_markdown(label: &str, metrics: &[RewardEpochMetrics]) -> String {
     // immediately readable.
     s.push('\n');
     s.push_str(
-        "| Epoch | r2_act mean | r2_act p10 | r2_act p90 | tgt_hit mean | selectivity |\n",
+        "| Epoch | r2_act mean | p10 | p90 | p99 | tgt_hit mean | selectivity | θ_E | θ_I |\n",
     );
     s.push_str(
-        "| ---: | ---: | ---: | ---: | ---: | ---: |\n",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
     );
     for m in metrics {
         s.push_str(&format!(
-            "| {:>3} | {:>5.1} | {:>5} | {:>5} | {:>5.2} | {:>+6.4} |\n",
+            "| {:>3} | {:>5.1} | {:>4} | {:>4} | {:>4} | {:>5.2} | {:>+6.4} | {:>5.3} | {:>5.3} |\n",
             m.epoch,
             m.r2_active_pre_teacher_mean,
             m.r2_active_pre_teacher_p10,
             m.r2_active_pre_teacher_p90,
+            m.r2_active_pre_teacher_p99,
             m.target_hit_pre_teacher_mean,
             m.selectivity_index,
+            m.theta_exc_mean,
+            m.theta_inh_mean,
         ));
     }
     s
