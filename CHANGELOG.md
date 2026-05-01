@@ -29,7 +29,34 @@ done
 
 ### Verified — clamp-strength curve
 
-<!-- @CHANGELOG_CLAMP_CURVE@ -->
+Aggregate (n = 4 seeds, untrained baseline = 0.459 ± 0.022 in
+all three runs):
+
+| Clamp (nA) | Trained cross | std | Δ cross | Δ-of-Δ | paired t(3) | per-doubling Δ |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 125 | 0.272 | ±0.036 | −0.187 | +0.187 | ≈ −17.6 | (baseline)        |
+| 250 | 0.245 | ±0.041 | −0.214 | +0.214 | ≈ −20.4 | −0.027 (125 → 250) |
+| 500 | **0.230** | **±0.020** | **−0.229** | **+0.229** | ≈ **−36.3** | −0.015 (250 → 500) |
+
+c250 is bit-exact replication of iter-55 ep32 (per-seed:
+42=0.277, 7=0.281, 13=0.225, 99=0.196 — identical).
+
+Per-seed trained cross trajectory:
+
+| Seed | c125 | c250 | c500 | 125 → 250 | 250 → 500 | Trajectory |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 42 | 0.262 | 0.277 | 0.242 | **+0.015** | −0.035 | NON-MONOTONE  |
+|  7 | 0.315 | 0.281 | 0.250 | −0.034 | −0.031 | monotone ↓     |
+| 13 | 0.283 | 0.225 | 0.208 | −0.058 | −0.017 | monotone ↓     |
+| 99 | 0.229 | 0.196 | 0.220 | −0.033 | **+0.024** | NON-MONOTONE   |
+
+Aggregate is monotone in clamp strength, but **2 of 4 seeds
+are non-monotone**. Per-doubling marginal gain: −0.027 →
+−0.015 (ratio 0.55). Asymptote estimate ≈ 0.197.
+
+c500 has 5× tighter seed-level std (0.020) vs c125 / c250
+(0.036 / 0.041) — higher clamp not only moves the mean but
+flattens the seed-level distribution.
 
 State-reset assertion: PASSED on every untrained arm (12/12).
 Decorrelated invariant: PASSED on every brain construction
@@ -37,11 +64,75 @@ Decorrelated invariant: PASSED on every brain construction
 
 ### Honest reading
 
-<!-- @CHANGELOG_HONEST_READING@ -->
+Three layered observations:
+
+1. **Aggregate Δ cross is monotone in clamp strength, with
+   diminishing returns at the same shape as the epoch axis.**
+   Per-doubling Δ ratio = 0.55 (vs iter-55 epoch axis ratio
+   0.30 — clamp axis "still has more room"). Combined ceiling
+   estimate from both axes: trained cross ≈ 0.20, vs the
+   untrained decorrelated baseline of 0.459 (specificity has
+   dropped 50 %).
+2. **Half the seeds are non-monotone in clamp strength.**
+   Seeds 7 and 13: clean monotone decrease. Seeds 42 and 99:
+   non-monotone — seed 42's c125 better than c250 then c500
+   best; seed 99's c250 best with c500 *regressing*. The
+   seed × clamp interaction is real; "always use higher
+   clamp" is wrong for some seeds. iter-55 lesson echoed.
+3. **c500 dramatically tightens the seed-level std (0.020
+   vs 0.036/0.041).** Higher clamp doesn't just move the
+   mean — it flattens the seed-level distribution. Even when
+   c500 is *worse* than c250 on seed 99 (0.220 > 0.196), the
+   spread across seeds is smaller. For deployments that
+   value reliability, c500 is the right choice even though
+   seed 99 alone prefers c250.
+
+**Branch (δ) is REJECTED**: same-cue stays at 1.000 for every
+seed × clamp combination (12/12 trained arms). Eval-drift L2
+remains tiny (0.026–0.045 across the seeds where it was
+logged). Higher clamp during *training* does not trigger
+meaningful eval-time plasticity drift — the decorrelated
+wiring still starves eval-phase plasticity, regardless of
+training intensity.
+
+Per Bekos's pre-fixed iter-57 branching matrix, this lands in
+**branch (α) primary — clamp axis is magnitude-limited but
+with diminishing returns**.
+
+iter-57 entry: **Path B — Achse C (phase-length tuning)** as
+the recommended critical path. Sweep `teacher_ms` (40 default
+→ 80, 120) at fixed c500 to isolate whether longer integration
+under c500 intensity helps beyond clamp magnitude alone. ~30-
+min wallclock. Path A (clamp 500/1000/2000) is a safe but
+diminishing extension of the current axis; Path B opens a new
+axis with potentially un-diminished sensitivity. Noise-
+injection / cross-topology stays parallel as iter-58
+candidate.
 
 ### Methodological lesson
 
-<!-- @CHANGELOG_LESSON@ -->
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a guard is only a guard if its baseline excludes the null.
+iter-52: an analytical null is not an empirical control.
+iter-53: when the literal acceptance direction is bounded by
+construction, derive it from the protocol's mathematical bounds.
+iter-54: when the metric reports a "cleaner" number on a random
+topology than on an architecturally cleaner one, the metric is
+reading something else than what its name suggests.
+iter-55: a learning curve is not a single number; per-seed
+trajectories often reveal a saturation ceiling the aggregate
+hides.
+**iter-56: aggregate monotonicity is not seed-level
+monotonicity. iter-56's Δ cross was monotone in clamp strength
+at the aggregate level (−0.187 → −0.214 → −0.229), which the
+literature would read as "higher clamp = better, period". Per-
+seed, half the seeds are non-monotone: seed 99 has its global
+best at c250 with c500 *worse*, seed 42 has c125 better than
+c250 then c500 best. Aggregate monotonicity hides a real
+seed × clamp interaction. The aggregate-only reading would
+have set "always use c500" as a deployment recommendation;
+the per-seed view shows that for half the seeds c500 is not
+the global best.**
 
 All eval lib tests still green; clippy `-D warnings` clean
 (no code changes since iter-54).
