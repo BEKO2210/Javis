@@ -51,7 +51,26 @@ random baseline's ~12000.
 
 ### Verified — 4 seeds × 16 epochs
 
-<!-- @CHANGELOG_SWEEP_TABLE@ -->
+| Seed | Untrained same | Untrained cross | Trained same | Trained cross | Δ cross | Eval-drift L2 (R2→R2) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 1.000 ± 0.000 | 0.467 ± 0.106 | 1.000 ± 0.000 | 0.329 ± 0.207 | **−0.138** | +0.023 |
+|  7 | 1.000 ± 0.000 | 0.485 ± 0.082 | 1.000 ± 0.000 | 0.326 ± 0.194 | **−0.159** | +0.028 |
+| 13 | 1.000 ± 0.000 | 0.450 ± 0.122 | 1.000 ± 0.000 | 0.295 ± 0.190 | **−0.155** | +0.247 |
+| 99 | 1.000 ± 0.000 | 0.433 ± 0.128 | 1.000 ± 0.000 | 0.247 ± 0.187 | **−0.186** | +0.042 |
+
+Aggregate (n = 4 seeds):
+- Untrained: same = 1.000 ± 0.000  cross = 0.459 ± 0.022
+- Trained:   same = 1.000 ± 0.000  cross = 0.299 ± 0.038
+- Δ same   = +0.000  (decorrelated wiring dampens eval-phase
+                      plasticity to L2 0.02–0.25 vs iter-53's
+                      +25 to +29 ⇒ eval is effectively
+                      deterministic, no attractor erosion)
+- Δ cross  = **−0.160**
+- **Δ-of-Δ = +0.160 (acceptance PASSED)**
+
+Paired t-test on per-seed Δ cross (n = 4): t(3) ≈ −16,
+**p ≪ 0.001**. Bekos's primary acceptance ("cross-cue trained
+< cross-cue untrained, p < 0.05") is met by a wide margin.
 
 State-reset assertion: PASSED (4/4 seeds untrained
 same_cue_mean = 1.000 ± 0.000). Decorrelated invariant: PASSED
@@ -59,7 +78,49 @@ same_cue_mean = 1.000 ± 0.000). Decorrelated invariant: PASSED
 
 ### Honest reading
 
-<!-- @CHANGELOG_HONEST_READING@ -->
+**The decorrelation worked.** Three layered observations:
+
+1. **Trained cross-cue dropped 35 % below untrained**
+   (0.299 vs 0.459, p ≪ 0.001 paired). Distinct cues' top-3
+   sets are now substantially less overlapping after 16
+   epochs of teacher-forcing on the disjoint topology. Same
+   protocol on iter-53's random topology produced
+   Δ cross = +0.000.
+2. **Trained same-cue stayed at 1.000 — no attractor erosion.**
+   Eval-phase L2 drift collapsed from iter-53's +25 to +29
+   down to +0.02 to +0.25 under decorrelated wiring.
+   With ~17 unique R1 cells per cue × FAN_OUT 12 = 204
+   directed connections (vs 12 000 random), the cue-driven
+   spike traffic during eval is too sparse to drive
+   meaningful plasticity. Plasticity at eval is *practically*
+   off, even though it is *configurationally* on.
+3. **Cross-cue absolute values are higher under decorrelated
+   init (0.459 untrained vs iter-53's 0.058).** Not a
+   regression — with sparser cue drive, the kWTA top-3 is
+   dominated by cue-independent recurrent R2 dynamics. The
+   right comparison is *within* the decorrelated arm
+   (trained vs untrained), where Δ cross = −0.160 says
+   training visibly re-routes the recurrent equilibrium
+   toward cue-specific basins. Comparing absolute cross-cue
+   across iter-53 and iter-54 conflates two different "noise
+   floors" the metric reports.
+
+iter-55 entry per Bekos's pre-fixed branching matrix is
+**branch M1**: keep decorrelation + plasticity combined,
+sweep training schedule / epochs / target_clamp_strength to
+maximise the gain. (Branches M2 = consolidation and M3 =
+deeper topology rejected — the cross-cue Δ is significant and
+attractor erosion is zero.)
+
+A cautious sub-question for iter-55: eval-phase plasticity
+under decorrelated wiring is essentially off, so the same-cue
+= 1.000 in the trained arm is "deterministic LIF + minimal
+plasticity" rather than "engram robust under continued
+plasticity". To probe attractor robustness specifically,
+iter-55 could (a) add stochastic noise during eval, or (b)
+re-run the iter-54 training scheme on iter-53's random
+topology to isolate the plasticity-erosion-vs-specificity-
+gain trade-off. Sub-experiment, not the critical path.
 
 ### Methodological lesson
 
