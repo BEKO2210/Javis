@@ -4,6 +4,48 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 56 (clamp-strength sweep on decorrelated + ep32)
+
+iter-55 landed branch (ii) — Saturation — of the iter-56
+selector. Per Bekos's iter-56 spec, the next un-swept axis with
+high a priori sensitivity is **target-clamp-strength**: it
+controls how hard the teacher signal overrides recurrent
+dynamics during the teacher window, which is the layer where
+cue-specific weight changes get written. iter-56 sweeps three
+points around the iter-46/53/54/55 default of 250 nA: 125 nA
+(half), 250 nA (default + iter-55 ep32 replication), and 500 nA
+(double).
+
+### Run — three configs × 4 seeds, ep = 32
+
+```sh
+for clamp in 125 250 500; do
+  cargo run --release -p eval --example reward_benchmark -- \
+    --jaccard-bench --seeds 42,7,13,99 --epochs 32 \
+    --decorrelated-init --teacher-forcing \
+    --target-clamp-strength $clamp
+done
+```
+
+### Verified — clamp-strength curve
+
+<!-- @CHANGELOG_CLAMP_CURVE@ -->
+
+State-reset assertion: PASSED on every untrained arm (12/12).
+Decorrelated invariant: PASSED on every brain construction
+(24/24).
+
+### Honest reading
+
+<!-- @CHANGELOG_HONEST_READING@ -->
+
+### Methodological lesson
+
+<!-- @CHANGELOG_LESSON@ -->
+
+All eval lib tests still green; clippy `-D warnings` clean
+(no code changes since iter-54).
+
 ## Unreleased — Iteration 55 (epoch sweep on decorrelated + plasticity)
 
 iter-54 landed branch M1 of the iter-55 selector
