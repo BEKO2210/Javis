@@ -4,6 +4,58 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 61 (DG-bridge full replication)
+
+iter-60's DG smoke (2 seeds × 16 epochs) collapsed the
+vocab=64 cross-cue floor by 16× (0.448 / 0.422 → 0.028 /
+0.026). iter-61 is **not** a new architecture and **not** a DG
+parameter sweep — it is the iter-55 / iter-56 lesson applied:
+per-seed view at full training before declaring the pivot
+solved. Three claims to falsify or confirm at 4 seeds × 32
+epochs:
+
+1. *Separation* — does cross-cue stay ≤ 0.05 across all seeds?
+2. *Learning* — is trained_cross meaningfully different from
+   untrained_cross, or has the metric saturated against a
+   geometric floor?
+3. *Stability* — does trained_same erode further at ep32?
+
+### Run
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-bench --seeds 42,7,13,99 --epochs 32 \
+  --decorrelated-init --teacher-forcing \
+  --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge
+
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-floor-diagnosis --seeds 42,7,13,99 --epochs 32 \
+  --decorrelated-init --teacher-forcing \
+  --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge \
+  --floor-threshold 0.1 --floor-top-n 10
+```
+
+### Verified — per-seed table
+
+<!-- @CHANGELOG_PER_SEED@ -->
+
+### Aggregate
+
+<!-- @CHANGELOG_AGGREGATE@ -->
+
+### Honest reading
+
+<!-- @CHANGELOG_HONEST_READING@ -->
+
+### Methodological lesson
+
+<!-- @CHANGELOG_LESSON@ -->
+
+All eval lib tests still green (10/10); clippy `-D warnings`
+clean (no code changes since iter-60).
+
 ## Unreleased — Iteration 60 (DG pattern-separation bridge)
 
 iter-58 / iter-59 closed the geometry-vs-architecture and the
