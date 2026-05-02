@@ -2665,3 +2665,5 @@ For pre-Iteration-8 details, see the corresponding research notes.
 
 Loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Categories used per release: `Added`, `Changed`, `Removed`, `Result`.
+
+- iter-62 (in progress): recall-mode eval flag to disable plasticity during Jaccard evaluation.
