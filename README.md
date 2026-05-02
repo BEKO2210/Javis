@@ -587,3 +587,5 @@ literature. Key papers:
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
+
+- iter-62 (in progress): added recall-mode eval switch (`--plasticity-off-during-eval` / `--recall-mode-eval`).

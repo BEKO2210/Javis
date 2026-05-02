@@ -671,6 +671,11 @@ pub struct RewardConfig {
     /// Iter-46 teacher-forcing schedule. Default `off` — the
     /// pre-iter-46 cue+target-through-R1 path is preserved.
     pub teacher: TeacherForcingConfig,
+    /// Iter-62 recall-mode switch: when `false`, the evaluation
+    /// pipeline (dictionary build + Jaccard matrix) runs in read-only
+    /// mode by disabling every plasticity mechanism that can persist
+    /// weight/state changes. Training is unchanged.
+    pub eval_plasticity: bool,
 }
 
 impl RewardConfig {
@@ -681,6 +686,7 @@ impl RewardConfig {
             seed: 42,
             reps_per_pair: 4,
             teacher: TeacherForcingConfig::off(),
+            eval_plasticity: true,
         }
     }
     pub const fn with_reward(epochs: usize) -> Self {
@@ -690,6 +696,7 @@ impl RewardConfig {
             seed: 42,
             reps_per_pair: 4,
             teacher: TeacherForcingConfig::off(),
+            eval_plasticity: true,
         }
     }
     pub const fn with_teacher(epochs: usize) -> Self {
@@ -699,6 +706,7 @@ impl RewardConfig {
             seed: 42,
             reps_per_pair: 4,
             teacher: TeacherForcingConfig::enabled(),
+            eval_plasticity: true,
         }
     }
 }
@@ -3515,7 +3523,20 @@ fn run_jaccard_arm(
         &dg_sdr_map,
     );
 
-    // Eval phase: do NOT disable plasticity.
+    // Iter-62 recall-mode evaluation: optionally force a strict
+    // read-only eval pass so dictionary build + Jaccard probing
+    // cannot mutate persistent weights.
+    if !cfg.eval_plasticity {
+        brain.disable_stdp_all();
+        brain.disable_istdp_all();
+        brain.disable_homeostasis_all();
+        for region in &mut brain.regions {
+            region.network.disable_metaplasticity();
+            region.network.disable_intrinsic_plasticity();
+            region.network.disable_structural();
+            region.network.set_neuromodulator(0.0);
+        }
+    }
 
     let l2_pre_eval = brain_synapse_l2_norms(&brain);
 
@@ -4271,6 +4292,7 @@ mod tests {
                 // Tiny reps_per_pair so the smoke test stays fast.
                 reps_per_pair: 1,
                 teacher: TeacherForcingConfig::off(),
+                eval_plasticity: true,
             };
             let metrics = run_reward_benchmark(&small, &cfg);
             assert_eq!(metrics.len(), 2);
