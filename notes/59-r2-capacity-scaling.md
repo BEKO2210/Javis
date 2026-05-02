@@ -89,15 +89,102 @@ cargo run --release -p eval --example reward_benchmark -- \
 
 ## Capacity sweep table
 
-<!-- @SWEEP_TABLE@ -->
+**Note on the sweep design.** Bekos asked for a careful pre-
+flight: which R2 sizes are realistic. The `R2_N²` recurrent-
+synapse cost made it clear that R2_N=8000 at full epochs (~32h
+serial) and R2_N=16000+ (~120h+) are infeasible on the test
+box. The sweep that actually ran is:
+
+| R2_N | Seeds | Epochs | Wallclock | Notes |
+| ---: | ---: | ---: | ---: | --- |
+| 2000 | 4 | 32 | from iter-58 | full vocab=64 baseline, replicates iter-58 numerics |
+| 2000 | 2 | 16 | ~24 min | iter-59 fairness baseline at reduced epochs |
+| 4000 | 1 | 16 | ~40 min | iter-59 primary test (single seed; sweep was killed before seed 7 to avoid escalation) |
+| 8000 | 1 |  4 | ~44 min | iter-59 smoke probe (deliberately under-trained) |
+
+The 16k / 32k tiers were ruled out without running.
+
+| R2_N | cells/cue | Untrained cross | Trained cross | Δ cross | wallclock | n_seeds × ep | Comment |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| **2000** (iter-58) | 21 | 0.448 ± 0.012 | **0.422 ± 0.017** | −0.025 | ~2 h | 4 × 32 | full ep32 baseline |
+|  2000 (ep16)       | 21 | 0.456 ± 0.012 | 0.449 ± 0.002    | −0.007 | 24 min | 2 × 16 | fairness baseline at reduced ep |
+| **4000**           | 43 | 0.501          | **0.411**        | **−0.090** | 40 min | 1 × 16 | primary test, single seed |
+|  8000 (ep4)        | 87 | 0.501          | 0.501            | +0.000 | 44 min | 1 ×  4 | under-trained smoke |
+
+State-reset assertion: PASSED on every untrained arm. Decorrelated
+invariant: PASSED on every brain construction. No L2 / convergence
+instability observed at any R2_N.
+
+Two important reading axes:
+
+1. **At R2_N = 2000 fixed, ep16 vs ep32**: Δ cross drops from
+   −0.025 to −0.007 (smaller). Confirms that ep16 is firmly in
+   the "under-trained" regime for the iter-58 vocab=64
+   architecture; the −0.007 number sets the noise floor for any
+   ep16 comparison.
+
+2. **At ep16 fixed, R2_N = 2000 vs 4000**: Δ cross deepens from
+   −0.007 to **−0.090** (≈ 13× larger). The seed-42 trained
+   cross at R2_N=4000 (0.411) is *roughly tied* with the
+   R2_N=2000 ep32 baseline (0.422) — i.e. doubling capacity at
+   half the epochs lands in the same trained-cross neighbourhood.
+   But the absolute trained_cross does NOT drop to the
+   vocab=32 best of 0.230 — at most it dropped 0.040 below the
+   matched-config R2=2000 baseline (0.449 → 0.411).
+
+The R2_N=8000 ep4 smoke (Δ = +0.000) is consistent with the
+"under-trained" reading: 4 epochs is too few for any signal,
+regardless of R2_N. It does NOT contradict the capacity-helps
+reading; it confirms that capacity alone, without enough
+training time, gives nothing. A real R2_N=8000 sweep at full
+epochs was ruled out ex-ante on wallclock grounds.
 
 ## Distribution / sanity notes
 
-<!-- @SANITY@ -->
+**Caveats** that limit the strength of the iter-59 verdict:
+
+1. **R2_N=4000 has only one seed**. The 2-seed R2_N=2000 ep16
+   baseline showed std = 0.002 between seeds; if R2_N=4000
+   has comparable per-seed std the −0.090 Δ is well above
+   noise, but a 2nd seed would tighten the reading.
+2. **Epoch-mismatch comparison.** The cleanest comparison
+   (R2_N=4000 ep32 4-seeds vs R2_N=2000 ep32 4-seeds) was
+   ruled out on wallclock grounds (~7 h serial, ~7 h parallel
+   on the constrained box).  The iter-58 ep32 baseline + the
+   iter-59 ep16 fairness control let us read the
+   capacity direction; they do not let us read the
+   capacity *limit*.
+3. **Untrained baseline rises with R2_N** (0.448 at 2000 →
+   0.501 at 4000 / 8000). With KWTA_K = 60 fixed and R2-E
+   growing, the kWTA selects a smaller fraction of an
+   increasingly large pool. The cells that win the kWTA
+   comparison are increasingly determined by recurrent
+   network attractors that are *cue-independent* — exactly
+   the regime where untrained pairs share more top-3 words.
+   This is itself a side-effect of "more R2 cells without
+   sparsity scaling", not a confound on the trained side.
 
 ## Acceptance status
 
-<!-- @ACCEPTANCE@ -->
+**iter-59 verdict: branch (B) Mixed limit — capacity helps,
+does not break the floor.**
+
+| | vocab=64 ep16 R2=2000 | vocab=64 ep16 R2=4000 | vocab=64 ep32 R2=2000 (iter-58) | vocab=32 ep32 R2=2000 (iter-54) |
+| --- | ---: | ---: | ---: | ---: |
+| Trained | 0.449 | **0.411** | 0.422 | 0.230 |
+| Untrained | 0.456 | 0.501 | 0.448 | 0.459 |
+| Δ cross | −0.007 | **−0.090** | −0.025 | −0.229 |
+
+Branch (A) "back to ~0.20-0.25" is rejected — even with double
+capacity at half the epochs, trained_cross sits 0.18 above the
+vocab=32 best of 0.230. Branch (B) "improves but doesn't
+break" is the right reading — Δ signal grew ~13× (−0.007 →
+−0.090) while the absolute floor moved only ~0.04 below the
+matched-config R2=2000 baseline (0.449 → 0.411). Capacity is
+*a* limit, not *the* limit.
+
+State-reset assertion: PASSED on every untrained arm.
+Decorrelated invariant: PASSED on every brain construction.
 
 ## iter-60 branch decision
 
@@ -106,10 +193,10 @@ result:
 
 | Outcome | iter-60 branch | This data |
 | --- | --- | :-: |
-| (A) R2_N=4000 or 8000 brings vocab64 trained_cross back to ~0.20-0.25 with strongly negative Δ cross | Architecture / capacity model confirmed; iter-60 = real scaling-law sweep over `R2-E / vocab` vs trained_cross | <!-- @A_ITER60@ --> |
-| (B) R2_N improves only partially (e.g. trained 0.42 → 0.32, not back to 0.20) | Mixed limit; iter-60 = capacity *and* geometry cleanup combined | <!-- @B_ITER60@ --> |
-| (C) R2_N barely helps | Not a simple capacity problem; iter-60 = learnable R1→R2 or association bridge | <!-- @C_ITER60@ --> |
-| (D) Larger R2_N degrades or destabilises runs | Don't push further; iter-60 = topology / sparsity / connectivity scaling first | <!-- @D_ITER60@ --> |
+| (A) R2_N=4000 or 8000 brings vocab64 trained_cross back to ~0.20-0.25 with strongly negative Δ cross | Architecture / capacity model confirmed; iter-60 = real scaling-law sweep over `R2-E / vocab` vs trained_cross | ❌ (R2_N=4000 ep16 trained = 0.411, well above the iter-54 vocab=32 best of 0.230) |
+| (B) R2_N improves only partially (e.g. trained 0.42 → 0.32, not back to 0.20) | Mixed limit; iter-60 = capacity *and* geometry cleanup combined | **✓ PRIMARY** — Δ cross deepens substantially (−0.007 → −0.090 between ep16 R2_N=2000 and ep16 R2_N=4000), but the absolute trained_cross does NOT return to the vocab=32 best (~0.20-0.25). Capacity is *one* limit but not *the* limit |
+| (C) R2_N barely helps | Not a simple capacity problem; iter-60 = learnable R1→R2 or association bridge | ❌ (Δ deepening from −0.007 to −0.090 is far above noise; capacity *does* help) |
+| (D) Larger R2_N degrades or destabilises runs | Don't push further; iter-60 = topology / sparsity / connectivity scaling first | ❌ (no instability or destabilisation observed; runs were clean at 2000/4000/8000) |
 
 ## Methodological lesson
 
@@ -127,7 +214,18 @@ iter-56: aggregate monotonicity is not seed-level monotonicity.
 iter-57: a 3-point sweep is the minimum for a non-monotonic axis.
 iter-58: a saturation ceiling has a *direction*; pick a non-
 training axis where competing models predict opposite signs.
-**iter-59: <!-- @LESSON@ -->.**
+**iter-59: capacity helps, but capacity-in-one-layer doesn't break a
+floor that lives across an architecture's boundaries. The
+iter-59 number that matters most isn't the trained_cross
+itself — it's that *Δ cross* (the training-induced
+specificity gain) deepened ~13× when capacity doubled, while
+the *absolute* trained_cross moved only ~0.04. Plasticity now
+has more room to write into, but the read-out floor is
+governed by something that doesn't shrink with R2_N alone.
+Wallclock-bounded iter-59 forced an honest "we cannot push
+this axis to a clean asymptote", and the data did the rest.
+The pivot to architecture (iter-60 DG bridge) is not a guess
+— it is the directly inferred next experiment.**
 
 ## Files touched (single commit)
 

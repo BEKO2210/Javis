@@ -38,7 +38,30 @@ best (~0.20-0.25).
 
 ### Verified — capacity sweep at vocab=64
 
-<!-- @CHANGELOG_SWEEP_TABLE@ -->
+| R2_N | cells/cue | Untrained cross | Trained cross | Δ cross | wallclock | n_seeds × ep | Comment |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| **2000** | 21 | 0.448 ± 0.012 | **0.422 ± 0.017** | −0.025 | ~2 h | 4 × 32 (iter-58) | full ep32 baseline |
+|  2000 | 21 | 0.456 ± 0.012 | 0.449 ± 0.002 | −0.007 | 24 min | 2 × 16 | iter-59 fairness baseline at reduced ep |
+| **4000** | 43 | 0.501 | **0.411** | **−0.090** | 40 min | 1 × 16 | primary test, single seed (sweep killed before seed 7) |
+|  8000 | 87 | 0.501 | 0.501 | +0.000 | 44 min | 1 × 4 | smoke probe, deliberately under-trained |
+
+State-reset assertion + decorrelated invariant: PASSED on all
+brain constructions. No instability at any R2_N. R2_N=16000+
+ruled out ex-ante on wallclock (~120 h+ for full ep32 sweep).
+
+**Two reading axes:**
+
+1. *At R2_N = 2000 fixed*, ep16 vs ep32: Δ cross drops from
+   −0.025 → −0.007 (smaller). ep16 is firmly under-trained
+   for vocab=64; the −0.007 sets the noise floor for any
+   ep16 comparison.
+2. *At ep16 fixed*, R2_N = 2000 vs 4000: Δ cross deepens
+   from −0.007 → **−0.090** (≈ 13× larger). Seed-42 trained
+   at R2_N=4000 (0.411) is *roughly tied* with the
+   R2_N=2000 ep32 baseline (0.422) — doubling capacity at
+   half the epochs lands in the same neighbourhood. But
+   absolute trained_cross does NOT drop to the vocab=32
+   best of 0.230.
 
 State-reset assertion: PASSED on all untrained arms. Decorrelated
 invariant: PASSED on all brain constructions. 10/10 eval lib
@@ -46,11 +69,54 @@ tests still green.
 
 ### Honest reading
 
-<!-- @CHANGELOG_HONEST_READING@ -->
+**iter-59 verdict: branch (B) Mixed limit — capacity helps,
+does not break the floor.**
+
+Branch (A) "trained_cross back to ~0.20-0.25" is rejected:
+even at double R2_N (and reduced epochs), trained sits 0.18
+above the vocab=32 best of 0.230. Branch (B) is the right
+read: Δ signal grew ~13× while the absolute floor moved
+~0.04. Capacity is *a* limit, not *the* limit.
+
+Branch (C) "doesn't help" is also rejected (Δ cross deepening
+is far above noise). Branch (D) "destabilises" — runs were
+clean across 2000/4000/8000.
+
+**iter-60 entry — architecture pivot (not capacity).** Bekos
+flagged that "more R2 in one layer" is the wrong direction
+and pointed at the Hippocampus / Sparse Distributed Memory
+literature: DG / CA3 separation, mossy-fibre projection,
+sparse address layer. iter-60 = DG-like Pattern-Separation
+Bridge smoke (separate note).
+
+**Caveats** that limit the strength of the verdict:
+
+1. *R2_N=4000 has only one seed.* Per-seed std at R2_N=2000
+   ep16 was 0.002, so the −0.090 is well above noise on the
+   matched config, but a 2nd seed would tighten.
+2. *Epoch mismatch.* The cleanest comparison (R2_N=4000 ep32
+   4-seed) was ruled out on wallclock. ep32 R2=2000 (iter-58)
+   + ep16 R2=2000 (iter-59) bracket the missing point.
+3. *Untrained baseline rises with R2_N* (0.448 → 0.501).
+   Fixed KWTA_K = 60 over a growing R2-E pool selects an
+   increasingly cue-independent attractor. Itself a side-
+   effect of "more cells without sparsity scaling".
 
 ### Methodological lesson
 
-<!-- @CHANGELOG_LESSON@ -->
+iter-50 → iter-58 lessons preserved.
+**iter-59: capacity helps, but capacity-in-one-layer doesn't
+break a floor that lives across an architecture's boundaries.
+The number that matters most isn't trained_cross itself —
+it's that Δ cross (training-induced specificity gain)
+deepened ~13× when capacity doubled, while the absolute
+trained_cross moved only ~0.04. Plasticity now has more room
+to write into, but the read-out floor is governed by something
+that doesn't shrink with R2_N alone. Wallclock-bounded iter-59
+forced an honest "we cannot push this axis to a clean
+asymptote", and the data did the rest. The pivot to
+architecture (iter-60 DG bridge) is not a guess — it is the
+directly inferred next experiment.**
 
 ## Unreleased — Iteration 58 (Jaccard floor geometry vs plasticity diagnosis)
 
