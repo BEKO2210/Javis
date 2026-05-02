@@ -39,19 +39,111 @@ cargo run --release -p eval --example reward_benchmark -- \
 
 ### Verified — per-seed table
 
-<!-- @CHANGELOG_PER_SEED@ -->
+**Per-seed table (decisive — aggregate hides heterogeneity):**
+
+| Seed | Untrained cross | Trained cross | Δ cross | Trained same | Eval-drift L2 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 0.028 | 0.028 | +0.000 | **0.961** ✓ | +4.60 |
+|  7 | 0.029 | 0.026 | −0.003 | **0.875** ✗ | +1.65 |
+| 13 | 0.028 | 0.025 | −0.003 | **0.898** ✗ | **−0.89** |
+| 99 | 0.033 | 0.026 | −0.007 | **0.930** ✓ | +3.73 |
+
+**2 of 4 seeds erode below the 0.90 same-cue threshold.** Seed
+13's eval-drift L2 sign-flip indicates net weight depression
+during eval (vs net potentiation on the other three).
 
 ### Aggregate
 
-<!-- @CHANGELOG_AGGREGATE@ -->
+| | iter-58 no-DG ep32 (4 seeds) | iter-60 DG smoke ep16 (2 seeds) | iter-61 DG full ep32 (4 seeds) |
+| --- | ---: | ---: | ---: |
+| Untrained cross | 0.448 ± 0.012 | 0.028 ± 0.000 | 0.029 ± 0.002 |
+| Trained cross | 0.422 ± 0.017 | 0.026 ± 0.000 | 0.026 ± 0.001 |
+| Δ cross (paired) | −0.025 (sig) | −0.002 | −0.003 (t(3) ≈ −2.07, **p ≈ 0.13 NS**) |
+| Trained same | 1.000 | 0.922 ± 0.011 | **0.916 ± 0.037** (3× wider spread) |
+| Eval-drift L2 | +0.04 | +3.3 to +4.4 | −0.9 to +4.6 (sign flip on seed 13) |
+
+Cross-seed averaged per-pair distribution at iter-61
+vocab=64+DG: min 0.000, p25 0.000, **median 0.000**, p75 0.050,
+p90 0.050, p95 0.100, max 0.275 (vs iter-58's max 1.000).
+Cue-frequency-in-pairs ≥ 0.10 caps at 9 of 63 partners (vs
+iter-58's 59 of 63). The whole distribution shifted left ~0.40
+and the high-overlap tail collapsed.
 
 ### Honest reading
 
-<!-- @CHANGELOG_HONEST_READING@ -->
+**Four separated readings:**
+
+1. **Separation — robust.** Cross-cue 0.025–0.033 across all 4
+   seeds; per-pair median 0.000; max collision 0.275 (vs
+   iter-58's perfect-overlap 1.000 trio). The DG geometry
+   collapse from iter-60 reproduces at full epochs.
+2. **Learning — invisible at the floor.** Δ cross trained −
+   untrained = −0.003 mean; t(3) ≈ −2.07; **p ≈ 0.13, NOT
+   significant.** DG solves separation geometrically;
+   plasticity does not yet add measurable cue-specific
+   improvement in the Jaccard metric.
+3. **Stability — heterogeneous, half the seeds erode.** Per-
+   seed trained_same: 0.961, 0.875, 0.898, 0.930. **2 of 4
+   below the 0.90 threshold.** Aggregate (0.916 ± 0.037)
+   hides this; std is 3× wider than the smoke (0.011), and
+   the two sub-0.90 seeds are not noise.
+4. **Drift — high and seed-dependent, including a sign flip.**
+   Eval-drift L2 (R2→R2) per seed: +4.60, +1.65, **−0.89**,
+   +3.73. Range 0.9 to 4.6. All 10×–100× the no-DG baseline.
+   Seed 13's negative sign means net weight depression during
+   eval — different plasticity dynamics from the other three.
+
+**Verdict per Bekos's iter-62 branching matrix:**
+
+  - (A) DG robust (cross ≤ 0.05 all + same ≥ 0.90 all):
+    **partial** — cross holds but same fails on 2 seeds.
+  - (B) DG separates but stability erodes:
+    **✓ PRIMARY**.
+  - (C) DG smoke does not replicate: ❌
+    (cross-cue replicates bit-close).
+  - (D) DG separates only untrained, trained gets worse: ❌
+    (trained slightly *better* than untrained on 3 of 4).
+
+iter-62 entry: **branch (B) — Path 1 plasticity-off-during-
+eval (recall-mode).** The iter-53 protocol kept plasticity on
+during the Jaccard matrix to honour Bekos's "im trained Run
+würde Plastizität zwischen Trials variieren". Under DG the
+cue-driven R2 traffic is ~10–100× denser than no-DG, so the
+same eval-time plasticity rate eats more engram per trial.
+Recall-mode = plasticity-off-during-eval is exactly what
+branch (B) prescribes; under that protocol the iter-53 same-
+cue=1.000 invariant returns automatically and the eval-drift L2
+question disappears.
+
+Path 2 (parallel): plasticity-rate decay or DG → R2 weight
+decay over the eval window — less drastic than full off,
+allows engram refinement without erosion.
+
+Sub-question alongside Path 1: **direct cue → target metric.**
+With cross-cue at the geometric floor, top-3 against canonical
+target (the iter-52 metric) is the metric that *can* register
+plasticity-driven cue-specific learning. iter-62 should
+re-introduce it on the DG-enabled brain.
+
+**Headline:**
+
+> **DG robustly solves cross-cue separation, but Jaccard no
+> longer measures learning, and same-cue erodes on half the
+> seeds under continued plasticity.**
 
 ### Methodological lesson
 
-<!-- @CHANGELOG_LESSON@ -->
+A 2-seed × 16-epoch smoke gave aggregate same-cue 0.922 ±
+0.011. The 4-seed × 32-epoch full run gives 0.916 ± **0.037**
+— same mean to 0.006, **3× the std**. The mean was right; the
+heterogeneity was not. Two of four seeds individually drop
+below the 0.90 threshold even though the mean stays above.
+**Always replicate at full seeds × full epochs before
+declaring an architectural pivot solved.** Per-seed *spread*
+is a different signal from per-seed *mean*, and a smoke is
+too small to measure spread reliably. Eighth consecutive
+iteration where the per-seed view produced a different verdict
+than the aggregate alone would have produced.
 
 All eval lib tests still green (10/10); clippy `-D warnings`
 clean (no code changes since iter-60).
