@@ -483,6 +483,15 @@ pub struct TeacherForcingConfig {
     /// it. The gate is a *training-only* knob (it's never applied
     /// during evaluation), so it stays an honest measurement.
     pub r1r2_prediction_gate: f32,
+    /// Iter-59 capacity override: number of R2 neurons to allocate.
+    /// `0` (the default) means "use the compile-time `R2_N`
+    /// constant" (2000), preserving iter-46…58 numerics. A positive
+    /// value rebuilds the R2 region at the requested size on every
+    /// fresh brain, giving the iter-59 capacity-scaling sweep a
+    /// runtime knob without forking the file. Recurrent R2→R2
+    /// connectivity scales as `r2_n² × R2_P_CONNECT`; expect
+    /// quadratic compute cost.
+    pub r2_n: u32,
 }
 
 impl Default for TeacherForcingConfig {
@@ -513,6 +522,7 @@ impl Default for TeacherForcingConfig {
             iter46_baseline: false,
             no_plasticity: false,
             decorrelated_init: false,
+            r2_n: 0,
         }
     }
 }
@@ -545,6 +555,7 @@ impl TeacherForcingConfig {
             iter46_baseline: false,
             no_plasticity: false,
             decorrelated_init: false,
+            r2_n: 0,
         }
     }
     pub const fn enabled() -> Self {
@@ -740,12 +751,18 @@ fn build_input_region() -> Region {
     region
 }
 
-fn build_memory_region(seed: u64, inh_frac: f32) -> Region {
+/// Build the R2 (memory) region. `r2_n` is the requested neuron
+/// count — pass [`R2_N`] to reproduce the iter-46…58 baseline,
+/// or any other positive value to scale the recurrent network up
+/// or down. Inhibitory fraction (`inh_frac`) and recurrent
+/// connection probability ([`R2_P_CONNECT`]) stay at the iter-58
+/// defaults; only the cell count moves.
+fn build_memory_region(seed: u64, inh_frac: f32, r2_n: usize) -> Region {
     let mut rng = Rng::new(seed);
     let mut region = Region::new("R2", DT);
     let net = &mut region.network;
-    let n_inh = (R2_N as f32 * inh_frac) as usize;
-    let n_exc = R2_N - n_inh;
+    let n_inh = (r2_n as f32 * inh_frac) as usize;
+    let n_exc = r2_n - n_inh;
     for _ in 0..n_exc {
         net.add_neuron(LifNeuron::excitatory(LifParams::default()));
     }
@@ -754,12 +771,12 @@ fn build_memory_region(seed: u64, inh_frac: f32) -> Region {
     }
     let g_exc = 0.20_f32;
     let g_inh = 0.80_f32;
-    for pre in 0..R2_N {
+    for pre in 0..r2_n {
         let g = match net.neurons[pre].kind {
             NeuronKind::Excitatory => g_exc,
             NeuronKind::Inhibitory => g_inh,
         };
-        for post in 0..R2_N {
+        for post in 0..r2_n {
             if pre == post {
                 continue;
             }
@@ -911,7 +928,7 @@ fn assert_decorrelated_disjoint(brain: &Brain, encoder: &TextEncoder, vocab: &[S
 }
 
 fn fresh_brain(seed: u64) -> Brain {
-    fresh_brain_with(seed, INTER_WEIGHT, R2_INH_FRAC)
+    fresh_brain_with(seed, INTER_WEIGHT, R2_INH_FRAC, R2_N)
 }
 
 /// Iter-50 variant: build the brain with explicit override values
@@ -919,12 +936,27 @@ fn fresh_brain(seed: u64) -> Brain {
 /// `--iter46-baseline` diagnostic to reproduce the original
 /// iter-46 topology (2.0 / 0.20) instead of the iter-47/49
 /// drift values (1.0 / 0.30).
-fn fresh_brain_with(seed: u64, inter_weight: f32, inh_frac: f32) -> Brain {
+///
+/// Iter-59: `r2_n` is now an explicit parameter so the capacity
+/// sweep can rebuild R2 at any positive size. Pass [`R2_N`] to
+/// reproduce iter-46…58 numerics exactly.
+fn fresh_brain_with(seed: u64, inter_weight: f32, inh_frac: f32, r2_n: usize) -> Brain {
     let mut brain = Brain::new(DT);
     brain.add_region(build_input_region());
-    brain.add_region(build_memory_region(seed.wrapping_add(1), inh_frac));
+    brain.add_region(build_memory_region(seed.wrapping_add(1), inh_frac, r2_n));
     wire_forward(&mut brain, seed.wrapping_add(2), inter_weight);
     brain
+}
+
+/// Iter-59 helper: extract the effective R2 neuron count from the
+/// teacher config. `0` means "use the [`R2_N`] compile-time
+/// default"; any positive value overrides it.
+fn effective_r2_n(cfg: &TeacherForcingConfig) -> usize {
+    if cfg.r2_n == 0 {
+        R2_N
+    } else {
+        cfg.r2_n as usize
+    }
 }
 
 fn stdp() -> StdpParams {
@@ -1079,13 +1111,14 @@ fn reward_params() -> RewardParams {
 // ----------------------------------------------------------------------
 
 fn drive_for(brain: &mut Brain, sdr_indices: &[u32], duration_ms: f32) {
+    let r2_size = brain.regions[1].num_neurons();
     let mut ext1 = vec![0.0_f32; R1_N];
     for &idx in sdr_indices {
         if (idx as usize) < R1_N {
             ext1[idx as usize] = DRIVE_NA;
         }
     }
-    let ext2 = vec![0.0_f32; R2_N];
+    let ext2 = vec![0.0_f32; r2_size];
     let externals = vec![ext1, ext2];
     let steps = (duration_ms / DT) as usize;
     for _ in 0..steps {
@@ -1107,7 +1140,7 @@ fn drive_for_with_counts(
             ext1[idx as usize] = DRIVE_NA;
         }
     }
-    let ext2 = vec![0.0_f32; R2_N];
+    let ext2 = vec![0.0_f32; r2_size];
     let externals = vec![ext1, ext2];
     let steps = (duration_ms / DT) as usize;
     for _ in 0..steps {
@@ -1122,7 +1155,8 @@ fn drive_for_with_counts(
 }
 
 fn idle(brain: &mut Brain, duration_ms: f32) {
-    let zeros = vec![vec![0.0_f32; R1_N], vec![0.0_f32; R2_N]];
+    let r2_size = brain.regions[1].num_neurons();
+    let zeros = vec![vec![0.0_f32; R1_N], vec![0.0_f32; r2_size]];
     let steps = (duration_ms / DT) as usize;
     for _ in 0..steps {
         brain.step(&zeros);
@@ -1202,10 +1236,10 @@ fn drive_with_r2_clamp(
             ext1[idx as usize] = r1_strength;
         }
     }
-    let mut ext2 = vec![0.0_f32; R2_N];
+    let mut ext2 = vec![0.0_f32; r2_size];
     if r2_strength != 0.0 {
         for &idx in r2_target_indices {
-            if (idx as usize) < R2_N {
+            if (idx as usize) < r2_size {
                 ext2[idx as usize] = r2_strength;
             }
         }
@@ -1253,10 +1287,10 @@ fn drive_with_r2_clamp_traced(
             ext1[idx as usize] = r1_strength;
         }
     }
-    let mut ext2 = vec![0.0_f32; R2_N];
+    let mut ext2 = vec![0.0_f32; r2_size];
     if r2_strength != 0.0 {
         for &idx in r2_target_indices {
-            if (idx as usize) < R2_N {
+            if (idx as usize) < r2_size {
                 ext2[idx as usize] = r2_strength;
             }
         }
@@ -1639,7 +1673,8 @@ pub fn run_determinism_smoke(corpus: &RewardCorpus, cfg: &RewardConfig) {
     } else {
         (INTER_WEIGHT, R2_INH_FRAC)
     };
-    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used);
+    let r2_n_used = effective_r2_n(&cfg.teacher);
+    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used, r2_n_used);
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
     let r2_e = r2_e_set(&brain);
 
@@ -1893,7 +1928,8 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     } else {
         (INTER_WEIGHT, R2_INH_FRAC)
     };
-    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used);
+    let r2_n_used = effective_r2_n(&cfg.teacher);
+    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used, r2_n_used);
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
     let r2_e = r2_e_set(&brain);
 
@@ -2900,6 +2936,7 @@ fn run_jaccard_arm(
     } else {
         (INTER_WEIGHT, R2_INH_FRAC)
     };
+    let r2_n_used = effective_r2_n(&cfg.teacher);
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
     let mut brain = if cfg.teacher.decorrelated_init {
         // Iter-54: hard-decorrelated R1 → R2 wiring. Build R1 + R2
@@ -2908,7 +2945,11 @@ fn run_jaccard_arm(
         // cue's disjoint R2-E block.
         let mut b = Brain::new(DT);
         b.add_region(build_input_region());
-        b.add_region(build_memory_region(cfg.seed.wrapping_add(1), inh_frac));
+        b.add_region(build_memory_region(
+            cfg.seed.wrapping_add(1),
+            inh_frac,
+            r2_n_used,
+        ));
         let vocab_vec: Vec<String> = corpus.vocab.iter().cloned().collect();
         let _blocks = wire_forward_decorrelated(
             &mut b,
@@ -2922,15 +2963,16 @@ fn run_jaccard_arm(
         // bit-identity check, but on the topology side.
         assert_decorrelated_disjoint(&b, &encoder, &vocab_vec);
         eprintln!(
-            "[iter-54 {arm}] seed={} decorrelated init: vocab={} R2-E={} block_size={} (disjoint invariant ✓)",
+            "[iter-54 {arm}] seed={} decorrelated init: vocab={} R2_N={} R2-E={} block_size={} (disjoint invariant ✓)",
             cfg.seed,
             corpus.vocab.len(),
+            r2_n_used,
             r2_e_set(&b).len(),
             r2_e_set(&b).len() / corpus.vocab.len(),
         );
         b
     } else {
-        fresh_brain_with(cfg.seed, inter_weight, inh_frac)
+        fresh_brain_with(cfg.seed, inter_weight, inh_frac, r2_n_used)
     };
     let r2_e = r2_e_set(&brain);
 
@@ -3138,6 +3180,7 @@ pub fn run_jaccard_floor_diagnosis(
         } else {
             (INTER_WEIGHT, R2_INH_FRAC)
         };
+        let r2_n_used = effective_r2_n(&cfg_seeded.teacher);
         let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
         let mut brain = if cfg_seeded.teacher.decorrelated_init {
             let mut b = Brain::new(DT);
@@ -3145,6 +3188,7 @@ pub fn run_jaccard_floor_diagnosis(
             b.add_region(build_memory_region(
                 cfg_seeded.seed.wrapping_add(1),
                 inh_frac,
+                r2_n_used,
             ));
             let vocab_vec: Vec<String> = corpus.vocab.iter().cloned().collect();
             let _blocks = wire_forward_decorrelated(
@@ -3156,15 +3200,16 @@ pub fn run_jaccard_floor_diagnosis(
             );
             assert_decorrelated_disjoint(&b, &encoder, &vocab_vec);
             eprintln!(
-                "[iter-58 floor] seed={} decorrelated init: vocab={} R2-E={} block_size={} (disjoint invariant ✓)",
+                "[iter-58 floor] seed={} decorrelated init: vocab={} R2_N={} R2-E={} block_size={} (disjoint invariant ✓)",
                 cfg_seeded.seed,
                 corpus.vocab.len(),
+                r2_n_used,
                 r2_e_set(&b).len(),
                 r2_e_set(&b).len() / corpus.vocab.len(),
             );
             b
         } else {
-            fresh_brain_with(cfg_seeded.seed, inter_weight, inh_frac)
+            fresh_brain_with(cfg_seeded.seed, inter_weight, inh_frac, r2_n_used)
         };
         let r2_e = r2_e_set(&brain);
 
@@ -3702,7 +3747,7 @@ mod tests {
         let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
         let mut brain = Brain::new(DT);
         brain.add_region(build_input_region());
-        brain.add_region(build_memory_region(43, R2_INH_FRAC));
+        brain.add_region(build_memory_region(43, R2_INH_FRAC, R2_N));
         let blocks = wire_forward_decorrelated(&mut brain, &encoder, &vocab_vec, 123, INTER_WEIGHT);
         assert_eq!(blocks.len(), vocab_vec.len());
         // Block-to-block disjointness (precondition).

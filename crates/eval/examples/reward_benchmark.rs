@@ -79,6 +79,15 @@ fn main() {
     // wiring + 16 epochs) failed to produce?
     let decorrelated_init = flag(&args, "--decorrelated-init");
 
+    // Iter-59: R2 neuron count override. `0` (default) keeps the
+    // compile-time `R2_N = 2000` baseline (iter-46…58 numerics).
+    // Any positive value rebuilds R2 at the requested size,
+    // letting the capacity-scaling sweep test whether the iter-58
+    // vocab=64 floor is clamp-budgeted. Recurrent R2→R2
+    // connectivity grows quadratically in `r2_n`; expect ~4× cost
+    // at r2_n=4000, ~16× at r2_n=8000.
+    let r2_n: u32 = parse_arg(&args, "--r2-n", 0_u32);
+
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
     //   wmax-cap       — symptom: iSTDP w_max 8.0 → 2.0
@@ -144,6 +153,7 @@ fn main() {
         iter46_baseline,
         no_plasticity,
         decorrelated_init,
+        r2_n,
     };
 
     // Iter-58 vocab-scaling stress test: --corpus-vocab 32 (default;
@@ -253,6 +263,144 @@ fn main() {
             "{}",
             render_jaccard_floor_diagnosis(&reports, threshold, top_n),
         );
+        return;
+    }
+
+    // Iter-59 R2-capacity sweep: loops over `--r2-sizes` (comma-
+    // separated list; default 2000,4000) and runs the standard
+    // jaccard-bench (trained vs untrained) at each size, printing
+    // a single scaling table. Built on top of run_jaccard_bench
+    // by overriding `cfg.teacher.r2_n` per iteration. Useful for
+    // testing whether the iter-58 vocab=64 floor is a per-cue
+    // R2-E block budget limit.
+    if flag(&args, "--r2-capacity-sweep") {
+        let seeds_str = parse_string(&args, "--seeds").unwrap_or_else(|| seed.to_string());
+        let seeds: Vec<u64> = seeds_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .collect();
+        if seeds.is_empty() {
+            eprintln!(
+                "--r2-capacity-sweep: --seeds must contain at least one parseable u64 (got '{seeds_str}')",
+            );
+            std::process::exit(2);
+        }
+        let sizes_str =
+            parse_string(&args, "--r2-sizes").unwrap_or_else(|| "2000,4000".to_string());
+        let sizes: Vec<u32> = sizes_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u32>().ok())
+            .collect();
+        if sizes.is_empty() {
+            eprintln!(
+                "--r2-capacity-sweep: --r2-sizes must contain at least one parseable u32 (got '{sizes_str}')",
+            );
+            std::process::exit(2);
+        }
+        eprintln!(
+            "[iter-59] R2 capacity sweep: r2_sizes={sizes:?} seeds={seeds:?} \
+             vocab={corpus_vocab} epochs={epochs} reps={reps} \
+             teacher_forcing={teacher_on} decorrelated_init={decorrelated_init} \
+             clamp={target_clamp} teacher_ms={teacher_ms}",
+        );
+        // Per-config metrics for the final scaling table.
+        struct CapRow {
+            r2_n: u32,
+            untrained_mean: f32,
+            untrained_std: f32,
+            trained_mean: f32,
+            trained_std: f32,
+            delta: f32,
+            wallclock_secs: f32,
+        }
+        let mut rows: Vec<CapRow> = Vec::with_capacity(sizes.len());
+        for &r2_n_val in &sizes {
+            let mut t = teacher;
+            t.r2_n = r2_n_val;
+            let cfg = RewardConfig {
+                epochs,
+                use_reward: true,
+                seed,
+                reps_per_pair: reps,
+                teacher: t,
+            };
+            let t0 = Instant::now();
+            let sweep = run_jaccard_bench(&corpus, &cfg, &seeds);
+            let wallclock_secs = t0.elapsed().as_secs_f32();
+            let mean_of = |v: &[f32]| -> f32 {
+                if v.is_empty() {
+                    0.0
+                } else {
+                    v.iter().sum::<f32>() / v.len() as f32
+                }
+            };
+            let std_of = |v: &[f32], m: f32| -> f32 {
+                if v.len() < 2 {
+                    return 0.0;
+                }
+                let var = v.iter().map(|x| (x - m).powi(2)).sum::<f32>() / (v.len() - 1) as f32;
+                var.sqrt()
+            };
+            let us: Vec<f32> = sweep
+                .untrained
+                .iter()
+                .map(|r| r.jaccard.cross_cue_mean)
+                .collect();
+            let ts: Vec<f32> = sweep
+                .trained
+                .iter()
+                .map(|r| r.jaccard.cross_cue_mean)
+                .collect();
+            let um = mean_of(&us);
+            let tm = mean_of(&ts);
+            let row = CapRow {
+                r2_n: r2_n_val,
+                untrained_mean: um,
+                untrained_std: std_of(&us, um),
+                trained_mean: tm,
+                trained_std: std_of(&ts, tm),
+                delta: tm - um,
+                wallclock_secs,
+            };
+            eprintln!(
+                "[iter-59] r2_n={} done | untrained {:.3}±{:.3} | trained {:.3}±{:.3} | Δ {:+.3} | {:.1} s",
+                row.r2_n,
+                row.untrained_mean,
+                row.untrained_std,
+                row.trained_mean,
+                row.trained_std,
+                row.delta,
+                row.wallclock_secs,
+            );
+            rows.push(row);
+        }
+        // Final scaling table.
+        println!("\n## Iter-59: R2 capacity scaling sweep\n");
+        println!(
+            "_vocab={corpus_vocab}, n_seeds={}, epochs={epochs}, decorrelated_init=true, clamp={target_clamp} nA, teacher_ms={teacher_ms} ms_\n",
+            seeds.len(),
+        );
+        println!(
+            "| R2_N | cells/cue (block_size) | Untrained cross | Trained cross | Δ cross | Wallclock |",
+        );
+        println!("| ---: | ---: | ---: | ---: | ---: | ---: |",);
+        for row in &rows {
+            // R2-E ≈ R2_N × (1 - R2_INH_FRAC). At iter-46/58 default
+            // 0.30, R2-E = 0.7 × R2_N. block_size = R2-E / vocab.
+            let r2_e_est = (row.r2_n as f32 * 0.70) as u32;
+            let block_size = r2_e_est / corpus_vocab.max(1);
+            println!(
+                "| {} | {} | {:.3} ± {:.3} | {:.3} ± {:.3} | {:+.3} | {:.0} s |",
+                row.r2_n,
+                block_size,
+                row.untrained_mean,
+                row.untrained_std,
+                row.trained_mean,
+                row.trained_std,
+                row.delta,
+                row.wallclock_secs,
+            );
+        }
         return;
     }
 

@@ -4,6 +4,54 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 59 (R2 capacity scaling for the vocab=64 floor)
+
+iter-58 closed the geometry-vs-architecture question with a
+direction-of-change argument: doubling vocab raised trained
+cross by +0.192. Architecture / per-cue-capacity floor was the
+primary verdict, with the specific mechanistic form
+`block_size = R2-E / vocab`. iter-59 is the corresponding
+*positive* control: hold vocab=64 fixed, scale R2_N up, see
+whether trained cross falls back toward iter-54's vocab=32
+best (~0.20-0.25).
+
+### Added — single commit
+
+- `TeacherForcingConfig.r2_n: u32` (default `0` = use compile-
+  time `R2_N` constant; positive values rebuild R2 at the
+  requested size).
+- `effective_r2_n(cfg)` helper resolving the override.
+- `build_memory_region(seed, inh_frac, r2_n)` and
+  `fresh_brain_with(seed, inter_weight, inh_frac, r2_n)`
+  parameterised on `r2_n`. `drive_for` / `drive_for_with_counts`
+  / `idle` / `drive_with_r2_clamp` / `drive_with_r2_clamp_traced`
+  now read `brain.regions[1].num_neurons()` instead of hardcoded
+  `R2_N`. Backward-compat: existing callers that pass
+  `R2_N` directly are unchanged.
+- CLI: `--r2-n N` (single-run override) and
+  `--r2-capacity-sweep --r2-sizes 2000,4000,8000` (sweep mode
+  emitting a single scaling table). KWTA_K stays fixed at 60 —
+  sparsity intentionally varies with R2_N (4.3 % at 2000 →
+  1.1 % at 8000). Recurrent R2→R2 connectivity grows
+  quadratically in r2_n, expect ~4× cost at r2_n=4000, ~16×
+  at r2_n=8000.
+
+### Verified — capacity sweep at vocab=64
+
+<!-- @CHANGELOG_SWEEP_TABLE@ -->
+
+State-reset assertion: PASSED on all untrained arms. Decorrelated
+invariant: PASSED on all brain constructions. 10/10 eval lib
+tests still green.
+
+### Honest reading
+
+<!-- @CHANGELOG_HONEST_READING@ -->
+
+### Methodological lesson
+
+<!-- @CHANGELOG_LESSON@ -->
+
 ## Unreleased — Iteration 58 (Jaccard floor geometry vs plasticity diagnosis)
 
 iter-55 / iter-56 / iter-57 swept three orthogonal training
