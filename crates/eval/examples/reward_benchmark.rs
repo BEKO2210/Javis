@@ -19,8 +19,8 @@ use std::time::Instant;
 use eval::{
     default_reward_corpus, default_reward_corpus_v64, render_jaccard_floor_diagnosis,
     render_jaccard_sweep, render_reward_markdown, run_determinism_smoke, run_jaccard_bench,
-    run_jaccard_floor_diagnosis, run_postmortem_diagnostic, run_reward_benchmark, Iter49Mode,
-    RewardConfig, TeacherForcingConfig,
+    run_jaccard_floor_diagnosis, run_postmortem_diagnostic, run_reward_benchmark, DgConfig,
+    Iter49Mode, RewardConfig, TeacherForcingConfig,
 };
 
 fn main() {
@@ -81,12 +81,21 @@ fn main() {
 
     // Iter-59: R2 neuron count override. `0` (default) keeps the
     // compile-time `R2_N = 2000` baseline (iter-46…58 numerics).
-    // Any positive value rebuilds R2 at the requested size,
-    // letting the capacity-scaling sweep test whether the iter-58
-    // vocab=64 floor is clamp-budgeted. Recurrent R2→R2
-    // connectivity grows quadratically in `r2_n`; expect ~4× cost
-    // at r2_n=4000, ~16× at r2_n=8000.
+    // Any positive value rebuilds R2 at the requested size.
     let r2_n: u32 = parse_arg(&args, "--r2-n", 0_u32);
+
+    // Iter-60: DG pattern-separation bridge. `--dg-bridge` adds a
+    // third region (DG) with per-cue k-of-n hashed SDRs and a
+    // sparse mossy-fibre-style projection to R2. The direct
+    // R1 → R2 path is gated to `direct_r1r2_weight_scale` (default
+    // 0.0 = direct path off, DG is the sole cue-routing layer).
+    let dg_bridge = flag(&args, "--dg-bridge");
+    let dg_size: u32 = parse_arg(&args, "--dg-size", 4000_u32);
+    let dg_k: u32 = parse_arg(&args, "--dg-k", 80_u32);
+    let dg_to_r2_fanout: u32 = parse_arg(&args, "--dg-to-r2-fanout", 30_u32);
+    let dg_to_r2_weight: f32 = parse_arg(&args, "--dg-to-r2-weight", 1.0_f32);
+    let direct_r1r2_weight_scale: f32 = parse_arg(&args, "--direct-r1r2-weight-scale", 0.0_f32);
+    let dg_drive_strength: f32 = parse_arg(&args, "--dg-drive-strength", 200.0_f32);
 
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
@@ -154,6 +163,15 @@ fn main() {
         no_plasticity,
         decorrelated_init,
         r2_n,
+        dg: DgConfig {
+            enabled: dg_bridge,
+            size: dg_size,
+            k: dg_k,
+            to_r2_fanout: dg_to_r2_fanout,
+            to_r2_weight: dg_to_r2_weight,
+            direct_r1r2_weight_scale,
+            drive_strength: dg_drive_strength,
+        },
     };
 
     // Iter-58 vocab-scaling stress test: --corpus-vocab 32 (default;
