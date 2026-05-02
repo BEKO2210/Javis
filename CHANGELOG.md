@@ -43,15 +43,111 @@ is a **diagnosis**: what *is* the 0.20 floor? Geometric (encoder
 
 ### Verified — Path 1 (vocab=32) and Path 2 (vocab=64) results
 
-<!-- @CHANGELOG_RESULTS@ -->
+**Path 1 — vocab=32 floor diagnosis** (replicates iter-57 t40
+bit-exactly: trained 0.230 ± 0.020, Δ cross −0.229, paired
+t(3) ≈ −36.3, p ≪ 0.001):
+
+| min | p25 | median | p75 | p90 | p95 | max |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.000 | 0.150 | 0.225 | 0.300 | 0.350 | 0.425 | 0.750 |
+
+Distribution is **broad and continuous** across all 496 pairs.
+Top-3 pairs are concurrency-concept words (block / channels /
+actor) but ranks 4–15 are spread across many distinct cues.
+Cue frequency in pairs ≥ 0.30: half the vocab participates in
+many high-overlap pairs (block 21/31, ruby 20/31, clojure
+19/31). No isolated geometric-collision tail.
+
+**Path 2 — vocab=64 stress test** (same config, vocab doubled):
+
+| | vocab = 32 | vocab = 64 | Δ |
+| --- | ---: | ---: | ---: |
+| Untrained cross | 0.459 ± 0.022 | 0.448 ± 0.012 | −0.011 |
+| Trained cross | 0.230 ± 0.020 | **0.422 ± 0.017** | **+0.192** |
+| Δ cross | **−0.229** | **−0.025** | +0.204 |
+| paired t(3) | ≈ −36.3 (p ≪ 0.001) | ≈ −2.58 (p ≈ 0.08) | — |
+| block_size | 43 cells/cue | 21 cells/cue | half |
+
+**Doubling vocab roughly eliminates the training signal.**
+Trained cross rises +0.192, Δ cross collapses 89 % and falls
+below significance. Per-seed: 42 = −0.048, 7 = **0.000**, 13
+= −0.030, 99 = −0.024 — three of four seeds sub-significant.
+
+vocab=64 distribution shifts right by ≈ +0.20 across every
+percentile (median 0.225 → 0.425). Cue frequency in pairs ≥
+0.30 reaches **59/63 ≈ 92 %** for nearly every cue. Top-3
+pairs at vocab=64 (actor / ada / array) hit Jaccard = **1.000
+across all 4 seeds** — encoder/SDR collision on short common
+4-letter words.
+
+State-reset assertion: PASSED on all 4 seeds at both vocab
+sizes (untrained same_cue_mean = 1.000 ± 0.000). Decorrelated
+invariant: PASSED on all 8 brain constructions.
 
 ### Honest reading
 
-<!-- @CHANGELOG_HONEST_READING@ -->
+**iter-58 verdict: branch (B) PRIMARY — architecture /
+plasticity floor, with branch (C) secondary minor (encoder
+collision on actor / ada / array).** The per-cue R2-E block
+budget is the binding constraint. At 43 cells / cue the
+architecture writes Δ cross = −0.229 (significant); at 21
+cells / cue it writes −0.025 (not significant). The floor
+scales with cells-per-cue, *not* with vocab. Geometric model
+predicts trained_cross holds or drops with bigger vocab;
+architectural model predicts it rises. **Trained_cross rose
+by +0.192.** One number, one direction, one verdict.
+
+The actor / ada / array trio with mean Jaccard = 1.000 at
+vocab=64 is a real geometric/encoder collision (short common
+4-letter words), but it is a small fraction of the 2016
+pairs and is not the *bulk* limit — the median pair already
+sits at 0.425, which is the architectural floor, not a
+collision.
+
+iter-59 entry: real architecture question, not encoder fix.
+
+- **Path 3 (recommended first as positive control):** double
+  R2_N from 2000 to 4000 → block_size at vocab=64 returns to
+  ~62 cells / cue. Predicted trained cross ~0.20-0.25
+  (matches iter-54). ~30 min wallclock. Confirms the
+  architecture-floor mechanism cleanly.
+- **Path 1:** learnable / weight-mediated R1 → R2 projection
+  (replace the static disjoint blocks with soft per-cue
+  allocation that plasticity decides).
+- **Path 2:** contrastive iSTDP — penalise cells firing for
+  multiple cues within an epoch.
+
+The encoder geometry fix (the actor/ada/array overlap) is
+deprioritised: small fraction of failure mode + the iter-46
+corpus was already chosen for "well-separated SDRs", so the
+encoder is presumably a fairly clean baseline already.
 
 ### Methodological lesson
 
-<!-- @CHANGELOG_LESSON@ -->
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a guard is only a guard if its baseline excludes the null.
+iter-52: an analytical null is not an empirical control.
+iter-53: when the literal acceptance direction is bounded by
+construction, derive it from the protocol's mathematical bounds.
+iter-54: when the metric reports a "cleaner" number on a random
+topology than on an architecturally cleaner one, the metric is
+reading something else than what its name suggests.
+iter-55: a learning curve is not a single number; per-seed
+trajectories often reveal a saturation ceiling the aggregate hides.
+iter-56: aggregate monotonicity is not seed-level monotonicity.
+iter-57: a 3-point sweep is the minimum for a non-monotonic axis.
+**iter-58: a saturation ceiling has a *direction*. iter-55 / 56
+/ 57 each saw the floor approach 0.20 from below as training
+axes were extended, leaving the geometric-vs-architecture
+question genuinely open. iter-58 picked one new variable
+(vocab) and asked the *direction-of-change* question:
+geometric model predicts trained_cross stays flat or drops
+with bigger vocab; architectural model predicts it rises.
+Trained_cross rose by +0.192. One number, one direction, one
+verdict. Whenever multiple training axes saturate at the same
+value, find a non-training axis where the two competing models
+predict opposite signs of change — that is the diagnostic, not
+yet-another-training-sweep.**
 
 All eval lib tests still green (10/10); clippy `-D warnings`
 clean.
