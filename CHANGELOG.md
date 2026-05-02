@@ -4,6 +4,137 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 60 (DG pattern-separation bridge)
+
+iter-58 / iter-59 closed the geometry-vs-architecture and the
+capacity questions: the cross-cue floor is architecture-shaped
+(vocab=64 raised it 0.23 → 0.42), and capacity helps only
+partially (R2_N=4000 deepened Δ 13× but absolute floor moved
+only 0.04). Bekos's iter-60 pivot — drop "more capacity in one
+layer", add the missing upstream layer the Hippocampus / SDM
+literature describes (DG / CA3 separation, mossy-fibre
+projection, sparse address layer).
+
+### Added — code prep (commit `b81e646`)
+
+- `DgConfig` (size = 4000, k = 80, to_r2_fanout = 30,
+  to_r2_weight = 1.0, direct_r1r2_weight_scale = 0.0,
+  drive_strength = 200.0). On `TeacherForcingConfig.dg`.
+- `build_dg_region(size)` — third region, all excitatory, no
+  intra-region recurrent connectivity.
+- `wire_dg_to_r2(brain, cfg, seed)` — random sparse projection
+  (DG cell → `to_r2_fanout` random R2 cells at `to_r2_weight`).
+- `dg_sdr_for_cue(word, dg_size, k, salt)` — deterministic
+  k-of-n hashed DG address per cue.
+- 3-region drive primitives (`drive_with_dg`,
+  `drive_with_dg_counts`, `drive_with_r2_clamp_dg`) +
+  auto-zero-pad on the legacy 2-region helpers so
+  iter-44…59 numerics stay unchanged.
+- Threaded `dg_sdr_map: &HashMap<String, Vec<u32>>` through
+  `train_brain_inplace`, `build_vocab_dictionary`,
+  `evaluate_jaccard_matrix*`, `run_teacher_trial`. DG-aware
+  drives only fire when DG is enabled.
+- CLI: `--dg-bridge`, `--dg-size`, `--dg-k`, `--dg-to-r2-fanout`,
+  `--dg-to-r2-weight`, `--direct-r1r2-weight-scale`,
+  `--dg-drive-strength`. Build / clippy / 10-tests clean.
+
+### Verified — DG smoke (vocab=64 c500 ep16 seeds 42, 7)
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-bench --seeds 42,7 --epochs 16 \
+  --decorrelated-init --teacher-forcing \
+  --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge
+```
+
+| Seed | Untrained cross | Trained cross | Trained same | Eval-drift L2 (R2→R2) |
+| ---: | ---: | ---: | ---: | ---: |
+| 42 | 0.028 | 0.027 | 0.930 | +4.41 |
+|  7 | 0.029 | 0.026 | 0.914 | +3.34 |
+
+Aggregate: untrained 0.028 ± 0.000, trained 0.026 ± 0.000,
+Δ cross −0.002, Δ same −0.078, Δ-of-Δ −0.076.
+
+### Comparison to iter-58 / iter-59 vocab=64 baseline
+
+|  | no DG (iter-58 ep32 4 seeds) | + DG (iter-60 ep16 2 seeds) | Δ |
+| ---: | ---: | ---: | ---: |
+| Untrained cross | 0.448 ± 0.012 | **0.028** | **−0.420 (−94 %)** |
+| Trained cross | 0.422 ± 0.017 | **0.026** | **−0.396 (−94 %)** |
+| Trained same | 1.000 | 0.922 | −0.078 |
+| Eval-drift L2 | +0.04 | +3.3–4.4 | ~100 × higher |
+
+Even compared to iter-54 vocab=32's previous-best trained =
+0.230, iter-60 vocab=64+DG trained = 0.026 is **9× lower at
+2× the vocab**.
+
+### Honest reading
+
+Three layered observations:
+
+1. **The geometry pivot works.** Untrained cross dropped from
+   0.448 to 0.028 — DG with k-of-n hashed addresses + sparse
+   mossy-fibre projection produces a near-orthogonal R2
+   firing pattern *before any plasticity has acted*. Biggest
+   single architectural move in the iter-46…60 chain.
+2. **Plasticity adds almost nothing on top.** Δ cross
+   (trained − untrained) at vocab=64+DG is **−0.002** (vs
+   iter-58 vocab=64's −0.025, iter-54 vocab=32's −0.229). The
+   trained brain barely improves over untrained because the
+   metric floor is now nearly saturated by geometry alone.
+   Inverse of iter-58: under DG, geometry carries the signal,
+   not plasticity.
+3. **Same-cue drops to 0.92** (was 1.000 across iter-53…59).
+   Eval-phase L2 drift jumps ~100 × (0.04 → 3.3-4.4). DG
+   produces denser cue-driven R2 activity → more spike-pair
+   coincidences → more weight changes per trial. Plasticity
+   is now genuinely active at eval but is *eroding* the
+   engram (same-cue down) without lifting the geometry floor
+   (cross-cue ≈ untrained).
+
+### Verdict per Bekos's iter-61 branching matrix
+
+  - (A) DG drops trained_cross substantially (target 0.25-0.30):
+    **✓ MASSIVELY** (trained = 0.026, far below target).
+  - (B) DG drops untrained but trained Δ stays small:
+    **✓ secondary** (Δ cross trained-untrained = −0.002).
+  - (C) DG doesn't help: ❌.
+
+iter-61 entry is mixed (A) + (B). The geometry pivot worked
+beyond the stated target; the cue-specific *learning* signal
+on top of geometry is currently buried in noise.
+
+iter-61 paths:
+- **Path 1 (primary):** full 4-seed × 32-epoch replication of
+  the smoke at default DG params. iter-55 / iter-56 lesson:
+  per-seed view at full epochs needed before declaring the
+  pivot solved.
+- **Path 2 (parallel):** isolate the cue → target *learning*
+  task with a different metric (Jaccard floor is now too low
+  for plasticity to register). top-3 against canonical target
+  or per-pair Δ overlap.
+
+Sub-question: same-cue erosion + eval-drift L2 ~100× higher
+than iter-58. Can DG → R2 plasticity be tamed
+(`to_r2_weight` lower, STDP rate lower) so the engram
+doesn't erode at eval?
+
+### Methodological lesson
+
+Saturation across three training axes (epoch / clamp / phase-
+length) plus the vocab axis flip pointed at "more upstream
+representation" as the unsaturated lever. iter-60 swept *zero*
+training axes — it added one missing architectural layer.
+**The biggest single number-move in 14 iterations came from a
+structural change, not a training-axis sweep.** When every
+training-axis sweep saturates at the same value, the
+architecture is the lever, not the hyperparameter — go
+literature, not deeper sweep.
+
+All eval lib tests still green (10/10); clippy `-D warnings`
+clean.
+
 ## Unreleased — Iteration 59 (R2 capacity scaling for the vocab=64 floor)
 
 iter-58 closed the geometry-vs-architecture question with a
