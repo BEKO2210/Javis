@@ -17,9 +17,10 @@
 use std::time::Instant;
 
 use eval::{
-    default_reward_corpus, render_jaccard_sweep, render_reward_markdown, run_determinism_smoke,
-    run_jaccard_bench, run_postmortem_diagnostic, run_reward_benchmark, Iter49Mode, RewardConfig,
-    TeacherForcingConfig,
+    default_reward_corpus, default_reward_corpus_v64, render_jaccard_floor_diagnosis,
+    render_jaccard_sweep, render_reward_markdown, run_determinism_smoke, run_jaccard_bench,
+    run_jaccard_floor_diagnosis, run_postmortem_diagnostic, run_reward_benchmark, DgConfig,
+    Iter49Mode, RewardConfig, TeacherForcingConfig,
 };
 
 fn main() {
@@ -77,6 +78,24 @@ fn main() {
     // unblock the cross-cue specificity gain that iter-53 (random
     // wiring + 16 epochs) failed to produce?
     let decorrelated_init = flag(&args, "--decorrelated-init");
+
+    // Iter-59: R2 neuron count override. `0` (default) keeps the
+    // compile-time `R2_N = 2000` baseline (iter-46…58 numerics).
+    // Any positive value rebuilds R2 at the requested size.
+    let r2_n: u32 = parse_arg(&args, "--r2-n", 0_u32);
+
+    // Iter-60: DG pattern-separation bridge. `--dg-bridge` adds a
+    // third region (DG) with per-cue k-of-n hashed SDRs and a
+    // sparse mossy-fibre-style projection to R2. The direct
+    // R1 → R2 path is gated to `direct_r1r2_weight_scale` (default
+    // 0.0 = direct path off, DG is the sole cue-routing layer).
+    let dg_bridge = flag(&args, "--dg-bridge");
+    let dg_size: u32 = parse_arg(&args, "--dg-size", 4000_u32);
+    let dg_k: u32 = parse_arg(&args, "--dg-k", 80_u32);
+    let dg_to_r2_fanout: u32 = parse_arg(&args, "--dg-to-r2-fanout", 30_u32);
+    let dg_to_r2_weight: f32 = parse_arg(&args, "--dg-to-r2-weight", 1.0_f32);
+    let direct_r1r2_weight_scale: f32 = parse_arg(&args, "--direct-r1r2-weight-scale", 0.0_f32);
+    let dg_drive_strength: f32 = parse_arg(&args, "--dg-drive-strength", 200.0_f32);
 
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
@@ -143,9 +162,33 @@ fn main() {
         iter46_baseline,
         no_plasticity,
         decorrelated_init,
+        r2_n,
+        dg: DgConfig {
+            enabled: dg_bridge,
+            size: dg_size,
+            k: dg_k,
+            to_r2_fanout: dg_to_r2_fanout,
+            to_r2_weight: dg_to_r2_weight,
+            direct_r1r2_weight_scale,
+            drive_strength: dg_drive_strength,
+        },
     };
 
-    let corpus = default_reward_corpus();
+    // Iter-58 vocab-scaling stress test: --corpus-vocab 32 (default;
+    // iter-46…57 corpus, 16 real + 16 noise pairs ⇒ 32-word vocab) vs
+    // --corpus-vocab 64 (iter-58 extension, 32 real + 32 noise pairs
+    // ⇒ 64-word vocab). Used to test whether the ~0.20 cross-cue
+    // floor scales with vocab (geometric / encoder limit) or stays
+    // fixed (architecture / plasticity limit).
+    let corpus_vocab: u32 = parse_arg(&args, "--corpus-vocab", 32_u32);
+    let corpus = match corpus_vocab {
+        32 => default_reward_corpus(),
+        64 => default_reward_corpus_v64(),
+        other => {
+            eprintln!("--corpus-vocab must be 32 or 64 (got '{other}')",);
+            std::process::exit(2);
+        }
+    };
 
     // Iter-53 determinism smoke (Bekos's pre-implementation gate):
     // bypass everything else, run the 1-cue × 3-trial determinism
@@ -196,6 +239,186 @@ fn main() {
         };
         let sweep = run_jaccard_bench(&corpus, &cfg, &seeds);
         print!("{}", render_jaccard_sweep(&sweep));
+        return;
+    }
+
+    // Iter-58 floor-diagnosis branch: run the trained arm at the
+    // best-known config across `--seeds`, emit the per-pair Jaccard
+    // distribution + top-N high-overlap pairs + per-cue frequency.
+    // Used to diagnose whether the ≈0.20 cross-cue floor is a
+    // geometric / encoder / dictionary collision artefact (then
+    // concentrated on a few SDR-collision pairs) or an architecture
+    // / plasticity limit (then uniform across the vocab).
+    if flag(&args, "--jaccard-floor-diagnosis") {
+        let seeds_str = parse_string(&args, "--seeds").unwrap_or_else(|| seed.to_string());
+        let seeds: Vec<u64> = seeds_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .collect();
+        if seeds.is_empty() {
+            eprintln!(
+                "--jaccard-floor-diagnosis: --seeds must contain at least one parseable u64 (got '{seeds_str}')",
+            );
+            std::process::exit(2);
+        }
+        let threshold: f32 = parse_arg(&args, "--floor-threshold", 0.5_f32);
+        let top_n: usize = parse_arg(&args, "--floor-top-n", 10_usize);
+        eprintln!(
+            "[iter-58 floor] seeds={seeds:?} epochs={epochs} reps={reps} \
+             teacher_forcing={teacher_on} decorrelated_init={decorrelated_init} \
+             corpus_vocab={corpus_vocab} clamp={target_clamp} teacher_ms={teacher_ms} \
+             threshold={threshold} top_n={top_n}",
+        );
+        let cfg = RewardConfig {
+            epochs,
+            use_reward: true,
+            seed,
+            reps_per_pair: reps,
+            teacher,
+        };
+        let reports = run_jaccard_floor_diagnosis(&corpus, &cfg, &seeds);
+        print!(
+            "{}",
+            render_jaccard_floor_diagnosis(&reports, threshold, top_n),
+        );
+        return;
+    }
+
+    // Iter-59 R2-capacity sweep: loops over `--r2-sizes` (comma-
+    // separated list; default 2000,4000) and runs the standard
+    // jaccard-bench (trained vs untrained) at each size, printing
+    // a single scaling table. Built on top of run_jaccard_bench
+    // by overriding `cfg.teacher.r2_n` per iteration. Useful for
+    // testing whether the iter-58 vocab=64 floor is a per-cue
+    // R2-E block budget limit.
+    if flag(&args, "--r2-capacity-sweep") {
+        let seeds_str = parse_string(&args, "--seeds").unwrap_or_else(|| seed.to_string());
+        let seeds: Vec<u64> = seeds_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .collect();
+        if seeds.is_empty() {
+            eprintln!(
+                "--r2-capacity-sweep: --seeds must contain at least one parseable u64 (got '{seeds_str}')",
+            );
+            std::process::exit(2);
+        }
+        let sizes_str =
+            parse_string(&args, "--r2-sizes").unwrap_or_else(|| "2000,4000".to_string());
+        let sizes: Vec<u32> = sizes_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u32>().ok())
+            .collect();
+        if sizes.is_empty() {
+            eprintln!(
+                "--r2-capacity-sweep: --r2-sizes must contain at least one parseable u32 (got '{sizes_str}')",
+            );
+            std::process::exit(2);
+        }
+        eprintln!(
+            "[iter-59] R2 capacity sweep: r2_sizes={sizes:?} seeds={seeds:?} \
+             vocab={corpus_vocab} epochs={epochs} reps={reps} \
+             teacher_forcing={teacher_on} decorrelated_init={decorrelated_init} \
+             clamp={target_clamp} teacher_ms={teacher_ms}",
+        );
+        // Per-config metrics for the final scaling table.
+        struct CapRow {
+            r2_n: u32,
+            untrained_mean: f32,
+            untrained_std: f32,
+            trained_mean: f32,
+            trained_std: f32,
+            delta: f32,
+            wallclock_secs: f32,
+        }
+        let mut rows: Vec<CapRow> = Vec::with_capacity(sizes.len());
+        for &r2_n_val in &sizes {
+            let mut t = teacher;
+            t.r2_n = r2_n_val;
+            let cfg = RewardConfig {
+                epochs,
+                use_reward: true,
+                seed,
+                reps_per_pair: reps,
+                teacher: t,
+            };
+            let t0 = Instant::now();
+            let sweep = run_jaccard_bench(&corpus, &cfg, &seeds);
+            let wallclock_secs = t0.elapsed().as_secs_f32();
+            let mean_of = |v: &[f32]| -> f32 {
+                if v.is_empty() {
+                    0.0
+                } else {
+                    v.iter().sum::<f32>() / v.len() as f32
+                }
+            };
+            let std_of = |v: &[f32], m: f32| -> f32 {
+                if v.len() < 2 {
+                    return 0.0;
+                }
+                let var = v.iter().map(|x| (x - m).powi(2)).sum::<f32>() / (v.len() - 1) as f32;
+                var.sqrt()
+            };
+            let us: Vec<f32> = sweep
+                .untrained
+                .iter()
+                .map(|r| r.jaccard.cross_cue_mean)
+                .collect();
+            let ts: Vec<f32> = sweep
+                .trained
+                .iter()
+                .map(|r| r.jaccard.cross_cue_mean)
+                .collect();
+            let um = mean_of(&us);
+            let tm = mean_of(&ts);
+            let row = CapRow {
+                r2_n: r2_n_val,
+                untrained_mean: um,
+                untrained_std: std_of(&us, um),
+                trained_mean: tm,
+                trained_std: std_of(&ts, tm),
+                delta: tm - um,
+                wallclock_secs,
+            };
+            eprintln!(
+                "[iter-59] r2_n={} done | untrained {:.3}±{:.3} | trained {:.3}±{:.3} | Δ {:+.3} | {:.1} s",
+                row.r2_n,
+                row.untrained_mean,
+                row.untrained_std,
+                row.trained_mean,
+                row.trained_std,
+                row.delta,
+                row.wallclock_secs,
+            );
+            rows.push(row);
+        }
+        // Final scaling table.
+        println!("\n## Iter-59: R2 capacity scaling sweep\n");
+        println!(
+            "_vocab={corpus_vocab}, n_seeds={}, epochs={epochs}, decorrelated_init=true, clamp={target_clamp} nA, teacher_ms={teacher_ms} ms_\n",
+            seeds.len(),
+        );
+        println!(
+            "| R2_N | cells/cue (block_size) | Untrained cross | Trained cross | Δ cross | Wallclock |",
+        );
+        println!("| ---: | ---: | ---: | ---: | ---: | ---: |",);
+        for row in &rows {
+            // R2-E ≈ R2_N × (1 - R2_INH_FRAC). At iter-46/58 default
+            // 0.30, R2-E = 0.7 × R2_N. block_size = R2-E / vocab.
+            let r2_e_est = (row.r2_n as f32 * 0.70) as u32;
+            let block_size = r2_e_est / corpus_vocab.max(1);
+            println!(
+                "| {} | {} | {:.3} ± {:.3} | {:.3} ± {:.3} | {:+.3} | {:.0} s |",
+                row.r2_n,
+                block_size,
+                row.untrained_mean,
+                row.untrained_std,
+                row.trained_mean,
+                row.trained_std,
+                row.delta,
+                row.wallclock_secs,
+            );
+        }
         return;
     }
 

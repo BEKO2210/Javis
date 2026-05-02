@@ -291,6 +291,36 @@ pub struct JaccardSweepResult {
     pub untrained: Vec<JaccardArmResult>,
 }
 
+/// Iter-58 per-cue-pair Jaccard sample. One entry per
+/// `(cue_a, cue_b)` pair with `i < j` in the vocab order, plus
+/// the post-burn-in trial[1] decoded top-3 sets so the floor-
+/// diagnosis can spot encoder collisions ("which cues share
+/// most of their top-3 lists").
+#[derive(Debug, Clone)]
+pub struct JaccardPairSample {
+    pub cue_a: String,
+    pub cue_b: String,
+    pub jaccard: f32,
+    pub top_a: Vec<String>,
+    pub top_b: Vec<String>,
+}
+
+/// Iter-58 floor-diagnosis report for one (seed, trained-arm)
+/// run at a fixed config. Emits the full per-pair Jaccard list
+/// alongside the standard aggregate metrics so the caller can
+/// inspect the *distribution* (min/p25/median/p75/p90/p95/max)
+/// and identify the cue pairs that drive the residual cross-cue
+/// floor.
+#[derive(Debug, Clone)]
+pub struct JaccardFloorReport {
+    pub seed: u64,
+    pub n_cues: usize,
+    pub n_pairs: usize,
+    pub same_cue_mean: f32,
+    pub cross_cue_mean: f32,
+    pub per_pair: Vec<JaccardPairSample>,
+}
+
 /// Iter-49 sweep modes — three orthogonal interventions on the
 /// iter-48 iSTDP collapse mechanism (notes/48-saturation.md). All
 /// modes share Config 2 as base: `--istdp-during-prediction = true`.
@@ -342,6 +372,59 @@ impl Iter49Mode {
 ///    (`plasticity_during_teacher`) — STDP / R-STDP get clean
 ///    pre→post coincidences between cue-driven R2 cells and
 ///    teacher-clamped target R2 cells.
+
+// ----------------------------------------------------------------
+// Iter-60 — DG pattern-separation bridge config.
+// See `TeacherForcingConfig::dg` for the full description.
+// ----------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy)]
+pub struct DgConfig {
+    /// `true` enables the DG bridge (adds a third region named
+    /// "DG" to the brain, computes per-cue k-of-n SDRs, drives
+    /// DG cells alongside R1 on every cue presentation).
+    pub enabled: bool,
+    /// Number of DG cells. Default 4000 — gives ample room for
+    /// orthogonal per-cue addresses at vocab=64 (62 cells/cue
+    /// at the default `k = 80`, 2 % sparsity).
+    pub size: u32,
+    /// Active DG cells per cue (the "k" of the k-of-n hash).
+    /// Default 80, ≈ 2 % of `size = 4000`.
+    pub k: u32,
+    /// Each DG cell's fan-out into R2-E cells. Default 30 —
+    /// dense enough to drive R2 reliably but bounded so the
+    /// total DG → R2 edge count stays manageable
+    /// (size × fanout = 120 000 edges at defaults).
+    pub to_r2_fanout: u32,
+    /// Weight on every DG → R2 connection. Default 1.0 —
+    /// mossy-fibre-style strong projection.
+    pub to_r2_weight: f32,
+    /// Multiplier on the existing R1 → R2 connection weights.
+    /// `0.0` disables the direct path entirely (DG becomes the
+    /// only R2 input). `1.0` keeps the iter-46…59 baseline.
+    /// Default 0.0 — the iter-60 smoke wants DG as the primary
+    /// cue-routing path.
+    pub direct_r1r2_weight_scale: f32,
+    /// External current injected into DG SDR cells when a cue
+    /// is presented. Default `DRIVE_NA = 200.0`, matching the
+    /// R1-side cue injection.
+    pub drive_strength: f32,
+}
+
+impl Default for DgConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            size: 4000,
+            k: 80,
+            to_r2_fanout: 30,
+            to_r2_weight: 1.0,
+            direct_r1r2_weight_scale: 0.0,
+            drive_strength: DRIVE_NA,
+        }
+    }
+}
+
 /// 5. **reward** (`reward_after_teacher`): the modulator is set
 ///    based on the *prediction* (not teacher). Teacher cells alone
 ///    must never count as a recall success.
@@ -453,6 +536,32 @@ pub struct TeacherForcingConfig {
     /// it. The gate is a *training-only* knob (it's never applied
     /// during evaluation), so it stays an honest measurement.
     pub r1r2_prediction_gate: f32,
+    /// Iter-60 DG pattern-separation bridge (R1 → DG → R2). When
+    /// [`DgConfig::enabled`] is `true`, brain construction adds a
+    /// third region (DG) and wires DG → R2 with a sparse random
+    /// projection. Each vocab cue gets a deterministic k-of-n
+    /// hashed SDR over DG, injected as external current alongside
+    /// the cue's R1 SDR during every drive. The direct R1 → R2
+    /// projection weight is multiplied by
+    /// [`DgConfig::direct_r1r2_weight_scale`] so the DG path can
+    /// be made primary (or sole) cue-routing path.
+    ///
+    /// Smoke-level minimal viable design: NO kWTA / recurrent
+    /// inhibition in DG, NO learning on R1 → DG. Each cue's DG
+    /// SDR is fully precomputed and driven directly. Tests
+    /// whether *perfect* upstream pattern separation breaks the
+    /// iter-58 / iter-59 cross-cue floor; a positive result
+    /// motivates a real DG region with kWTA dynamics in iter-61.
+    pub dg: DgConfig,
+    /// Iter-59 capacity override: number of R2 neurons to allocate.
+    /// `0` (the default) means "use the compile-time `R2_N`
+    /// constant" (2000), preserving iter-46…58 numerics. A positive
+    /// value rebuilds the R2 region at the requested size on every
+    /// fresh brain, giving the iter-59 capacity-scaling sweep a
+    /// runtime knob without forking the file. Recurrent R2→R2
+    /// connectivity scales as `r2_n² × R2_P_CONNECT`; expect
+    /// quadratic compute cost.
+    pub r2_n: u32,
 }
 
 impl Default for TeacherForcingConfig {
@@ -483,6 +592,16 @@ impl Default for TeacherForcingConfig {
             iter46_baseline: false,
             no_plasticity: false,
             decorrelated_init: false,
+            r2_n: 0,
+            dg: DgConfig {
+                enabled: false,
+                size: 4000,
+                k: 80,
+                to_r2_fanout: 30,
+                to_r2_weight: 1.0,
+                direct_r1r2_weight_scale: 0.0,
+                drive_strength: DRIVE_NA,
+            },
         }
     }
 }
@@ -515,6 +634,16 @@ impl TeacherForcingConfig {
             iter46_baseline: false,
             no_plasticity: false,
             decorrelated_init: false,
+            r2_n: 0,
+            dg: DgConfig {
+                enabled: false,
+                size: 4000,
+                k: 80,
+                to_r2_fanout: 30,
+                to_r2_weight: 1.0,
+                direct_r1r2_weight_scale: 0.0,
+                drive_strength: DRIVE_NA,
+            },
         }
     }
     pub const fn enabled() -> Self {
@@ -624,6 +753,76 @@ pub fn default_corpus() -> RewardCorpus {
     }
 }
 
+/// Iter-58 vocab=64 stress-test corpus. Same construction as
+/// [`default_corpus`] but with 32 real (cue, target) pairs
+/// instead of 16, doubling the resulting vocabulary to 64
+/// distinct words. The extra 16 pairs are programming-language
+/// associations chosen to be lexically and phonetically
+/// distinct from the original 16, so the encoder produces
+/// well-separated SDRs at the larger size.
+pub fn default_corpus_v64() -> RewardCorpus {
+    let raw_pairs = [
+        // -- Original iter-46/53/54/55/56/57 set (16 pairs) --
+        ("rust", "ownership"),
+        ("python", "dynamic"),
+        ("cpp", "pointer"),
+        ("java", "jvm"),
+        ("haskell", "functional"),
+        ("ocaml", "inference"),
+        ("go", "channels"),
+        ("scala", "tuple"),
+        ("kotlin", "coroutine"),
+        ("ruby", "block"),
+        ("erlang", "actor"),
+        ("clojure", "macro"),
+        ("swift", "optional"),
+        ("zig", "comptime"),
+        ("lisp", "lambda"),
+        ("scheme", "continuation"),
+        // -- Iter-58 extension to vocab=64 (16 more pairs) --
+        ("typescript", "generics"),
+        ("perl", "regex"),
+        ("php", "include"),
+        ("lua", "table"),
+        ("crystal", "fiber"),
+        ("nim", "compile"),
+        ("dart", "isolate"),
+        ("racket", "syntax"),
+        ("elixir", "supervisor"),
+        ("groovy", "closure"),
+        ("julia", "broadcast"),
+        ("matlab", "matrix"),
+        ("fortran", "array"),
+        ("cobol", "division"),
+        ("ada", "task"),
+        ("prolog", "unify"),
+    ];
+    let pairs: Vec<RewardPair> = raw_pairs
+        .iter()
+        .map(|(c, t)| RewardPair {
+            cue: c.to_string(),
+            target: t.to_string(),
+        })
+        .collect();
+    let n = raw_pairs.len();
+    let noise_pairs: Vec<RewardPair> = (0..n)
+        .map(|i| RewardPair {
+            cue: raw_pairs[i].0.to_string(),
+            target: raw_pairs[(i + 1) % n].1.to_string(),
+        })
+        .collect();
+    let mut vocab = BTreeSet::new();
+    for p in pairs.iter().chain(noise_pairs.iter()) {
+        vocab.insert(p.cue.clone());
+        vocab.insert(p.target.clone());
+    }
+    RewardCorpus {
+        pairs,
+        noise_pairs,
+        vocab,
+    }
+}
+
 // ----------------------------------------------------------------------
 // Brain construction. Same shape as `scale_bench` but smaller so the
 // reward benchmark runs in seconds, not minutes — the goal here is to
@@ -640,12 +839,18 @@ fn build_input_region() -> Region {
     region
 }
 
-fn build_memory_region(seed: u64, inh_frac: f32) -> Region {
+/// Build the R2 (memory) region. `r2_n` is the requested neuron
+/// count — pass [`R2_N`] to reproduce the iter-46…58 baseline,
+/// or any other positive value to scale the recurrent network up
+/// or down. Inhibitory fraction (`inh_frac`) and recurrent
+/// connection probability ([`R2_P_CONNECT`]) stay at the iter-58
+/// defaults; only the cell count moves.
+fn build_memory_region(seed: u64, inh_frac: f32, r2_n: usize) -> Region {
     let mut rng = Rng::new(seed);
     let mut region = Region::new("R2", DT);
     let net = &mut region.network;
-    let n_inh = (R2_N as f32 * inh_frac) as usize;
-    let n_exc = R2_N - n_inh;
+    let n_inh = (r2_n as f32 * inh_frac) as usize;
+    let n_exc = r2_n - n_inh;
     for _ in 0..n_exc {
         net.add_neuron(LifNeuron::excitatory(LifParams::default()));
     }
@@ -654,12 +859,12 @@ fn build_memory_region(seed: u64, inh_frac: f32) -> Region {
     }
     let g_exc = 0.20_f32;
     let g_inh = 0.80_f32;
-    for pre in 0..R2_N {
+    for pre in 0..r2_n {
         let g = match net.neurons[pre].kind {
             NeuronKind::Excitatory => g_exc,
             NeuronKind::Inhibitory => g_inh,
         };
-        for post in 0..R2_N {
+        for post in 0..r2_n {
             if pre == post {
                 continue;
             }
@@ -811,7 +1016,7 @@ fn assert_decorrelated_disjoint(brain: &Brain, encoder: &TextEncoder, vocab: &[S
 }
 
 fn fresh_brain(seed: u64) -> Brain {
-    fresh_brain_with(seed, INTER_WEIGHT, R2_INH_FRAC)
+    fresh_brain_with(seed, INTER_WEIGHT, R2_INH_FRAC, R2_N)
 }
 
 /// Iter-50 variant: build the brain with explicit override values
@@ -819,12 +1024,195 @@ fn fresh_brain(seed: u64) -> Brain {
 /// `--iter46-baseline` diagnostic to reproduce the original
 /// iter-46 topology (2.0 / 0.20) instead of the iter-47/49
 /// drift values (1.0 / 0.30).
-fn fresh_brain_with(seed: u64, inter_weight: f32, inh_frac: f32) -> Brain {
+///
+/// Iter-59: `r2_n` is now an explicit parameter so the capacity
+/// sweep can rebuild R2 at any positive size. Pass [`R2_N`] to
+/// reproduce iter-46…58 numerics exactly.
+fn fresh_brain_with(seed: u64, inter_weight: f32, inh_frac: f32, r2_n: usize) -> Brain {
     let mut brain = Brain::new(DT);
     brain.add_region(build_input_region());
-    brain.add_region(build_memory_region(seed.wrapping_add(1), inh_frac));
+    brain.add_region(build_memory_region(seed.wrapping_add(1), inh_frac, r2_n));
     wire_forward(&mut brain, seed.wrapping_add(2), inter_weight);
     brain
+}
+
+/// Iter-59 helper: extract the effective R2 neuron count from the
+/// teacher config. `0` means "use the [`R2_N`] compile-time
+/// default"; any positive value overrides it.
+fn effective_r2_n(cfg: &TeacherForcingConfig) -> usize {
+    if cfg.r2_n == 0 {
+        R2_N
+    } else {
+        cfg.r2_n as usize
+    }
+}
+
+/// Iter-60: build the DG region. All cells excitatory; no
+/// recurrent connectivity inside DG (the smoke test deliberately
+/// uses fully-precomputed k-of-n SDRs driven externally per cue,
+/// so no kWTA / inhibitory dynamics needed in DG itself).
+fn build_dg_region(size: usize) -> Region {
+    let mut region = Region::new("DG", DT);
+    for _ in 0..size {
+        region
+            .network
+            .add_neuron(LifNeuron::excitatory(LifParams::default()));
+    }
+    region
+}
+
+/// Iter-60: random sparse DG → R2 projection (mossy-fibre-style).
+/// Each DG cell projects to `fanout` random R2 cells with the
+/// configured weight. R2 cells receiving DG inputs are not
+/// constrained to the E-pool — inhibitory R2 cells can also
+/// receive mossy-fibre drive (matches the biology where mossy
+/// fibres synapse on both pyramidal cells and interneurons).
+fn wire_dg_to_r2(brain: &mut Brain, cfg: &DgConfig, seed: u64) {
+    let mut rng = Rng::new(seed);
+    let dg_size = brain.regions[2].num_neurons();
+    let r2_size = brain.regions[1].num_neurons();
+    for src in 0..dg_size {
+        for _ in 0..cfg.to_r2_fanout {
+            let dst = (rng.next_u64() as usize) % r2_size;
+            brain.connect(2, src, 1, dst, cfg.to_r2_weight, INTER_DELAY_MS);
+        }
+    }
+}
+
+/// Iter-60: deterministic k-of-n hashed DG SDR for a cue word.
+/// Same hash structure as `canonical_target_r2_sdr`; the SDR is a
+/// pure function of `(salt, word, dg_size, k)` so every brain at
+/// the same seed sees identical DG addresses.
+fn dg_sdr_for_cue(word: &str, dg_size: usize, k: usize, salt: u64) -> Vec<u32> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut chosen: BTreeSet<u32> = BTreeSet::new();
+    let mut counter: u64 = 0;
+    while chosen.len() < k && counter < (k as u64) * 32 {
+        let mut hasher = DefaultHasher::new();
+        salt.hash(&mut hasher);
+        word.hash(&mut hasher);
+        counter.hash(&mut hasher);
+        let h = hasher.finish();
+        let idx = (h as usize) % dg_size;
+        chosen.insert(idx as u32);
+        counter = counter.wrapping_add(1);
+    }
+    chosen.into_iter().collect()
+}
+
+/// Iter-60: drive primitive aware of the DG region. When DG is
+/// active (3rd region present), injects external current into
+/// the cue's R1 SDR + DG SDR cells simultaneously. When `dg_sdr`
+/// is empty *and* the brain has 3 regions, the DG region
+/// receives zeros — used during phases that should not stimulate
+/// the cue (idle, prediction without cue).
+///
+/// `r1_strength = 0.0` skips the R1-side injection (useful when
+/// DG should be the sole driver, even though R1 SDR is non-empty);
+/// `dg_strength = 0.0` likewise skips the DG-side injection.
+fn drive_with_dg(
+    brain: &mut Brain,
+    r1_sdr: &[u32],
+    dg_sdr: &[u32],
+    r1_strength: f32,
+    dg_strength: f32,
+    duration_ms: f32,
+) {
+    let r2_size = brain.regions[1].num_neurons();
+    let dg_size = brain.regions.get(2).map(|r| r.num_neurons()).unwrap_or(0);
+    let mut ext_r1 = vec![0.0_f32; R1_N];
+    if r1_strength != 0.0 {
+        for &idx in r1_sdr {
+            if (idx as usize) < R1_N {
+                ext_r1[idx as usize] = r1_strength;
+            }
+        }
+    }
+    let ext_r2 = vec![0.0_f32; r2_size];
+    let mut externals: Vec<Vec<f32>> = vec![ext_r1, ext_r2];
+    if dg_size > 0 {
+        let mut ext_dg = vec![0.0_f32; dg_size];
+        if dg_strength != 0.0 {
+            for &idx in dg_sdr {
+                if (idx as usize) < dg_size {
+                    ext_dg[idx as usize] = dg_strength;
+                }
+            }
+        }
+        externals.push(ext_dg);
+    }
+    let steps = (duration_ms / DT) as usize;
+    for _ in 0..steps {
+        brain.step(&externals);
+    }
+}
+
+/// Iter-60: per-step R2-E spike-counting drive primitive aware
+/// of the DG region. Shape matches `drive_for_with_counts`.
+#[allow(clippy::too_many_arguments)]
+fn drive_with_dg_counts(
+    brain: &mut Brain,
+    r1_sdr: &[u32],
+    dg_sdr: &[u32],
+    r1_strength: f32,
+    dg_strength: f32,
+    duration_ms: f32,
+    r2_e_set: &BTreeSet<usize>,
+) -> Vec<u32> {
+    let r2_size = brain.regions[1].num_neurons();
+    let dg_size = brain.regions.get(2).map(|r| r.num_neurons()).unwrap_or(0);
+    let mut counts = vec![0u32; r2_size];
+    let mut ext_r1 = vec![0.0_f32; R1_N];
+    if r1_strength != 0.0 {
+        for &idx in r1_sdr {
+            if (idx as usize) < R1_N {
+                ext_r1[idx as usize] = r1_strength;
+            }
+        }
+    }
+    let ext_r2 = vec![0.0_f32; r2_size];
+    let mut externals: Vec<Vec<f32>> = vec![ext_r1, ext_r2];
+    if dg_size > 0 {
+        let mut ext_dg = vec![0.0_f32; dg_size];
+        if dg_strength != 0.0 {
+            for &idx in dg_sdr {
+                if (idx as usize) < dg_size {
+                    ext_dg[idx as usize] = dg_strength;
+                }
+            }
+        }
+        externals.push(ext_dg);
+    }
+    let steps = (duration_ms / DT) as usize;
+    for _ in 0..steps {
+        let spikes = brain.step(&externals);
+        for &id in &spikes[1] {
+            if r2_e_set.contains(&id) {
+                counts[id] += 1;
+            }
+        }
+    }
+    counts
+}
+
+/// Iter-60: idle helper aware of the DG region. Currently
+/// unused at the call sites (the legacy `idle` already auto-
+/// zero-pads DG when present), kept for symmetry with
+/// `drive_with_dg` / `drive_with_dg_counts` and as a building
+/// block for any iter-61+ DG-specific idle phase.
+#[allow(dead_code)]
+fn idle_with_dg(brain: &mut Brain, duration_ms: f32) {
+    let r2_size = brain.regions[1].num_neurons();
+    let dg_size = brain.regions.get(2).map(|r| r.num_neurons()).unwrap_or(0);
+    let mut externals: Vec<Vec<f32>> = vec![vec![0.0_f32; R1_N], vec![0.0_f32; r2_size]];
+    if dg_size > 0 {
+        externals.push(vec![0.0_f32; dg_size]);
+    }
+    let steps = (duration_ms / DT) as usize;
+    for _ in 0..steps {
+        brain.step(&externals);
+    }
 }
 
 fn stdp() -> StdpParams {
@@ -979,14 +1367,21 @@ fn reward_params() -> RewardParams {
 // ----------------------------------------------------------------------
 
 fn drive_for(brain: &mut Brain, sdr_indices: &[u32], duration_ms: f32) {
+    let r2_size = brain.regions[1].num_neurons();
     let mut ext1 = vec![0.0_f32; R1_N];
     for &idx in sdr_indices {
         if (idx as usize) < R1_N {
             ext1[idx as usize] = DRIVE_NA;
         }
     }
-    let ext2 = vec![0.0_f32; R2_N];
-    let externals = vec![ext1, ext2];
+    let ext2 = vec![0.0_f32; r2_size];
+    let mut externals = vec![ext1, ext2];
+    // Iter-60: zero-pad DG region (region 2) if present. Existing
+    // call sites stay numerically unchanged when no DG is wired
+    // up — DG just receives no drive.
+    if let Some(r) = brain.regions.get(2) {
+        externals.push(vec![0.0_f32; r.num_neurons()]);
+    }
     let steps = (duration_ms / DT) as usize;
     for _ in 0..steps {
         brain.step(&externals);
@@ -1007,8 +1402,11 @@ fn drive_for_with_counts(
             ext1[idx as usize] = DRIVE_NA;
         }
     }
-    let ext2 = vec![0.0_f32; R2_N];
-    let externals = vec![ext1, ext2];
+    let ext2 = vec![0.0_f32; r2_size];
+    let mut externals = vec![ext1, ext2];
+    if let Some(r) = brain.regions.get(2) {
+        externals.push(vec![0.0_f32; r.num_neurons()]);
+    }
     let steps = (duration_ms / DT) as usize;
     for _ in 0..steps {
         let spikes = brain.step(&externals);
@@ -1022,7 +1420,11 @@ fn drive_for_with_counts(
 }
 
 fn idle(brain: &mut Brain, duration_ms: f32) {
-    let zeros = vec![vec![0.0_f32; R1_N], vec![0.0_f32; R2_N]];
+    let r2_size = brain.regions[1].num_neurons();
+    let mut zeros = vec![vec![0.0_f32; R1_N], vec![0.0_f32; r2_size]];
+    if let Some(r) = brain.regions.get(2) {
+        zeros.push(vec![0.0_f32; r.num_neurons()]);
+    }
     let steps = (duration_ms / DT) as usize;
     for _ in 0..steps {
         brain.step(&zeros);
@@ -1102,15 +1504,79 @@ fn drive_with_r2_clamp(
             ext1[idx as usize] = r1_strength;
         }
     }
-    let mut ext2 = vec![0.0_f32; R2_N];
+    let mut ext2 = vec![0.0_f32; r2_size];
     if r2_strength != 0.0 {
         for &idx in r2_target_indices {
-            if (idx as usize) < R2_N {
+            if (idx as usize) < r2_size {
                 ext2[idx as usize] = r2_strength;
             }
         }
     }
-    let externals = vec![ext1, ext2];
+    let mut externals = vec![ext1, ext2];
+    if let Some(r) = brain.regions.get(2) {
+        externals.push(vec![0.0_f32; r.num_neurons()]);
+    }
+    let steps = (duration_ms / DT) as usize;
+    for _ in 0..steps {
+        let spikes = brain.step(&externals);
+        for &id in &spikes[1] {
+            if r2_e_set.contains(&id) {
+                counts[id] += 1;
+            }
+        }
+    }
+    counts
+}
+
+/// Iter-60: DG-aware variant of `drive_with_r2_clamp`. Drives the
+/// cue's R1 SDR (with `r1_strength`) AND its DG SDR (with
+/// `dg_strength`) AND the canonical-target R2 clamp (with
+/// `r2_strength`) for `duration_ms` ms. Returns per-R2-E spike
+/// counts identically to `drive_with_r2_clamp`.
+#[allow(clippy::too_many_arguments)]
+fn drive_with_r2_clamp_dg(
+    brain: &mut Brain,
+    cue_indices: &[u32],
+    dg_indices: &[u32],
+    r2_target_indices: &[u32],
+    r1_strength: f32,
+    dg_strength: f32,
+    r2_strength: f32,
+    duration_ms: f32,
+    r2_e_set: &BTreeSet<usize>,
+) -> Vec<u32> {
+    let r2_size = brain.regions[1].num_neurons();
+    let dg_size = brain.regions.get(2).map(|r| r.num_neurons()).unwrap_or(0);
+    let mut counts = vec![0u32; r2_size];
+
+    let mut ext1 = vec![0.0_f32; R1_N];
+    if r1_strength != 0.0 {
+        for &idx in cue_indices {
+            if (idx as usize) < R1_N {
+                ext1[idx as usize] = r1_strength;
+            }
+        }
+    }
+    let mut ext2 = vec![0.0_f32; r2_size];
+    if r2_strength != 0.0 {
+        for &idx in r2_target_indices {
+            if (idx as usize) < r2_size {
+                ext2[idx as usize] = r2_strength;
+            }
+        }
+    }
+    let mut externals: Vec<Vec<f32>> = vec![ext1, ext2];
+    if dg_size > 0 {
+        let mut ext_dg = vec![0.0_f32; dg_size];
+        if dg_strength != 0.0 {
+            for &idx in dg_indices {
+                if (idx as usize) < dg_size {
+                    ext_dg[idx as usize] = dg_strength;
+                }
+            }
+        }
+        externals.push(ext_dg);
+    }
     let steps = (duration_ms / DT) as usize;
     for _ in 0..steps {
         let spikes = brain.step(&externals);
@@ -1153,15 +1619,18 @@ fn drive_with_r2_clamp_traced(
             ext1[idx as usize] = r1_strength;
         }
     }
-    let mut ext2 = vec![0.0_f32; R2_N];
+    let mut ext2 = vec![0.0_f32; r2_size];
     if r2_strength != 0.0 {
         for &idx in r2_target_indices {
-            if (idx as usize) < R2_N {
+            if (idx as usize) < r2_size {
                 ext2[idx as usize] = r2_strength;
             }
         }
     }
-    let externals = vec![ext1, ext2];
+    let mut externals = vec![ext1, ext2];
+    if let Some(r) = brain.regions.get(2) {
+        externals.push(vec![0.0_f32; r.num_neurons()]);
+    }
     let steps = (duration_ms / DT) as usize;
     for _ in 0..steps {
         let spikes = brain.step(&externals);
@@ -1332,11 +1801,29 @@ fn run_teacher_trial(
     r2_e: &BTreeSet<usize>,
     rest_stdp: StdpParams,
     rest_istdp: IStdpParams,
+    dg_sdr: &[u32],
 ) -> TrialOutcome {
     let mut outcome = TrialOutcome::default();
+    let dg_active = !dg_sdr.is_empty() && cfg.dg.enabled;
+    let dg_strength = if dg_active {
+        cfg.dg.drive_strength
+    } else {
+        0.0
+    };
 
-    // ---- Phase 1: cue alone (R1 forward path).
-    drive_for(brain, cue_sdr, cfg.cue_ms as f32);
+    // ---- Phase 1: cue alone (R1 forward path + DG when enabled).
+    if dg_active {
+        drive_with_dg(
+            brain,
+            cue_sdr,
+            dg_sdr,
+            DRIVE_NA,
+            dg_strength,
+            cfg.cue_ms as f32,
+        );
+    } else {
+        drive_for(brain, cue_sdr, cfg.cue_ms as f32);
+    }
 
     // ---- Phase 2: delay (no input).
     idle(brain, cfg.delay_ms as f32);
@@ -1365,15 +1852,29 @@ fn run_teacher_trial(
     if suppress_istdp {
         brain.regions[1].network.disable_istdp();
     }
-    let pred_counts = drive_with_r2_clamp(
-        brain,
-        cue_sdr,
-        &[],
-        DRIVE_NA * cfg.r1r2_prediction_gate,
-        0.0,
-        cfg.prediction_ms as f32,
-        r2_e,
-    );
+    let pred_counts = if dg_active {
+        drive_with_r2_clamp_dg(
+            brain,
+            cue_sdr,
+            dg_sdr,
+            &[],
+            DRIVE_NA * cfg.r1r2_prediction_gate,
+            dg_strength * cfg.r1r2_prediction_gate,
+            0.0,
+            cfg.prediction_ms as f32,
+            r2_e,
+        )
+    } else {
+        drive_with_r2_clamp(
+            brain,
+            cue_sdr,
+            &[],
+            DRIVE_NA * cfg.r1r2_prediction_gate,
+            0.0,
+            cfg.prediction_ms as f32,
+            r2_e,
+        )
+    };
     if suppress_stdp {
         brain.regions[1].network.enable_stdp(rest_stdp);
     }
@@ -1416,17 +1917,44 @@ fn run_teacher_trial(
     // build before the post-spikes arrive.
     let lead_in_ms: u32 = (cfg.teacher_ms / 4).clamp(4, 12);
     let clamp_ms: u32 = cfg.teacher_ms.saturating_sub(lead_in_ms).max(1);
-    let _lead_counts =
-        drive_with_r2_clamp(brain, cue_sdr, &[], DRIVE_NA, 0.0, lead_in_ms as f32, r2_e);
-    let teacher_counts = drive_with_r2_clamp(
-        brain,
-        cue_sdr,
-        target_r2_sdr,
-        DRIVE_NA,
-        cfg.target_clamp_strength,
-        clamp_ms as f32,
-        r2_e,
-    );
+    let _lead_counts = if dg_active {
+        drive_with_r2_clamp_dg(
+            brain,
+            cue_sdr,
+            dg_sdr,
+            &[],
+            DRIVE_NA,
+            dg_strength,
+            0.0,
+            lead_in_ms as f32,
+            r2_e,
+        )
+    } else {
+        drive_with_r2_clamp(brain, cue_sdr, &[], DRIVE_NA, 0.0, lead_in_ms as f32, r2_e)
+    };
+    let teacher_counts = if dg_active {
+        drive_with_r2_clamp_dg(
+            brain,
+            cue_sdr,
+            dg_sdr,
+            target_r2_sdr,
+            DRIVE_NA,
+            dg_strength,
+            cfg.target_clamp_strength,
+            clamp_ms as f32,
+            r2_e,
+        )
+    } else {
+        drive_with_r2_clamp(
+            brain,
+            cue_sdr,
+            target_r2_sdr,
+            DRIVE_NA,
+            cfg.target_clamp_strength,
+            clamp_ms as f32,
+            r2_e,
+        )
+    };
     if !cfg.plasticity_during_teacher {
         brain.regions[1].network.enable_stdp(rest_stdp);
         brain.regions[1].network.enable_istdp(rest_istdp);
@@ -1465,7 +1993,18 @@ fn run_teacher_trial(
         // Brief consolidation drive — same length as the teacher
         // phase, cue alone (no clamp) so the modulator gates the
         // eligibility tag built up during the teacher window.
-        drive_for(brain, cue_sdr, cfg.teacher_ms as f32);
+        if dg_active {
+            drive_with_dg(
+                brain,
+                cue_sdr,
+                dg_sdr,
+                DRIVE_NA,
+                dg_strength,
+                cfg.teacher_ms as f32,
+            );
+        } else {
+            drive_for(brain, cue_sdr, cfg.teacher_ms as f32);
+        }
         brain.set_neuromodulator(0.0);
     }
 
@@ -1539,7 +2078,8 @@ pub fn run_determinism_smoke(corpus: &RewardCorpus, cfg: &RewardConfig) {
     } else {
         (INTER_WEIGHT, R2_INH_FRAC)
     };
-    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used);
+    let r2_n_used = effective_r2_n(&cfg.teacher);
+    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used, r2_n_used);
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
     let r2_e = r2_e_set(&brain);
 
@@ -1559,7 +2099,8 @@ pub fn run_determinism_smoke(corpus: &RewardCorpus, cfg: &RewardConfig) {
     // `drive_for_with_counts` does reset_state internally inside
     // build_vocab_dictionary so dictionary construction itself
     // is deterministic given the seed.
-    let dict = build_vocab_dictionary(&mut brain, &encoder, &r2_e, &vocab);
+    let empty_dg: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
+    let dict = build_vocab_dictionary(&mut brain, &encoder, &r2_e, &vocab, &empty_dg, 0.0);
 
     // Pick the first real-pair cue.
     let pair = &corpus.pairs[0];
@@ -1690,6 +2231,7 @@ pub fn run_postmortem_diagnostic(
                     &r2_e,
                     stdp_params,
                     istdp_params,
+                    &[],
                 );
                 idle(&mut brain, COOLDOWN_MS);
             }
@@ -1793,7 +2335,8 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
     } else {
         (INTER_WEIGHT, R2_INH_FRAC)
     };
-    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used);
+    let r2_n_used = effective_r2_n(&cfg.teacher);
+    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used, r2_n_used);
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
     let r2_e = r2_e_set(&brain);
 
@@ -1966,6 +2509,7 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                         &r2_e,
                         stdp_params,
                         istdp_params,
+                        &[],
                     );
                     if cfg.use_reward {
                         total_reward += outcome.reward_value;
@@ -2140,7 +2684,9 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
         brain.set_neuromodulator(0.0);
 
         let dec_t0 = std::time::Instant::now();
-        let dict = build_vocab_dictionary(&mut brain, &encoder, &r2_e, &vocab);
+        let empty_dg: std::collections::HashMap<String, Vec<u32>> =
+            std::collections::HashMap::new();
+        let dict = build_vocab_dictionary(&mut brain, &encoder, &r2_e, &vocab, &empty_dg, 0.0);
         let mut top1 = 0usize;
         let mut top3 = 0usize;
         let mut rank_sum = 0.0_f32;
@@ -2462,6 +3008,7 @@ fn train_brain_inplace(
     r2_e: &BTreeSet<usize>,
     stdp_params: StdpParams,
     initial_istdp: IStdpParams,
+    dg_sdr_map: &std::collections::HashMap<String, Vec<u32>>,
 ) {
     // initial_istdp is only used to satisfy the type of the loop-
     // local `istdp_params`; the per-epoch reassignment below
@@ -2497,6 +3044,7 @@ fn train_brain_inplace(
 
             if teacher_active {
                 let canonical = target_r2_map.get(&pair.target).cloned().unwrap_or_default();
+                let dg_sdr = dg_sdr_map.get(&pair.cue).cloned().unwrap_or_default();
                 for _rep in 0..cfg.reps_per_pair.max(1) {
                     brain.regions[1].network.reset_state();
                     let _ = run_teacher_trial(
@@ -2509,6 +3057,7 @@ fn train_brain_inplace(
                         r2_e,
                         stdp_params,
                         istdp_params,
+                        &dg_sdr,
                     );
                     idle(brain, COOLDOWN_MS);
                 }
@@ -2582,6 +3131,8 @@ fn evaluate_jaccard_matrix(
     r2_e: &BTreeSet<usize>,
     dict: &EngramDictionary,
     vocab: &[String],
+    dg_sdr_map: &std::collections::HashMap<String, Vec<u32>>,
+    dg_drive_strength: f32,
 ) -> JaccardMetrics {
     const N_TRIALS: usize = 3;
     const TOP_K: usize = 3;
@@ -2594,11 +3145,24 @@ fn evaluate_jaccard_matrix(
             matrix.push(Vec::new());
             continue;
         }
+        let dg_sdr = dg_sdr_map.get(cue_word);
         let mut trials: Vec<Vec<String>> = Vec::with_capacity(N_TRIALS);
         for _trial_i in 0..N_TRIALS {
             // Full reset — R1 + R2 + pending queue + brain.time.
             brain.reset_state();
-            let counts = drive_for_with_counts(brain, &cue_sdr.indices, RECALL_MS, r2_e);
+            let counts = if let Some(dg) = dg_sdr {
+                drive_with_dg_counts(
+                    brain,
+                    &cue_sdr.indices,
+                    dg,
+                    DRIVE_NA,
+                    dg_drive_strength,
+                    RECALL_MS,
+                    r2_e,
+                )
+            } else {
+                drive_for_with_counts(brain, &cue_sdr.indices, RECALL_MS, r2_e)
+            };
             let kwta = top_k_indices(&counts, KWTA_K);
             let decoded = dict.decode_top(&kwta, TOP_K);
             let top: Vec<String> = decoded.iter().map(|(w, _)| w.clone()).collect();
@@ -2672,6 +3236,131 @@ fn evaluate_jaccard_matrix(
     }
 }
 
+/// Iter-58 floor-diagnosis variant of `evaluate_jaccard_matrix`.
+/// Identical 32-cue × 3-trial matrix collection (same full
+/// `brain.reset_state()` per trial, same trial-1-vs-trial-2
+/// post-burn-in protocol), but additionally emits the per-cue-
+/// pair Jaccard list with cue names + decoded top-3 sets so the
+/// caller can inspect the *shape* of the cross-cue distribution
+/// (concentrated on a few SDR-collision pairs vs uniform across
+/// the vocab).
+fn evaluate_jaccard_matrix_with_pairs(
+    brain: &mut Brain,
+    encoder: &TextEncoder,
+    r2_e: &BTreeSet<usize>,
+    dict: &EngramDictionary,
+    vocab: &[String],
+    dg_sdr_map: &std::collections::HashMap<String, Vec<u32>>,
+    dg_drive_strength: f32,
+) -> (JaccardMetrics, Vec<JaccardPairSample>) {
+    const N_TRIALS: usize = 3;
+    const TOP_K: usize = 3;
+
+    let mut matrix: Vec<Vec<Vec<String>>> = Vec::with_capacity(vocab.len());
+    for cue_word in vocab {
+        let cue_sdr = encoder.encode_word(cue_word);
+        if cue_sdr.indices.is_empty() {
+            matrix.push(Vec::new());
+            continue;
+        }
+        let dg_sdr = dg_sdr_map.get(cue_word);
+        let mut trials: Vec<Vec<String>> = Vec::with_capacity(N_TRIALS);
+        for _trial_i in 0..N_TRIALS {
+            brain.reset_state();
+            let counts = if let Some(dg) = dg_sdr {
+                drive_with_dg_counts(
+                    brain,
+                    &cue_sdr.indices,
+                    dg,
+                    DRIVE_NA,
+                    dg_drive_strength,
+                    RECALL_MS,
+                    r2_e,
+                )
+            } else {
+                drive_for_with_counts(brain, &cue_sdr.indices, RECALL_MS, r2_e)
+            };
+            let kwta = top_k_indices(&counts, KWTA_K);
+            let decoded = dict.decode_top(&kwta, TOP_K);
+            let top: Vec<String> = decoded.iter().map(|(w, _)| w.clone()).collect();
+            trials.push(top);
+        }
+        matrix.push(trials);
+    }
+
+    let jaccard = |a: &[String], b: &[String]| -> f32 {
+        let sa: BTreeSet<&String> = a.iter().collect();
+        let sb: BTreeSet<&String> = b.iter().collect();
+        let inter = sa.intersection(&sb).count();
+        let uni = sa.union(&sb).count();
+        if uni == 0 {
+            1.0
+        } else {
+            inter as f32 / uni as f32
+        }
+    };
+
+    let mut same_vals: Vec<f32> = Vec::new();
+    for trials in &matrix {
+        if trials.len() == N_TRIALS {
+            same_vals.push(jaccard(&trials[1], &trials[2]));
+        }
+    }
+
+    let mut cross_vals: Vec<f32> = Vec::new();
+    let mut per_pair: Vec<JaccardPairSample> = Vec::new();
+    for i in 0..matrix.len() {
+        if matrix[i].len() < N_TRIALS {
+            continue;
+        }
+        for j in (i + 1)..matrix.len() {
+            if matrix[j].len() < N_TRIALS {
+                continue;
+            }
+            let j_val = jaccard(&matrix[i][1], &matrix[j][1]);
+            cross_vals.push(j_val);
+            per_pair.push(JaccardPairSample {
+                cue_a: vocab[i].clone(),
+                cue_b: vocab[j].clone(),
+                jaccard: j_val,
+                top_a: matrix[i][1].clone(),
+                top_b: matrix[j][1].clone(),
+            });
+        }
+    }
+
+    let mean = |v: &[f32]| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f32>() / v.len() as f32
+        }
+    };
+    let std_dev = |v: &[f32], m: f32| {
+        if v.len() < 2 {
+            0.0
+        } else {
+            let var = v.iter().map(|x| (x - m).powi(2)).sum::<f32>() / (v.len() - 1) as f32;
+            var.sqrt()
+        }
+    };
+
+    let same_cue_mean = mean(&same_vals);
+    let same_cue_std = std_dev(&same_vals, same_cue_mean);
+    let cross_cue_mean = mean(&cross_vals);
+    let cross_cue_std = std_dev(&cross_vals, cross_cue_mean);
+
+    let metrics = JaccardMetrics {
+        same_cue_mean,
+        same_cue_std,
+        cross_cue_mean,
+        cross_cue_std,
+        n_cues: same_vals.len(),
+        n_pairs: cross_vals.len(),
+    };
+    (metrics, per_pair)
+}
+
 /// Iter-53 single-arm runner. Builds the brain, optionally trains
 /// it (a no-op when `cfg.epochs == 0` or `cfg.teacher.no_plasticity`),
 /// freezes plasticity for the eval phase, builds the vocabulary
@@ -2690,38 +3379,62 @@ fn run_jaccard_arm(
     } else {
         (INTER_WEIGHT, R2_INH_FRAC)
     };
+    let r2_n_used = effective_r2_n(&cfg.teacher);
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
+    // Iter-60: when DG bridge is on, scale R1 → R2 direct weights
+    // by `direct_r1r2_weight_scale` (default 0.0 = direct path off,
+    // DG becomes the sole cue-routing path).
+    let effective_inter_weight = if cfg.teacher.dg.enabled {
+        inter_weight * cfg.teacher.dg.direct_r1r2_weight_scale
+    } else {
+        inter_weight
+    };
     let mut brain = if cfg.teacher.decorrelated_init {
-        // Iter-54: hard-decorrelated R1 → R2 wiring. Build R1 + R2
-        // *without* the standard random fan-out, then wire only
-        // R1 cells that appear in exactly one cue SDR into that
-        // cue's disjoint R2-E block.
+        // Iter-54: hard-decorrelated R1 → R2 wiring.
         let mut b = Brain::new(DT);
         b.add_region(build_input_region());
-        b.add_region(build_memory_region(cfg.seed.wrapping_add(1), inh_frac));
+        b.add_region(build_memory_region(
+            cfg.seed.wrapping_add(1),
+            inh_frac,
+            r2_n_used,
+        ));
         let vocab_vec: Vec<String> = corpus.vocab.iter().cloned().collect();
         let _blocks = wire_forward_decorrelated(
             &mut b,
             &encoder,
             &vocab_vec,
             cfg.seed.wrapping_add(2),
-            inter_weight,
+            effective_inter_weight,
         );
-        // Hard mechanical invariant: pairwise-disjoint R2 reach
-        // across vocab cues. Equivalent in role to iter-52's L2
-        // bit-identity check, but on the topology side.
         assert_decorrelated_disjoint(&b, &encoder, &vocab_vec);
         eprintln!(
-            "[iter-54 {arm}] seed={} decorrelated init: vocab={} R2-E={} block_size={} (disjoint invariant ✓)",
+            "[iter-54 {arm}] seed={} decorrelated init: vocab={} R2_N={} R2-E={} block_size={} (disjoint invariant ✓)",
             cfg.seed,
             corpus.vocab.len(),
+            r2_n_used,
             r2_e_set(&b).len(),
             r2_e_set(&b).len() / corpus.vocab.len(),
         );
         b
     } else {
-        fresh_brain_with(cfg.seed, inter_weight, inh_frac)
+        fresh_brain_with(cfg.seed, effective_inter_weight, inh_frac, r2_n_used)
     };
+    // Iter-60: add DG region (region 2) and wire DG → R2. Per-cue
+    // DG SDRs are precomputed below (after r2_e is known); here
+    // we just lay down the structural projection.
+    if cfg.teacher.dg.enabled {
+        brain.add_region(build_dg_region(cfg.teacher.dg.size as usize));
+        wire_dg_to_r2(&mut brain, &cfg.teacher.dg, cfg.seed.wrapping_add(0xD9));
+        eprintln!(
+            "[iter-60 {arm}] seed={} DG bridge: dg_size={} dg_k={} dg_to_r2_fanout={} dg_to_r2_weight={:.2} direct_r1r2_scale={:.2}",
+            cfg.seed,
+            cfg.teacher.dg.size,
+            cfg.teacher.dg.k,
+            cfg.teacher.dg.to_r2_fanout,
+            cfg.teacher.dg.to_r2_weight,
+            cfg.teacher.dg.direct_r1r2_weight_scale,
+        );
+    }
     let r2_e = r2_e_set(&brain);
 
     let stdp_params = stdp();
@@ -2767,6 +3480,29 @@ fn run_jaccard_arm(
             .collect()
     };
 
+    // Iter-60 DG pattern-separation: build per-cue DG SDR map
+    // when DG bridge is enabled, empty otherwise.
+    let dg_sdr_map: std::collections::HashMap<String, Vec<u32>> = if cfg.teacher.dg.enabled {
+        let salt = cfg.seed ^ 0xDEAD_BEEF_F00D_BABEu64;
+        corpus
+            .vocab
+            .iter()
+            .map(|w| {
+                (
+                    w.clone(),
+                    dg_sdr_for_cue(
+                        w,
+                        cfg.teacher.dg.size as usize,
+                        cfg.teacher.dg.k as usize,
+                        salt,
+                    ),
+                )
+            })
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+
     train_brain_inplace(
         &mut brain,
         corpus,
@@ -2776,30 +3512,31 @@ fn run_jaccard_arm(
         &r2_e,
         stdp_params,
         initial_istdp,
+        &dg_sdr_map,
     );
 
-    // Eval phase: do NOT disable plasticity. Per Bekos's iter-53
-    // spec, the trained arm's same-cue Jaccard must reflect
-    // plasticity drift between trials ("im trained Run würde
-    // Plastizität zwischen Trials variieren, was *gewollt* ist").
-    // Membrane state is reset per trial via `brain.reset_state()`,
-    // so trial N+1 depends on trial N *only* via persistent
-    // synaptic weights — exactly the dependency Bekos wants to
-    // measure. The untrained arm has plasticity gated off (no
-    // `enable_*` calls were made), so this branch leaves it
-    // unchanged: untrained eval is fully deterministic, hence
-    // same-cue == 1.0 (the state-reset assertion).
-    //
-    // This deliberately drops the iter-52 eval-phase L2 invariant
-    // for the trained arm. The no_plasticity arm still asserts
-    // L2 bit-identity end-to-end; the trained arm logs pre/post
-    // L2 as a drift readout.
+    // Eval phase: do NOT disable plasticity.
 
     let l2_pre_eval = brain_synapse_l2_norms(&brain);
 
     let vocab: Vec<String> = corpus.vocab.iter().cloned().collect();
-    let dict = build_vocab_dictionary(&mut brain, &encoder, &r2_e, &vocab);
-    let jaccard = evaluate_jaccard_matrix(&mut brain, &encoder, &r2_e, &dict, &vocab);
+    let dict = build_vocab_dictionary(
+        &mut brain,
+        &encoder,
+        &r2_e,
+        &vocab,
+        &dg_sdr_map,
+        cfg.teacher.dg.drive_strength,
+    );
+    let jaccard = evaluate_jaccard_matrix(
+        &mut brain,
+        &encoder,
+        &r2_e,
+        &dict,
+        &vocab,
+        &dg_sdr_map,
+        cfg.teacher.dg.drive_strength,
+    );
 
     let l2_post_eval = brain_synapse_l2_norms(&brain);
 
@@ -2893,6 +3630,333 @@ pub fn run_jaccard_bench(
         sweep.trained.push(trained_arm);
     }
     sweep
+}
+
+/// Iter-58 floor-diagnosis runner. Builds the *trained* arm at the
+/// passed config (mirroring `run_jaccard_arm`'s setup verbatim),
+/// then uses the per-pair-emitting evaluator to return one
+/// [`JaccardFloorReport`] per seed. The aggregate diagnostic
+/// (cross-seed averaged distribution, top-N high-overlap pairs,
+/// per-cue frequency) is computed by the caller from the per-seed
+/// reports — keeps this function side-effect-light and lets the
+/// CLI render whichever cuts of the data Bekos's spec asks for.
+///
+/// `cfg.epochs == 0` would degenerate to the untrained arm, which
+/// is *not* the floor-diagnosis target — the function panics in
+/// that case so a misconfigured CLI invocation fails loud.
+pub fn run_jaccard_floor_diagnosis(
+    corpus: &RewardCorpus,
+    cfg: &RewardConfig,
+    seeds: &[u64],
+) -> Vec<JaccardFloorReport> {
+    assert!(
+        cfg.epochs > 0 && !cfg.teacher.no_plasticity,
+        "iter-58 floor diagnosis requires a trained arm (epochs > 0 \
+         and not no_plasticity)",
+    );
+    let mut reports: Vec<JaccardFloorReport> = Vec::with_capacity(seeds.len());
+    for &seed in seeds {
+        let mut cfg_seeded = *cfg;
+        cfg_seeded.seed = seed;
+
+        // -- Brain construction (mirrors run_jaccard_arm) ---------
+        let (inter_weight, inh_frac) = if cfg_seeded.teacher.iter46_baseline {
+            (2.0_f32, 0.20_f32)
+        } else {
+            (INTER_WEIGHT, R2_INH_FRAC)
+        };
+        let r2_n_used = effective_r2_n(&cfg_seeded.teacher);
+        let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
+        let effective_inter_weight = if cfg_seeded.teacher.dg.enabled {
+            inter_weight * cfg_seeded.teacher.dg.direct_r1r2_weight_scale
+        } else {
+            inter_weight
+        };
+        let mut brain = if cfg_seeded.teacher.decorrelated_init {
+            let mut b = Brain::new(DT);
+            b.add_region(build_input_region());
+            b.add_region(build_memory_region(
+                cfg_seeded.seed.wrapping_add(1),
+                inh_frac,
+                r2_n_used,
+            ));
+            let vocab_vec: Vec<String> = corpus.vocab.iter().cloned().collect();
+            let _blocks = wire_forward_decorrelated(
+                &mut b,
+                &encoder,
+                &vocab_vec,
+                cfg_seeded.seed.wrapping_add(2),
+                effective_inter_weight,
+            );
+            assert_decorrelated_disjoint(&b, &encoder, &vocab_vec);
+            eprintln!(
+                "[iter-58 floor] seed={} decorrelated init: vocab={} R2_N={} R2-E={} block_size={} (disjoint invariant ✓)",
+                cfg_seeded.seed,
+                corpus.vocab.len(),
+                r2_n_used,
+                r2_e_set(&b).len(),
+                r2_e_set(&b).len() / corpus.vocab.len(),
+            );
+            b
+        } else {
+            fresh_brain_with(cfg_seeded.seed, effective_inter_weight, inh_frac, r2_n_used)
+        };
+        if cfg_seeded.teacher.dg.enabled {
+            brain.add_region(build_dg_region(cfg_seeded.teacher.dg.size as usize));
+            wire_dg_to_r2(
+                &mut brain,
+                &cfg_seeded.teacher.dg,
+                cfg_seeded.seed.wrapping_add(0xD9),
+            );
+        }
+        let r2_e = r2_e_set(&brain);
+
+        let stdp_params = stdp();
+        let initial_istdp = if cfg_seeded.teacher.iter46_baseline {
+            istdp_iter46_baseline()
+        } else {
+            istdp_iter49(&cfg_seeded.teacher, 0)
+        };
+        brain.regions[1].network.enable_stdp(stdp_params);
+        brain.regions[1].network.enable_istdp(initial_istdp);
+        brain.regions[1].network.enable_homeostasis(homeostasis());
+        if !cfg_seeded.teacher.iter46_baseline {
+            brain.regions[1]
+                .network
+                .enable_intrinsic_plasticity(intrinsic());
+        }
+        if cfg_seeded.use_reward {
+            brain.regions[1]
+                .network
+                .enable_reward_learning(reward_params());
+        }
+
+        let target_r2_map: std::collections::HashMap<String, Vec<u32>> = {
+            let pool = r2_e_pool(&r2_e);
+            let salt = cfg_seeded.seed ^ 0xCAFE_F00D_DEAD_BEEFu64;
+            corpus
+                .vocab
+                .iter()
+                .map(|w| {
+                    (
+                        w.clone(),
+                        canonical_target_r2_sdr(w, &pool, TARGET_R2_K, salt),
+                    )
+                })
+                .collect()
+        };
+
+        let dg_sdr_map: std::collections::HashMap<String, Vec<u32>> =
+            if cfg_seeded.teacher.dg.enabled {
+                let salt = cfg_seeded.seed ^ 0xDEAD_BEEF_F00D_BABEu64;
+                corpus
+                    .vocab
+                    .iter()
+                    .map(|w| {
+                        (
+                            w.clone(),
+                            dg_sdr_for_cue(
+                                w,
+                                cfg_seeded.teacher.dg.size as usize,
+                                cfg_seeded.teacher.dg.k as usize,
+                                salt,
+                            ),
+                        )
+                    })
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            };
+
+        train_brain_inplace(
+            &mut brain,
+            corpus,
+            &cfg_seeded,
+            &target_r2_map,
+            &encoder,
+            &r2_e,
+            stdp_params,
+            initial_istdp,
+            &dg_sdr_map,
+        );
+
+        let vocab: Vec<String> = corpus.vocab.iter().cloned().collect();
+        let dict = build_vocab_dictionary(
+            &mut brain,
+            &encoder,
+            &r2_e,
+            &vocab,
+            &dg_sdr_map,
+            cfg_seeded.teacher.dg.drive_strength,
+        );
+        let (metrics, per_pair) = evaluate_jaccard_matrix_with_pairs(
+            &mut brain,
+            &encoder,
+            &r2_e,
+            &dict,
+            &vocab,
+            &dg_sdr_map,
+            cfg_seeded.teacher.dg.drive_strength,
+        );
+
+        eprintln!(
+            "[iter-58 floor] seed={} same={:.3}±{:.3} cross={:.3}±{:.3} (n_cues={}, n_pairs={})",
+            cfg_seeded.seed,
+            metrics.same_cue_mean,
+            metrics.same_cue_std,
+            metrics.cross_cue_mean,
+            metrics.cross_cue_std,
+            metrics.n_cues,
+            metrics.n_pairs,
+        );
+
+        reports.push(JaccardFloorReport {
+            seed: cfg_seeded.seed,
+            n_cues: metrics.n_cues,
+            n_pairs: metrics.n_pairs,
+            same_cue_mean: metrics.same_cue_mean,
+            cross_cue_mean: metrics.cross_cue_mean,
+            per_pair,
+        });
+    }
+    reports
+}
+
+/// Iter-58 floor-diagnosis renderer. Takes a slice of per-seed
+/// reports and emits a Markdown report covering the three cuts
+/// Bekos's spec asks for:
+/// 1. **Distribution stats** of the cross-seed averaged per-pair
+///    Jaccard (min / p25 / median / p75 / p90 / p95 / max).
+/// 2. **Top-N high-overlap pairs** (default N = 10).
+/// 3. **Per-cue frequency in high-overlap pairs**: how many of
+///    each cue's `vocab − 1` partners exceed the threshold.
+pub fn render_jaccard_floor_diagnosis(
+    reports: &[JaccardFloorReport],
+    threshold: f32,
+    top_n: usize,
+) -> String {
+    use std::collections::BTreeMap;
+    use std::fmt::Write;
+
+    let mut s = String::new();
+    s.push_str("### Iter-58: Jaccard floor diagnosis\n\n");
+    if reports.is_empty() {
+        s.push_str("_no reports — empty seeds list?_\n");
+        return s;
+    }
+
+    // Group per-pair samples by (cue_a, cue_b) and average across seeds.
+    type PairKey = (String, String);
+    let mut sums: BTreeMap<PairKey, (f32, u32)> = BTreeMap::new();
+    for r in reports {
+        for sample in &r.per_pair {
+            let key = (sample.cue_a.clone(), sample.cue_b.clone());
+            let entry = sums.entry(key).or_insert((0.0, 0));
+            entry.0 += sample.jaccard;
+            entry.1 += 1;
+        }
+    }
+    let averaged: Vec<(PairKey, f32)> = sums
+        .into_iter()
+        .map(|(k, (sum, n))| (k, sum / n as f32))
+        .collect();
+    let n_pairs = averaged.len();
+
+    let _ = writeln!(
+        s,
+        "_n_seeds = {}, n_pairs (averaged) = {}, threshold for high-overlap = {:.2}_\n",
+        reports.len(),
+        n_pairs,
+        threshold,
+    );
+
+    let _ = writeln!(s, "**Per-seed aggregate:**\n");
+    let _ = writeln!(
+        s,
+        "| Seed | same_cue_mean | cross_cue_mean | n_cues | n_pairs |"
+    );
+    let _ = writeln!(s, "| ---: | ---: | ---: | ---: | ---: |");
+    for r in reports {
+        let _ = writeln!(
+            s,
+            "| {} | {:.3} | {:.3} | {} | {} |",
+            r.seed, r.same_cue_mean, r.cross_cue_mean, r.n_cues, r.n_pairs,
+        );
+    }
+    s.push('\n');
+
+    // -- (1) Distribution of cross-seed-averaged per-pair Jaccards.
+    let mut sorted: Vec<f32> = averaged.iter().map(|(_, j)| *j).collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pick = |frac: f32| -> f32 {
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        let idx = ((sorted.len() as f32 - 1.0) * frac).round() as usize;
+        sorted[idx.min(sorted.len() - 1)]
+    };
+    let _ = writeln!(s, "**Cross-seed averaged per-pair distribution:**\n");
+    let _ = writeln!(s, "| min | p25 | median | p75 | p90 | p95 | max |",);
+    let _ = writeln!(s, "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+    let _ = writeln!(
+        s,
+        "| {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} |",
+        pick(0.0),
+        pick(0.25),
+        pick(0.50),
+        pick(0.75),
+        pick(0.90),
+        pick(0.95),
+        pick(1.0),
+    );
+    s.push('\n');
+
+    // -- (2) Top-N high-overlap pairs (cross-seed averaged).
+    let mut top: Vec<&(PairKey, f32)> = averaged.iter().collect();
+    top.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let top_n_actual = top_n.min(top.len());
+    let _ = writeln!(
+        s,
+        "**Top-{top_n_actual} high-overlap pairs (averaged across seeds):**\n"
+    );
+    let _ = writeln!(s, "| Rank | cue_a | cue_b | mean Jaccard |");
+    let _ = writeln!(s, "| ---: | :--- | :--- | ---: |");
+    for (rank, ((a, b), j)) in top.iter().take(top_n_actual).enumerate() {
+        let _ = writeln!(s, "| {} | {} | {} | {:.3} |", rank + 1, a, b, j);
+    }
+    s.push('\n');
+
+    // -- (3) Per-cue frequency in pairs above threshold.
+    let mut high_count: BTreeMap<String, u32> = BTreeMap::new();
+    for ((a, b), j) in averaged.iter() {
+        if *j >= threshold {
+            *high_count.entry(a.clone()).or_insert(0) += 1;
+            *high_count.entry(b.clone()).or_insert(0) += 1;
+        }
+    }
+    if high_count.is_empty() {
+        let _ = writeln!(
+            s,
+            "**Cue frequency in pairs ≥ {threshold:.2}:** no pairs cross the threshold.\n",
+        );
+    } else {
+        let mut counts: Vec<(String, u32)> = high_count.into_iter().collect();
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let _ = writeln!(
+            s,
+            "**Cue frequency in pairs ≥ {threshold:.2} (out of vocab−1 = {} possible partners):**\n",
+            reports[0].n_cues.saturating_sub(1).max(1),
+        );
+        let _ = writeln!(s, "| Cue | high-overlap partners |");
+        let _ = writeln!(s, "| :--- | ---: |");
+        let show = counts.len().min(20);
+        for (cue, n) in counts.into_iter().take(show) {
+            let _ = writeln!(s, "| {cue} | {n} |");
+        }
+        s.push('\n');
+    }
+
+    s
 }
 
 /// Render an iter-53 jaccard sweep as a Markdown report. Per-seed
@@ -3009,6 +4073,8 @@ fn build_vocab_dictionary(
     encoder: &TextEncoder,
     r2_e: &BTreeSet<usize>,
     vocab: &[String],
+    dg_sdr_map: &std::collections::HashMap<String, Vec<u32>>,
+    dg_drive_strength: f32,
 ) -> EngramDictionary {
     let mut dict = EngramDictionary::new();
     for word in vocab {
@@ -3017,7 +4083,19 @@ fn build_vocab_dictionary(
             continue;
         }
         brain.regions[1].network.reset_state();
-        let cs = drive_for_with_counts(brain, &sdr.indices, RECALL_MS, r2_e);
+        let cs = if let Some(dg_sdr) = dg_sdr_map.get(word) {
+            drive_with_dg_counts(
+                brain,
+                &sdr.indices,
+                dg_sdr,
+                DRIVE_NA,
+                dg_drive_strength,
+                RECALL_MS,
+                r2_e,
+            )
+        } else {
+            drive_for_with_counts(brain, &sdr.indices, RECALL_MS, r2_e)
+        };
         let kw = top_k_indices(&cs, KWTA_K);
         if !kw.is_empty() {
             dict.learn_concept(word, &kw);
@@ -3218,7 +4296,7 @@ mod tests {
         let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
         let mut brain = Brain::new(DT);
         brain.add_region(build_input_region());
-        brain.add_region(build_memory_region(43, R2_INH_FRAC));
+        brain.add_region(build_memory_region(43, R2_INH_FRAC, R2_N));
         let blocks = wire_forward_decorrelated(&mut brain, &encoder, &vocab_vec, 123, INTER_WEIGHT);
         assert_eq!(blocks.len(), vocab_vec.len());
         // Block-to-block disjointness (precondition).

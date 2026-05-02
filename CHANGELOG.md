@@ -4,6 +4,543 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 61 (DG-bridge full replication)
+
+iter-60's DG smoke (2 seeds × 16 epochs) collapsed the
+vocab=64 cross-cue floor by 16× (0.448 / 0.422 → 0.028 /
+0.026). iter-61 is **not** a new architecture and **not** a DG
+parameter sweep — it is the iter-55 / iter-56 lesson applied:
+per-seed view at full training before declaring the pivot
+solved. Three claims to falsify or confirm at 4 seeds × 32
+epochs:
+
+1. *Separation* — does cross-cue stay ≤ 0.05 across all seeds?
+2. *Learning* — is trained_cross meaningfully different from
+   untrained_cross, or has the metric saturated against a
+   geometric floor?
+3. *Stability* — does trained_same erode further at ep32?
+
+### Run
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-bench --seeds 42,7,13,99 --epochs 32 \
+  --decorrelated-init --teacher-forcing \
+  --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge
+
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-floor-diagnosis --seeds 42,7,13,99 --epochs 32 \
+  --decorrelated-init --teacher-forcing \
+  --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge \
+  --floor-threshold 0.1 --floor-top-n 10
+```
+
+### Verified — per-seed table
+
+**Per-seed table (decisive — aggregate hides heterogeneity):**
+
+| Seed | Untrained cross | Trained cross | Δ cross | Trained same | Eval-drift L2 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 0.028 | 0.028 | +0.000 | **0.961** ✓ | +4.60 |
+|  7 | 0.029 | 0.026 | −0.003 | **0.875** ✗ | +1.65 |
+| 13 | 0.028 | 0.025 | −0.003 | **0.898** ✗ | **−0.89** |
+| 99 | 0.033 | 0.026 | −0.007 | **0.930** ✓ | +3.73 |
+
+**2 of 4 seeds erode below the 0.90 same-cue threshold.** Seed
+13's eval-drift L2 sign-flip indicates net weight depression
+during eval (vs net potentiation on the other three).
+
+### Aggregate
+
+| | iter-58 no-DG ep32 (4 seeds) | iter-60 DG smoke ep16 (2 seeds) | iter-61 DG full ep32 (4 seeds) |
+| --- | ---: | ---: | ---: |
+| Untrained cross | 0.448 ± 0.012 | 0.028 ± 0.000 | 0.029 ± 0.002 |
+| Trained cross | 0.422 ± 0.017 | 0.026 ± 0.000 | 0.026 ± 0.001 |
+| Δ cross (paired) | −0.025 (sig) | −0.002 | −0.003 (t(3) ≈ −2.07, **p ≈ 0.13 NS**) |
+| Trained same | 1.000 | 0.922 ± 0.011 | **0.916 ± 0.037** (3× wider spread) |
+| Eval-drift L2 | +0.04 | +3.3 to +4.4 | −0.9 to +4.6 (sign flip on seed 13) |
+
+Cross-seed averaged per-pair distribution at iter-61
+vocab=64+DG: min 0.000, p25 0.000, **median 0.000**, p75 0.050,
+p90 0.050, p95 0.100, max 0.275 (vs iter-58's max 1.000).
+Cue-frequency-in-pairs ≥ 0.10 caps at 9 of 63 partners (vs
+iter-58's 59 of 63). The whole distribution shifted left ~0.40
+and the high-overlap tail collapsed.
+
+### Honest reading
+
+**Four separated readings:**
+
+1. **Separation — robust.** Cross-cue 0.025–0.033 across all 4
+   seeds; per-pair median 0.000; max collision 0.275 (vs
+   iter-58's perfect-overlap 1.000 trio). The DG geometry
+   collapse from iter-60 reproduces at full epochs.
+2. **Learning — invisible at the floor.** Δ cross trained −
+   untrained = −0.003 mean; t(3) ≈ −2.07; **p ≈ 0.13, NOT
+   significant.** DG solves separation geometrically;
+   plasticity does not yet add measurable cue-specific
+   improvement in the Jaccard metric.
+3. **Stability — heterogeneous, half the seeds erode.** Per-
+   seed trained_same: 0.961, 0.875, 0.898, 0.930. **2 of 4
+   below the 0.90 threshold.** Aggregate (0.916 ± 0.037)
+   hides this; std is 3× wider than the smoke (0.011), and
+   the two sub-0.90 seeds are not noise.
+4. **Drift — high and seed-dependent, including a sign flip.**
+   Eval-drift L2 (R2→R2) per seed: +4.60, +1.65, **−0.89**,
+   +3.73. Range 0.9 to 4.6. All 10×–100× the no-DG baseline.
+   Seed 13's negative sign means net weight depression during
+   eval — different plasticity dynamics from the other three.
+
+**Verdict per Bekos's iter-62 branching matrix:**
+
+  - (A) DG robust (cross ≤ 0.05 all + same ≥ 0.90 all):
+    **partial** — cross holds but same fails on 2 seeds.
+  - (B) DG separates but stability erodes:
+    **✓ PRIMARY**.
+  - (C) DG smoke does not replicate: ❌
+    (cross-cue replicates bit-close).
+  - (D) DG separates only untrained, trained gets worse: ❌
+    (trained slightly *better* than untrained on 3 of 4).
+
+iter-62 entry: **branch (B) — Path 1 plasticity-off-during-
+eval (recall-mode).** The iter-53 protocol kept plasticity on
+during the Jaccard matrix to honour Bekos's "im trained Run
+würde Plastizität zwischen Trials variieren". Under DG the
+cue-driven R2 traffic is ~10–100× denser than no-DG, so the
+same eval-time plasticity rate eats more engram per trial.
+Recall-mode = plasticity-off-during-eval is exactly what
+branch (B) prescribes; under that protocol the iter-53 same-
+cue=1.000 invariant returns automatically and the eval-drift L2
+question disappears.
+
+Path 2 (parallel): plasticity-rate decay or DG → R2 weight
+decay over the eval window — less drastic than full off,
+allows engram refinement without erosion.
+
+Sub-question alongside Path 1: **direct cue → target metric.**
+With cross-cue at the geometric floor, top-3 against canonical
+target (the iter-52 metric) is the metric that *can* register
+plasticity-driven cue-specific learning. iter-62 should
+re-introduce it on the DG-enabled brain.
+
+**Headline:**
+
+> **DG robustly solves cross-cue separation, but Jaccard no
+> longer measures learning, and same-cue erodes on half the
+> seeds under continued plasticity.**
+
+### Methodological lesson
+
+A 2-seed × 16-epoch smoke gave aggregate same-cue 0.922 ±
+0.011. The 4-seed × 32-epoch full run gives 0.916 ± **0.037**
+— same mean to 0.006, **3× the std**. The mean was right; the
+heterogeneity was not. Two of four seeds individually drop
+below the 0.90 threshold even though the mean stays above.
+**Always replicate at full seeds × full epochs before
+declaring an architectural pivot solved.** Per-seed *spread*
+is a different signal from per-seed *mean*, and a smoke is
+too small to measure spread reliably. Eighth consecutive
+iteration where the per-seed view produced a different verdict
+than the aggregate alone would have produced.
+
+All eval lib tests still green (10/10); clippy `-D warnings`
+clean (no code changes since iter-60).
+
+## Unreleased — Iteration 60 (DG pattern-separation bridge)
+
+iter-58 / iter-59 closed the geometry-vs-architecture and the
+capacity questions: the cross-cue floor is architecture-shaped
+(vocab=64 raised it 0.23 → 0.42), and capacity helps only
+partially (R2_N=4000 deepened Δ 13× but absolute floor moved
+only 0.04). Bekos's iter-60 pivot — drop "more capacity in one
+layer", add the missing upstream layer the Hippocampus / SDM
+literature describes (DG / CA3 separation, mossy-fibre
+projection, sparse address layer).
+
+### Added — code prep (commit `b81e646`)
+
+- `DgConfig` (size = 4000, k = 80, to_r2_fanout = 30,
+  to_r2_weight = 1.0, direct_r1r2_weight_scale = 0.0,
+  drive_strength = 200.0). On `TeacherForcingConfig.dg`.
+- `build_dg_region(size)` — third region, all excitatory, no
+  intra-region recurrent connectivity.
+- `wire_dg_to_r2(brain, cfg, seed)` — random sparse projection
+  (DG cell → `to_r2_fanout` random R2 cells at `to_r2_weight`).
+- `dg_sdr_for_cue(word, dg_size, k, salt)` — deterministic
+  k-of-n hashed DG address per cue.
+- 3-region drive primitives (`drive_with_dg`,
+  `drive_with_dg_counts`, `drive_with_r2_clamp_dg`) +
+  auto-zero-pad on the legacy 2-region helpers so
+  iter-44…59 numerics stay unchanged.
+- Threaded `dg_sdr_map: &HashMap<String, Vec<u32>>` through
+  `train_brain_inplace`, `build_vocab_dictionary`,
+  `evaluate_jaccard_matrix*`, `run_teacher_trial`. DG-aware
+  drives only fire when DG is enabled.
+- CLI: `--dg-bridge`, `--dg-size`, `--dg-k`, `--dg-to-r2-fanout`,
+  `--dg-to-r2-weight`, `--direct-r1r2-weight-scale`,
+  `--dg-drive-strength`. Build / clippy / 10-tests clean.
+
+### Verified — DG smoke (vocab=64 c500 ep16 seeds 42, 7)
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-bench --seeds 42,7 --epochs 16 \
+  --decorrelated-init --teacher-forcing \
+  --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge
+```
+
+| Seed | Untrained cross | Trained cross | Trained same | Eval-drift L2 (R2→R2) |
+| ---: | ---: | ---: | ---: | ---: |
+| 42 | 0.028 | 0.027 | 0.930 | +4.41 |
+|  7 | 0.029 | 0.026 | 0.914 | +3.34 |
+
+Aggregate: untrained 0.028 ± 0.000, trained 0.026 ± 0.000,
+Δ cross −0.002, Δ same −0.078, Δ-of-Δ −0.076.
+
+### Comparison to iter-58 / iter-59 vocab=64 baseline
+
+|  | no DG (iter-58 ep32 4 seeds) | + DG (iter-60 ep16 2 seeds) | Δ |
+| ---: | ---: | ---: | ---: |
+| Untrained cross | 0.448 ± 0.012 | **0.028** | **−0.420 (−94 %)** |
+| Trained cross | 0.422 ± 0.017 | **0.026** | **−0.396 (−94 %)** |
+| Trained same | 1.000 | 0.922 | −0.078 |
+| Eval-drift L2 | +0.04 | +3.3–4.4 | ~100 × higher |
+
+Even compared to iter-54 vocab=32's previous-best trained =
+0.230, iter-60 vocab=64+DG trained = 0.026 is **9× lower at
+2× the vocab**.
+
+### Honest reading
+
+Three layered observations:
+
+1. **The geometry pivot works.** Untrained cross dropped from
+   0.448 to 0.028 — DG with k-of-n hashed addresses + sparse
+   mossy-fibre projection produces a near-orthogonal R2
+   firing pattern *before any plasticity has acted*. Biggest
+   single architectural move in the iter-46…60 chain.
+2. **Plasticity adds almost nothing on top.** Δ cross
+   (trained − untrained) at vocab=64+DG is **−0.002** (vs
+   iter-58 vocab=64's −0.025, iter-54 vocab=32's −0.229). The
+   trained brain barely improves over untrained because the
+   metric floor is now nearly saturated by geometry alone.
+   Inverse of iter-58: under DG, geometry carries the signal,
+   not plasticity.
+3. **Same-cue drops to 0.92** (was 1.000 across iter-53…59).
+   Eval-phase L2 drift jumps ~100 × (0.04 → 3.3-4.4). DG
+   produces denser cue-driven R2 activity → more spike-pair
+   coincidences → more weight changes per trial. Plasticity
+   is now genuinely active at eval but is *eroding* the
+   engram (same-cue down) without lifting the geometry floor
+   (cross-cue ≈ untrained).
+
+### Verdict per Bekos's iter-61 branching matrix
+
+  - (A) DG drops trained_cross substantially (target 0.25-0.30):
+    **✓ MASSIVELY** (trained = 0.026, far below target).
+  - (B) DG drops untrained but trained Δ stays small:
+    **✓ secondary** (Δ cross trained-untrained = −0.002).
+  - (C) DG doesn't help: ❌.
+
+iter-61 entry is mixed (A) + (B). The geometry pivot worked
+beyond the stated target; the cue-specific *learning* signal
+on top of geometry is currently buried in noise.
+
+iter-61 paths:
+- **Path 1 (primary):** full 4-seed × 32-epoch replication of
+  the smoke at default DG params. iter-55 / iter-56 lesson:
+  per-seed view at full epochs needed before declaring the
+  pivot solved.
+- **Path 2 (parallel):** isolate the cue → target *learning*
+  task with a different metric (Jaccard floor is now too low
+  for plasticity to register). top-3 against canonical target
+  or per-pair Δ overlap.
+
+Sub-question: same-cue erosion + eval-drift L2 ~100× higher
+than iter-58. Can DG → R2 plasticity be tamed
+(`to_r2_weight` lower, STDP rate lower) so the engram
+doesn't erode at eval?
+
+### Methodological lesson
+
+Saturation across three training axes (epoch / clamp / phase-
+length) plus the vocab axis flip pointed at "more upstream
+representation" as the unsaturated lever. iter-60 swept *zero*
+training axes — it added one missing architectural layer.
+**The biggest single number-move in 14 iterations came from a
+structural change, not a training-axis sweep.** When every
+training-axis sweep saturates at the same value, the
+architecture is the lever, not the hyperparameter — go
+literature, not deeper sweep.
+
+All eval lib tests still green (10/10); clippy `-D warnings`
+clean.
+
+## Unreleased — Iteration 59 (R2 capacity scaling for the vocab=64 floor)
+
+iter-58 closed the geometry-vs-architecture question with a
+direction-of-change argument: doubling vocab raised trained
+cross by +0.192. Architecture / per-cue-capacity floor was the
+primary verdict, with the specific mechanistic form
+`block_size = R2-E / vocab`. iter-59 is the corresponding
+*positive* control: hold vocab=64 fixed, scale R2_N up, see
+whether trained cross falls back toward iter-54's vocab=32
+best (~0.20-0.25).
+
+### Added — single commit
+
+- `TeacherForcingConfig.r2_n: u32` (default `0` = use compile-
+  time `R2_N` constant; positive values rebuild R2 at the
+  requested size).
+- `effective_r2_n(cfg)` helper resolving the override.
+- `build_memory_region(seed, inh_frac, r2_n)` and
+  `fresh_brain_with(seed, inter_weight, inh_frac, r2_n)`
+  parameterised on `r2_n`. `drive_for` / `drive_for_with_counts`
+  / `idle` / `drive_with_r2_clamp` / `drive_with_r2_clamp_traced`
+  now read `brain.regions[1].num_neurons()` instead of hardcoded
+  `R2_N`. Backward-compat: existing callers that pass
+  `R2_N` directly are unchanged.
+- CLI: `--r2-n N` (single-run override) and
+  `--r2-capacity-sweep --r2-sizes 2000,4000,8000` (sweep mode
+  emitting a single scaling table). KWTA_K stays fixed at 60 —
+  sparsity intentionally varies with R2_N (4.3 % at 2000 →
+  1.1 % at 8000). Recurrent R2→R2 connectivity grows
+  quadratically in r2_n, expect ~4× cost at r2_n=4000, ~16×
+  at r2_n=8000.
+
+### Verified — capacity sweep at vocab=64
+
+| R2_N | cells/cue | Untrained cross | Trained cross | Δ cross | wallclock | n_seeds × ep | Comment |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| **2000** | 21 | 0.448 ± 0.012 | **0.422 ± 0.017** | −0.025 | ~2 h | 4 × 32 (iter-58) | full ep32 baseline |
+|  2000 | 21 | 0.456 ± 0.012 | 0.449 ± 0.002 | −0.007 | 24 min | 2 × 16 | iter-59 fairness baseline at reduced ep |
+| **4000** | 43 | 0.501 | **0.411** | **−0.090** | 40 min | 1 × 16 | primary test, single seed (sweep killed before seed 7) |
+|  8000 | 87 | 0.501 | 0.501 | +0.000 | 44 min | 1 × 4 | smoke probe, deliberately under-trained |
+
+State-reset assertion + decorrelated invariant: PASSED on all
+brain constructions. No instability at any R2_N. R2_N=16000+
+ruled out ex-ante on wallclock (~120 h+ for full ep32 sweep).
+
+**Two reading axes:**
+
+1. *At R2_N = 2000 fixed*, ep16 vs ep32: Δ cross drops from
+   −0.025 → −0.007 (smaller). ep16 is firmly under-trained
+   for vocab=64; the −0.007 sets the noise floor for any
+   ep16 comparison.
+2. *At ep16 fixed*, R2_N = 2000 vs 4000: Δ cross deepens
+   from −0.007 → **−0.090** (≈ 13× larger). Seed-42 trained
+   at R2_N=4000 (0.411) is *roughly tied* with the
+   R2_N=2000 ep32 baseline (0.422) — doubling capacity at
+   half the epochs lands in the same neighbourhood. But
+   absolute trained_cross does NOT drop to the vocab=32
+   best of 0.230.
+
+State-reset assertion: PASSED on all untrained arms. Decorrelated
+invariant: PASSED on all brain constructions. 10/10 eval lib
+tests still green.
+
+### Honest reading
+
+**iter-59 verdict: branch (B) Mixed limit — capacity helps,
+does not break the floor.**
+
+Branch (A) "trained_cross back to ~0.20-0.25" is rejected:
+even at double R2_N (and reduced epochs), trained sits 0.18
+above the vocab=32 best of 0.230. Branch (B) is the right
+read: Δ signal grew ~13× while the absolute floor moved
+~0.04. Capacity is *a* limit, not *the* limit.
+
+Branch (C) "doesn't help" is also rejected (Δ cross deepening
+is far above noise). Branch (D) "destabilises" — runs were
+clean across 2000/4000/8000.
+
+**iter-60 entry — architecture pivot (not capacity).** Bekos
+flagged that "more R2 in one layer" is the wrong direction
+and pointed at the Hippocampus / Sparse Distributed Memory
+literature: DG / CA3 separation, mossy-fibre projection,
+sparse address layer. iter-60 = DG-like Pattern-Separation
+Bridge smoke (separate note).
+
+**Caveats** that limit the strength of the verdict:
+
+1. *R2_N=4000 has only one seed.* Per-seed std at R2_N=2000
+   ep16 was 0.002, so the −0.090 is well above noise on the
+   matched config, but a 2nd seed would tighten.
+2. *Epoch mismatch.* The cleanest comparison (R2_N=4000 ep32
+   4-seed) was ruled out on wallclock. ep32 R2=2000 (iter-58)
+   + ep16 R2=2000 (iter-59) bracket the missing point.
+3. *Untrained baseline rises with R2_N* (0.448 → 0.501).
+   Fixed KWTA_K = 60 over a growing R2-E pool selects an
+   increasingly cue-independent attractor. Itself a side-
+   effect of "more cells without sparsity scaling".
+
+### Methodological lesson
+
+iter-50 → iter-58 lessons preserved.
+**iter-59: capacity helps, but capacity-in-one-layer doesn't
+break a floor that lives across an architecture's boundaries.
+The number that matters most isn't trained_cross itself —
+it's that Δ cross (training-induced specificity gain)
+deepened ~13× when capacity doubled, while the absolute
+trained_cross moved only ~0.04. Plasticity now has more room
+to write into, but the read-out floor is governed by something
+that doesn't shrink with R2_N alone. Wallclock-bounded iter-59
+forced an honest "we cannot push this axis to a clean
+asymptote", and the data did the rest. The pivot to
+architecture (iter-60 DG bridge) is not a guess — it is the
+directly inferred next experiment.**
+
+## Unreleased — Iteration 58 (Jaccard floor geometry vs plasticity diagnosis)
+
+iter-55 / iter-56 / iter-57 swept three orthogonal training
+axes (epoch / clamp / phase-length) on the iter-54 decorrelated
++ teacher-forcing architecture. All three saturate near
+trained cross **≈ 0.20** with diminishing returns. The ≈ 0.20
+cross-cue floor is no longer plausibly "we just haven't trained
+enough" — it has held against 4× epochs, 4× clamp, 3×
+teacher_ms, and the non-monotonic t80 catastrophe.
+
+iter-58 is therefore *not* another optimisation iteration. It
+is a **diagnosis**: what *is* the 0.20 floor? Geometric (encoder
+/ SDR / dictionary collision artefact) or architectural
+(plasticity / topology limit)?
+
+### Added — single commit
+
+- `pub struct JaccardPairSample` (cue_a, cue_b, jaccard, top_a,
+  top_b) — one entry per (i < j) cue pair from the trained-arm
+  trial-1 decoded top-3 sets.
+- `pub struct JaccardFloorReport` (per-seed per-pair list +
+  standard aggregate).
+- `evaluate_jaccard_matrix_with_pairs` — per-pair-emitting
+  variant of the iter-53 evaluator.
+- `pub fn run_jaccard_floor_diagnosis(corpus, cfg, seeds)` —
+  trained arm at the passed config × N seeds, mirroring
+  `run_jaccard_arm`'s brain construction + training.
+- `pub fn render_jaccard_floor_diagnosis(reports, threshold,
+  top_n)` — Markdown report with the three cuts Bekos's spec
+  asks for: distribution stats (min / p25 / median / p75 /
+  p90 / p95 / max) + top-N high-overlap pairs + per-cue
+  frequency in pairs ≥ threshold.
+- `pub fn default_corpus_v64()` — vocab = 64 corpus extending
+  the iter-46…57 set with 16 more programming-language pairs.
+- CLI: `--jaccard-floor-diagnosis` + `--corpus-vocab 32 | 64`
+  + `--floor-threshold` + `--floor-top-n`.
+
+### Verified — Path 1 (vocab=32) and Path 2 (vocab=64) results
+
+**Path 1 — vocab=32 floor diagnosis** (replicates iter-57 t40
+bit-exactly: trained 0.230 ± 0.020, Δ cross −0.229, paired
+t(3) ≈ −36.3, p ≪ 0.001):
+
+| min | p25 | median | p75 | p90 | p95 | max |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.000 | 0.150 | 0.225 | 0.300 | 0.350 | 0.425 | 0.750 |
+
+Distribution is **broad and continuous** across all 496 pairs.
+Top-3 pairs are concurrency-concept words (block / channels /
+actor) but ranks 4–15 are spread across many distinct cues.
+Cue frequency in pairs ≥ 0.30: half the vocab participates in
+many high-overlap pairs (block 21/31, ruby 20/31, clojure
+19/31). No isolated geometric-collision tail.
+
+**Path 2 — vocab=64 stress test** (same config, vocab doubled):
+
+| | vocab = 32 | vocab = 64 | Δ |
+| --- | ---: | ---: | ---: |
+| Untrained cross | 0.459 ± 0.022 | 0.448 ± 0.012 | −0.011 |
+| Trained cross | 0.230 ± 0.020 | **0.422 ± 0.017** | **+0.192** |
+| Δ cross | **−0.229** | **−0.025** | +0.204 |
+| paired t(3) | ≈ −36.3 (p ≪ 0.001) | ≈ −2.58 (p ≈ 0.08) | — |
+| block_size | 43 cells/cue | 21 cells/cue | half |
+
+**Doubling vocab roughly eliminates the training signal.**
+Trained cross rises +0.192, Δ cross collapses 89 % and falls
+below significance. Per-seed: 42 = −0.048, 7 = **0.000**, 13
+= −0.030, 99 = −0.024 — three of four seeds sub-significant.
+
+vocab=64 distribution shifts right by ≈ +0.20 across every
+percentile (median 0.225 → 0.425). Cue frequency in pairs ≥
+0.30 reaches **59/63 ≈ 92 %** for nearly every cue. Top-3
+pairs at vocab=64 (actor / ada / array) hit Jaccard = **1.000
+across all 4 seeds** — encoder/SDR collision on short common
+4-letter words.
+
+State-reset assertion: PASSED on all 4 seeds at both vocab
+sizes (untrained same_cue_mean = 1.000 ± 0.000). Decorrelated
+invariant: PASSED on all 8 brain constructions.
+
+### Honest reading
+
+**iter-58 verdict: branch (B) PRIMARY — architecture /
+plasticity floor, with branch (C) secondary minor (encoder
+collision on actor / ada / array).** The per-cue R2-E block
+budget is the binding constraint. At 43 cells / cue the
+architecture writes Δ cross = −0.229 (significant); at 21
+cells / cue it writes −0.025 (not significant). The floor
+scales with cells-per-cue, *not* with vocab. Geometric model
+predicts trained_cross holds or drops with bigger vocab;
+architectural model predicts it rises. **Trained_cross rose
+by +0.192.** One number, one direction, one verdict.
+
+The actor / ada / array trio with mean Jaccard = 1.000 at
+vocab=64 is a real geometric/encoder collision (short common
+4-letter words), but it is a small fraction of the 2016
+pairs and is not the *bulk* limit — the median pair already
+sits at 0.425, which is the architectural floor, not a
+collision.
+
+iter-59 entry: real architecture question, not encoder fix.
+
+- **Path 3 (recommended first as positive control):** double
+  R2_N from 2000 to 4000 → block_size at vocab=64 returns to
+  ~62 cells / cue. Predicted trained cross ~0.20-0.25
+  (matches iter-54). ~30 min wallclock. Confirms the
+  architecture-floor mechanism cleanly.
+- **Path 1:** learnable / weight-mediated R1 → R2 projection
+  (replace the static disjoint blocks with soft per-cue
+  allocation that plasticity decides).
+- **Path 2:** contrastive iSTDP — penalise cells firing for
+  multiple cues within an epoch.
+
+The encoder geometry fix (the actor/ada/array overlap) is
+deprioritised: small fraction of failure mode + the iter-46
+corpus was already chosen for "well-separated SDRs", so the
+encoder is presumably a fairly clean baseline already.
+
+### Methodological lesson
+
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a guard is only a guard if its baseline excludes the null.
+iter-52: an analytical null is not an empirical control.
+iter-53: when the literal acceptance direction is bounded by
+construction, derive it from the protocol's mathematical bounds.
+iter-54: when the metric reports a "cleaner" number on a random
+topology than on an architecturally cleaner one, the metric is
+reading something else than what its name suggests.
+iter-55: a learning curve is not a single number; per-seed
+trajectories often reveal a saturation ceiling the aggregate hides.
+iter-56: aggregate monotonicity is not seed-level monotonicity.
+iter-57: a 3-point sweep is the minimum for a non-monotonic axis.
+**iter-58: a saturation ceiling has a *direction*. iter-55 / 56
+/ 57 each saw the floor approach 0.20 from below as training
+axes were extended, leaving the geometric-vs-architecture
+question genuinely open. iter-58 picked one new variable
+(vocab) and asked the *direction-of-change* question:
+geometric model predicts trained_cross stays flat or drops
+with bigger vocab; architectural model predicts it rises.
+Trained_cross rose by +0.192. One number, one direction, one
+verdict. Whenever multiple training axes saturate at the same
+value, find a non-training axis where the two competing models
+predict opposite signs of change — that is the diagnostic, not
+yet-another-training-sweep.**
+
+All eval lib tests still green (10/10); clippy `-D warnings`
+clean.
+
 ## Unreleased — Iteration 57 (phase-length sweep on decorrelated + c500)
 
 iter-56 landed branch (α) of the iter-57 selector — clamp axis
@@ -28,7 +565,48 @@ done
 
 ### Verified — phase-length curve
 
-<!-- @CHANGELOG_PHASE_CURVE@ -->
+Aggregate (n = 4 seeds, untrained baseline = 0.459 ± 0.022 in
+all three runs; clamp = 500 nA throughout):
+
+| teacher_ms | Trained cross | std | Δ cross | Δ-of-Δ | paired t(3) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+|  40 | 0.230 | ±0.020 | −0.229 | +0.229 | ≈ −36.3 |
+|  80 | **0.408** | ±0.052 | **−0.051** | +0.051 | ≈ −3.01 (p ≈ 0.06) |
+| 120 | 0.248 | ±0.051 | −0.211 | +0.211 | ≈ −10.05 |
+
+t40 is bit-exact replication of iter-56 c500 (per-seed:
+42=0.242, 7=0.250, 13=0.208, 99=0.220 — identical).
+
+Per-seed trained cross trajectory:
+
+| Seed | t40 | t80 | t120 | 40 → 80 | 80 → 120 | 40 → 120 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 0.242 | 0.434 | 0.317 | **+0.192** (worse) | −0.117 | +0.075 (worse) |
+|  7 | 0.250 | 0.467 | 0.249 | **+0.217** (worse) | −0.218 | −0.001 (tied)  |
+| 13 | 0.208 | 0.354 | 0.233 | **+0.146** (worse) | −0.121 | +0.025 (worse) |
+| 99 | 0.220 | 0.375 | **0.194** | **+0.155** (worse) | −0.181 | **−0.026** (better) |
+
+**Phase-length is a non-monotonic axis with a catastrophic
+dip at t80.** Every seed sees t80 as substantially worse than
+both t40 and t120; t40 vs t120 is a per-seed coin flip (2 seeds
+prefer t40, 1 tied, 1 prefers t120 — seed 99 at t120 = 0.194
+is the global best per-seed value across the entire iter-53 …
+iter-57 chain). Lead-in / clamp ratios under the existing
+`lead_in = (teacher_ms/4).clamp(4, 12)` formula:
+
+| teacher_ms | lead_in | clamp_ms | lead:clamp |
+| ---: | ---: | ---: | --- |
+|  40 | 10 | 30 | 1 : 3   (uncapped)              |
+|  80 | 12 | 68 | 1 : 5.7 (lead-in capped at 12)  |
+| 120 | 12 | 108 | 1 : 9   (lead-in capped at 12)  |
+
+t40 is the only config where lead-in is uncapped — gives STDP
+the cue → target timing asymmetry. At t80 / t120 the lead-in
+is the same (12 ms) but the clamp window stretches; t80 lands
+in a "long enough to push iSTDP/homeostasis past stable, not
+long enough to recover via consolidation" regime; t120's
+longer consolidation (= teacher_ms) apparently lets the system
+re-settle to roughly the t40 level.
 
 State-reset assertion: PASSED on every untrained arm (12/12).
 Decorrelated invariant: PASSED on every brain construction
@@ -36,11 +614,78 @@ Decorrelated invariant: PASSED on every brain construction
 
 ### Honest reading
 
-<!-- @CHANGELOG_HONEST_READING@ -->
+Three layered observations:
+
+1. **Phase-length is non-monotonic with a catastrophic dip at
+   t80.** Doubling teacher_ms (40 → 80) collapses Δ cross from
+   −0.229 to −0.051 (78 % of the signal lost). Tripling
+   (40 → 120) recovers most of t40 (Δ cross −0.211, only
+   +0.018 worse than t40 in aggregate). t80 is uniformly bad
+   on every seed.
+2. **The dip mechanism is plausibly the lead-in / clamp ratio
+   cap.** The lead-in formula caps at 12 ms; at teacher_ms ≥
+   48 ms the lead-in stops scaling while the clamp window
+   keeps growing. t80's 1:5.7 lead:clamp ratio appears to
+   land in a "iSTDP/homeostasis pushed past stable but not
+   long enough to consolidate back" regime; t120's 1:9 ratio
+   plus longer consolidation phase recovers.
+3. **Same-cue stays at exactly 1.000 in 12/12 trained arms;
+   eval-drift L2 *decreases* at higher teacher_ms** (t40
+   ~0.029 → t80 ~0.0022 → t120 ~0.0023). Branch (D) firmly
+   REJECTED — phase length does not unlock attractor-
+   plasticity at eval. Post-training R2 → R2 L2 norm scales
+   with teacher_ms (seed 99: 339.78 → 481.92 → 564.85), but
+   the buildup at t80 is in the *wrong place* (degrades
+   cross-cue) while at t120 it's apparently in a more useful
+   place.
+
+Per Bekos's pre-fixed iter-58 branching matrix:
+  - branch (A) trained cross < 0.18 anywhere: single-seed only (seed 99 t120 = 0.194)
+  - branch (B) trained cross ≈ 0.20 in best, no breakthrough: ✓ secondary
+  - branch (C) trained cross > 0.23 in all configs: ✓ PRIMARY
+  - branch (D) same-cue drops below 1.0: ❌
+
+iter-58 entry: **shift the research question.** All three
+training-axes (epoch / clamp / phase-length) saturate or non-
+monotonically dip near trained cross 0.20. iter-58 should
+investigate what the ceiling *means*, not push it lower.
+
+Recommended Path 1: **geometric vs plastic limit diagnosis.**
+Compute per-cue-pair cross-cue Jaccard and inspect the
+distribution. If concentrated on a small fraction of pairs
+(encoder produces near-identical SDRs), ceiling is a vocab
+artefact. If uniform, it's a plasticity-dynamics floor.
+~5 min code, no new sweep.
+
+Parallel Path 2: **vocab-scaling stress test** (vocab 32 → 64
+at iter-54 best config) to test whether 0.20 is vocab-
+specific. ~30 min.
+
+Noise-injection / cross-topology stays valid as iter-59
+candidate.
 
 ### Methodological lesson
 
-<!-- @CHANGELOG_LESSON@ -->
+iter-50: save the simplest configuration as a regression guard.
+iter-51: a guard is only a guard if its baseline excludes the null.
+iter-52: an analytical null is not an empirical control.
+iter-53: when the literal acceptance direction is bounded by
+construction, derive it from the protocol's mathematical bounds.
+iter-54: when the metric reports a "cleaner" number on a random
+topology than on an architecturally cleaner one, the metric is
+reading something else than what its name suggests.
+iter-55: a learning curve is not a single number; per-seed
+trajectories often reveal a saturation ceiling the aggregate hides.
+iter-56: aggregate monotonicity is not seed-level monotonicity.
+**iter-57: a 3-point sweep is the minimum for a non-monotonic
+axis. iter-57 swept teacher_ms at 40 / 80 / 120 specifically
+because Bekos's spec required it; a more "efficient" 2-point
+sweep (40 + 120 only) would have reported "phase-length is
+roughly neutral, slight regression at 120" and never seen the
+catastrophic dip at 80. Whenever an axis has a plausible
+biological non-linearity (here: the STDP lead-in / clamp
+ratio cap interacting with iSTDP recovery), the sweep needs
+≥ 3 points or the axis's shape is unobservable.**
 
 All eval lib tests still green; clippy `-D warnings` clean
 (no code changes since iter-54).
