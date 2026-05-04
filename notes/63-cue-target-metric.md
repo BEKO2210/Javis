@@ -54,18 +54,41 @@ The threshold is **not yet a number** — it is a function of
 the untrained baseline, computed on real data before the
 trained arm runs.
 
+### Operational definition of `untrained` (locked)
+
+Two readings are possible and they answer *different*
+questions:
+
+- **(a)** Fresh init weights, no plasticity ever applied,
+  recall-mode on, `target_top3_overlap` measured once. This
+  asks: *does the path learn anything above geometry?*
+- **(b)** Trained brain, but the cue↔target association for
+  *this* vocabulary was never seen (held-out pairs). This
+  asks: *does the path learn this specific association?*
+
+iter-63 uses **(a)**. The trained-arm will see exactly the
+same cue-target pairs at the same vocabulary; the untrained
+arm is the same brain *before any training has occurred*,
+under recall-mode. This is the only definition that makes
+the paired-t comparison statistically valid: same seed →
+same init → identical untrained value, plasticity is the
+only variable. Held-out-pair untrained is a different
+experiment and belongs in iter-65 if needed.
+
 ### Calibration phase
 
 Untrained-only sweep at the same configuration the main run
-will use:
+will use. The seed set used here **must be identical** to
+the seed set used in the trained main run — paired t(3)
+requires paired seeds, not two independently-drawn lists.
 
 ```text
-seeds        = 42, 7, 13, 99       (4 seeds)
+seeds        = 42, 7, 13, 99       (4 seeds, locked)
 epochs       = 32
 vocab        = 64
 DG bridge    = on
 recall-mode  = on (plasticity-off-during-eval)
-no-plasticity= true (untrained arm)
+no-plasticity= true (untrained arm, definition (a) above)
 teacher_ms   = 40
 clamp        = 500
 decorrelated init = on
@@ -126,12 +149,16 @@ cargo run --release -p eval --example reward_benchmark -- \
 ```
 
 Acceptance for the positive control: trained
-`target_top3_overlap` on iter-46 Arm B reproduces the
-iter-46 / iter-50 reading (top-3 = 0.19 ± noise, **not** at
-the random-baseline 0.047). If the positive control shows
-no signal, the wiring is broken — fix the plumbing before
-running calibration. **Do not** pivot architecture (branch
-B) on a silently-broken metric pipeline.
+`target_top3_overlap` on iter-46 Arm B falls within
+**[0.16, 0.22]** (iter-46 / iter-50 reading 0.19 ± 0.03,
+where ±0.03 absorbs known seed and binning noise from
+iter-46). Outside this band — including a value that is
+"close" but only 0.13 or 0.25 — counts as **plumbing
+drift**, not "close enough", and triggers a wiring fix
+before calibration. The 0.047 random-baseline floor is
+explicitly rejected as a pass: the control fails if the
+metric is silent. **Do not** pivot architecture (branch B)
+on a silently-broken or drifting metric pipeline.
 
 This control was the gap iter-50 surfaced retrospectively
 (`selectivity_index` was structurally meaningless in the
@@ -165,18 +192,22 @@ no-teacher path). iter-63 closes it pre-emptively.
 
 ## Run command sequence
 
+The seed list `42,7,13,99` is used position-by-position in
+both arms. Calibration and main differ in `--mode` only.
+
 ```sh
 # 1. Positive control — verify metric wiring on iter-46
-#    Arm B (known-working).
+#    Arm B (known-working). --mode trained is mandatory.
 cargo run --release -p eval --example reward_benchmark -- \
-  --target-overlap-bench --iter46-baseline \
-  --seeds 42 --epochs 16
-# Acceptance: trained target_top3_overlap ≈ 0.19 (iter-46 / 50
-# reading). If silent, fix plumbing first.
+  --target-overlap-bench --mode trained \
+  --iter46-baseline --seeds 42 --epochs 16
+# Acceptance band: trained target_top3_overlap ∈ [0.16, 0.22].
+# Outside ⇒ plumbing drift, fix wiring before step 2.
 
 # 2. Calibration — untrained baseline on DG + recall-mode.
+#    --mode untrained enforces no_plasticity = true.
 cargo run --release -p eval --example reward_benchmark -- \
-  --target-overlap-bench --no-plasticity \
+  --target-overlap-bench --mode untrained \
   --seeds 42,7,13,99 --epochs 32 \
   --decorrelated-init --teacher-forcing \
   --target-clamp-strength 500 --teacher-ms 40 \
@@ -185,9 +216,10 @@ cargo run --release -p eval --example reward_benchmark -- \
 # Lock acceptance_threshold = max(+0.05, μ + 2σ).
 # COMMIT this note with the locked number before step 3.
 
-# 3. Main — trained arm at the same configuration.
+# 3. Main — trained arm at the same configuration, same
+#    seed list in the same order (paired t requires it).
 cargo run --release -p eval --example reward_benchmark -- \
-  --target-overlap-bench \
+  --target-overlap-bench --mode trained \
   --seeds 42,7,13,99 --epochs 32 \
   --decorrelated-init --teacher-forcing \
   --target-clamp-strength 500 --teacher-ms 40 \
@@ -199,21 +231,44 @@ cargo run --release -p eval --example reward_benchmark -- \
 
 - New CLI flag: `--target-overlap-bench` parallel to
   `--jaccard-bench`. Mutually exclusive at the parser level.
+- **Required companion flag**: `--mode <untrained|trained>`.
+  No implicit code path. `--target-overlap-bench` *requires*
+  `--mode`; missing or other values fail the parser. This
+  prevents the iter-50-style "wrong-arm-by-accident" class
+  of bugs.
+  - `--mode untrained` enforces `no_plasticity = true` and
+    is the only legal way to compute the calibration baseline.
+  - `--mode trained` enforces `no_plasticity = false` +
+    `recall_mode_eval = true` and is the only legal way to
+    compute the trained main-run value.
+- **Seed handling**: `--seeds` is parsed once and the same
+  list is used for both arms in a sweep. The trained main
+  run **must** be invoked with a `--seeds` list that is a
+  superset (typically equal) of the calibration list, in
+  the same order. Code-level assertion: when both
+  `target_overlap_trained.json` and
+  `target_overlap_untrained.json` artefacts exist for a
+  rendering call, their seed lists must match position-by-
+  position; otherwise `render_target_overlap_sweep` panics
+  with "paired-seed invariant violated".
 - New public surface in `crates/eval/src/reward_bench.rs`:
-  - `TargetOverlapMetrics { per_seed: Vec<f32>, mean: f32,
-    std: f32 }`
-  - `run_target_overlap_arm(brain, cfg) ->
+  - `TargetOverlapMetrics { mode: ArmMode, seeds: Vec<u64>,
+    per_seed: Vec<f32>, mean: f32, std: f32 }` — `seeds`
+    carried so the paired-seed invariant can be checked.
+  - `enum ArmMode { Untrained, Trained }`.
+  - `run_target_overlap_arm(brain, cfg, mode) ->
     TargetOverlapMetrics` — re-uses iter-46 / 52 logic from
     `RewardEpochMetrics::target_top3_overlap` on the
     DG-enabled brain.
   - `render_target_overlap_sweep(trained, untrained,
     threshold) -> String` — markdown summary with
-    per-seed table + paired t(3).
+    per-seed table + paired t(3); panics if the
+    paired-seed invariant is violated.
 - L2 bit-identity invariant continues to apply on the
   trained-arm eval phase whenever `recall_mode_eval` is on.
 - `--iter46-baseline` flag (already exists from iter-50)
-  routes through `--target-overlap-bench` for the positive
-  control.
+  routes through `--target-overlap-bench --mode trained`
+  for the positive control.
 
 Estimated effort:
 
