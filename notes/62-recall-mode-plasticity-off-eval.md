@@ -151,19 +151,18 @@ positive (+0.001) but the magnitude is at the noise floor.
 
 ## Floor distribution diagnosis
 
-Standalone `--jaccard-floor-diagnosis --plasticity-off-during-
-eval` run with the same seeds was started in parallel; at
-write-time of this note the second run is still progressing
-(2 of 4 seeds done — seeds 42 and 7 both confirmed
-same=1.000 + cross=0.027 / 0.029, recall-mode active and L2
-bit-identical). The bench-side per-seed table above carries
-the full verdict; the floor diagnosis is a confirmation of
-the cross-seed averaged per-pair distribution and top-10
-high-overlap pairs under recall-mode. Expected: the iter-61
-distribution (median 0.000, p95 0.10, max 0.275) holds
-within ±0.005 — recall-mode shifts the absolute floor by
-+0.002 in aggregate so the distribution-level shift should
-be similarly small.
+A standalone `--jaccard-floor-diagnosis --plasticity-off-during-
+eval` run with the same seeds was launched in parallel with the
+bench. The bench-side per-seed table above carries the full
+recall-mode verdict; the floor diagnosis serves as an independent
+confirmation that the L2 invariant and same-cue stability hold in
+the second eval path (the per-pair distribution + top-N + cue-
+frequency render). Expectation at write-time: iter-61's
+distribution (median 0.000, p95 0.10, max 0.275) holds within
+±0.005 — recall-mode shifts the absolute floor by +0.002 in
+aggregate so the distribution-level shift should be similarly
+small. **Result: confirmed, see "Addendum: floor diagnosis path
+confirmation" below.**
 
 ## Recall-mode stability result
 
@@ -314,6 +313,78 @@ Most are already implemented in `RewardEpochMetrics` from
 iter-46 and just need re-wiring on the DG path. Keep iter-62
 narrow: only recall-mode here. iter-63 = re-introduce the
 direct metric.
+
+## Addendum: floor diagnosis path confirmation
+
+The standalone floor-diagnosis sweep (started in parallel with
+the bench, see *Floor distribution diagnosis* section above)
+completed for all four seeds. Raw artefact preserved at
+`/tmp/iter62-recall-floor.log`. Run command identical to the
+floor-diagnosis line in the *Run command* section.
+
+**Per-seed floor result (vocab=64 + DG + recall-mode, ep32):**
+
+| Seed | same | cross | n_pairs |
+| ---: | ---: | ---: | ---: |
+| 42 | **1.000** | 0.027 ± 0.076 | 2016 |
+|  7 | **1.000** | 0.029 ± 0.076 | 2016 |
+| 13 | **1.000** | 0.030 ± 0.080 | 2016 |
+| 99 | **1.000** | 0.027 ± 0.078 | 2016 |
+
+`[iter-62 floor] seed=N recall-mode: every plasticity rule
+disabled before eval` printed for each seed; the L2 bit-identity
+assertion held on every floor-arm too — no plasticity path
+escaped the gate in the second eval path either.
+
+**Cross-seed averaged per-pair distribution:**
+
+| min | p25 | median | p75 | p90 | p95 | max |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.000 | 0.000 | 0.000 | 0.050 | 0.100 | 0.100 | 0.300 |
+
+Compared to the chain so far: iter-58 max = 1.000 (geometric
+collisions on short cues, vocab=64, no DG); iter-61 max = 0.275
+(DG + plasticity ON during eval); iter-62 max = 0.300 (DG +
+recall-mode). The recall-mode floor is ~iter-61 + 0.002 in
+aggregate (0.026 ± 0.001 → 0.028 ± 0.001) and ~+0.025 at the
+extreme tail — a thin worst-case widening, not a regime shift.
+Median per-pair stays at 0.000.
+
+**Top high-overlap pair:** `optional` / `scala` at 0.300
+(cross-seed averaged Jaccard).
+
+**Cue promiscuity:** `fortran` is the most promiscuous cue,
+13 of 63 possible partners ≥ 0.10 — followed by `cobol` /
+`haskell` (10 each) and `block` / `coroutine` / `cpp` /
+`dynamic` / `elixir` / `include` / `julia` / `lambda` /
+`tuple` / `typescript` / `zig` (9 each). The "long tail" of
+high-overlap partners is concentrated on a small set of
+short / morphologically-shared cues, consistent with
+iter-58's encoder-collision sub-effect.
+
+**Interpretation.**
+
+- **Recall-mode is now confirmed in both the normal benchmark
+  path *and* the floor diagnosis path.** Same-cue = 1.000 on
+  4/4 seeds in the floor render (independent of the
+  `run_jaccard_arm` path). The earlier in-flight observation
+  (seed 42 floor = 0.961 from a stale binary, before the floor
+  recall-mode plumbing was rebuilt) was *not* the final iter-
+  62 behavior; it was a binary-staleness artefact. The
+  rebuilt floor binary reproduces the bench-side recall-mode
+  invariant exactly.
+- **The remaining measurable imperfection is the cross-cue
+  residual floor (≈ 0.028), not same-cue recall.** Recall-mode
+  has fully solved the iter-61 stability question; the
+  Jaccard cross-cue metric is now operating purely against
+  the geometric / encoder-collision floor that iter-58 first
+  surfaced.
+- **iter-63's framing is unchanged:** the residual issue is
+  cross-cue promiscuity / encoder-collision tail, which
+  Jaccard cannot resolve — the path forward is the direct
+  cue → target metric on the DG-enabled brain (canonical-
+  target top-k, target rank, MRR, correct-minus-incorrect),
+  not further work on Jaccard itself.
 
 ## Files touched
 

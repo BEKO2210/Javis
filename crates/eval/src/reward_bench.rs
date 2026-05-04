@@ -293,7 +293,7 @@ pub struct JaccardSweepResult {
 
 /// Iter-58 per-cue-pair Jaccard sample. One entry per
 /// `(cue_a, cue_b)` pair with `i < j` in the vocab order, plus
-/// the post-burn-in trial[1] decoded top-3 sets so the floor-
+/// the post-burn-in trial\[1\] decoded top-3 sets so the floor-
 /// diagnosis can spot encoder collisions ("which cues share
 /// most of their top-3 lists").
 #[derive(Debug, Clone)]
