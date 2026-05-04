@@ -4,6 +4,49 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 62 (recall-mode: plasticity-off-during-eval)
+
+iter-61 closed the iter-60 DG separation question and isolated
+the new construction site: same-cue erodes on 2 of 4 seeds,
+eval-drift L2 +0.9 to +4.6 (10×–100× the no-DG baseline),
+including a sign-flip on seed 13. The mechanistic reading:
+under DG the cue-driven R2 traffic is denser, so the same
+eval-time plasticity rate eats more of the engram per trial.
+iter-62 tests this hypothesis directly: disable every plasticity
+rule between training and the jaccard-matrix eval phase. If
+the iter-61 erosion is recall-time drift, recall-mode
+eliminates it; if not, the erosion is encoded in the trained
+weights themselves.
+
+### Added — single commit (code prep + final results)
+
+- `TeacherForcingConfig.recall_mode_eval: bool` (default false).
+- `run_jaccard_arm`: when `recall_mode_eval && !no_plasticity`,
+  call `disable_stdp / disable_istdp / disable_homeostasis /
+  disable_intrinsic_plasticity / disable_reward_learning /
+  disable_metaplasticity / disable_heterosynaptic /
+  disable_structural` on R2 between training and eval. Pre-eval
+  and post-eval L2 norms must match bit-for-bit (asserted).
+- `run_jaccard_floor_diagnosis`: same protocol mirrored.
+- CLI: `--plasticity-off-during-eval`, `--recall-mode-eval`
+  (alias). Build / clippy / 10 tests still green.
+
+### Verified — 4 seeds × 32 epochs at vocab=64 + DG + recall-mode
+
+<!-- @CHANGELOG_PER_SEED@ -->
+
+### Aggregate
+
+<!-- @CHANGELOG_AGGREGATE@ -->
+
+### Honest reading
+
+<!-- @CHANGELOG_HONEST_READING@ -->
+
+### Methodological lesson
+
+<!-- @CHANGELOG_LESSON@ -->
+
 ## Unreleased — Iteration 61 (DG-bridge full replication)
 
 iter-60's DG smoke (2 seeds × 16 epochs) collapsed the
