@@ -84,6 +84,13 @@ fn main() {
     // Any positive value rebuilds R2 at the requested size.
     let r2_n: u32 = parse_arg(&args, "--r2-n", 0_u32);
 
+    // Iter-62 recall-mode: when set, every plasticity rule is
+    // disabled between training and the jaccard-matrix eval phase.
+    // Training itself is unchanged. The eval-phase L2 invariant
+    // is then re-asserted (pre / post bit-identical).
+    let recall_mode_eval =
+        flag(&args, "--plasticity-off-during-eval") || flag(&args, "--recall-mode-eval");
+
     // Iter-60: DG pattern-separation bridge. `--dg-bridge` adds a
     // third region (DG) with per-cue k-of-n hashed SDRs and a
     // sparse mossy-fibre-style projection to R2. The direct
@@ -161,6 +168,7 @@ fn main() {
         gated_ramp_epochs: 2,
         iter46_baseline,
         no_plasticity,
+        recall_mode_eval,
         decorrelated_init,
         r2_n,
         dg: DgConfig {
