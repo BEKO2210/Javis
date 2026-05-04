@@ -39,9 +39,19 @@ metric and a calibrated threshold.
 > `target_top3_overlap`, by a margin large enough to exceed
 > noise from the geometric floor.
 
-`target_top3_overlap` = mean over the vocab of |R2_top3(cue)
-∩ canonical_target_SDR(cue)| / 3, where canonical_target_SDR
-is the iter-46 target encoding for the cue's pair partner.
+`target_top3_overlap` is operationally identical to iter-46's
+existing `prediction_top3_before_teacher` metric: the fraction
+of real-pair prediction-phase trials whose top-k decoded R2
+response contained **any** neuron from the cue's
+canonical-target SDR (`canonical_target_r2_sdr` in
+`reward_bench.rs`). Re-using the iter-46 metric verbatim — and
+exposing it through new `--target-overlap-bench --mode <X>`
+plumbing — is what makes the positive-control band [0.16,
+0.22] meaningful: that band is calibrated to iter-46 / iter-50's
+reading of `prediction_top3_before_teacher ≈ 0.19`. A
+different metric (granular overlap fraction, target rank,
+MRR) would require a re-calibrated band and is out of
+scope for iter-63.
 
 **One metric. One comparison. No top-1 side-eye, no MRR
 peek, no per-pair sub-analysis.** This is the iter-50 / 51

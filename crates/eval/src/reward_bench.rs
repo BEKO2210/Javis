@@ -4224,6 +4224,317 @@ fn evaluate_with_dict(
     (in_top1, in_top3)
 }
 
+// =====================================================================
+// Iter-63 — direct cue → target metric on the DG-enabled brain.
+//
+// Pre-registered single metric (per `notes/63-cue-target-metric.md`):
+// `target_top3_overlap` is operationally identical to iter-46's
+// `prediction_top3_before_teacher` — the fraction of real-pair
+// prediction-phase trials whose top-k contained any neuron from the
+// canonical-target SDR. The new wiring exposes that same number on
+// a DG-enabled brain through an explicit `--mode {untrained,trained}`
+// CLI surface and a paired-seed renderer.
+// =====================================================================
+
+/// Iter-63 explicit arm selector. The CLI requires `--mode <X>`; no
+/// implicit code path exists. Untrained ⇒ `no_plasticity = true`,
+/// trained ⇒ `no_plasticity = false`. The asymmetric defaults from
+/// iter-52 (`--no-plasticity` flag flipping the bit) made the
+/// iter-50 "wrong-arm-by-accident" class of bug possible; iter-63
+/// forces the operator to state the arm out loud.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmMode {
+    Untrained,
+    Trained,
+}
+
+impl ArmMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            ArmMode::Untrained => "untrained",
+            ArmMode::Trained => "trained",
+        }
+    }
+}
+
+/// Iter-63 target_top3_overlap result for a single arm. The `seeds`
+/// vector is preserved verbatim so the paired-seed invariant in
+/// [`render_target_overlap_sweep`] can verify position-by-position
+/// equality across arms (paired t(n−1) on independently-drawn seed
+/// lists is structurally invalid).
+#[derive(Debug, Clone)]
+pub struct TargetOverlapMetrics {
+    pub mode: ArmMode,
+    pub seeds: Vec<u64>,
+    pub per_seed: Vec<f32>,
+    pub mean: f32,
+    pub std: f32,
+}
+
+impl TargetOverlapMetrics {
+    fn new(mode: ArmMode, seeds: Vec<u64>, per_seed: Vec<f32>) -> Self {
+        let n = per_seed.len();
+        let mean = if n == 0 {
+            0.0
+        } else {
+            per_seed.iter().sum::<f32>() / n as f32
+        };
+        let std = if n > 1 {
+            let var = per_seed.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / (n - 1) as f32;
+            var.sqrt()
+        } else {
+            0.0
+        };
+        Self {
+            mode,
+            seeds,
+            per_seed,
+            mean,
+            std,
+        }
+    }
+}
+
+/// Iter-63 single-arm runner. For each seed, runs the iter-46
+/// teacher-forcing schedule via [`run_reward_benchmark`] and reads
+/// the *last* epoch's `prediction_top3_before_teacher` as the
+/// per-seed `target_top3_overlap`. The metric is computed during
+/// the prediction phase with `plasticity_during_prediction = false`
+/// (iter-46 default) — measurements are read-only by construction;
+/// no extra recall-mode plumbing is required at this level.
+///
+/// Mode invariants are asserted: untrained requires
+/// `no_plasticity = true`, trained requires plasticity enabled.
+/// `cfg.teacher.enabled` must be true (the metric is undefined
+/// without the teacher schedule).
+pub fn run_target_overlap_arm(
+    corpus: &RewardCorpus,
+    cfg: &RewardConfig,
+    seeds: &[u64],
+    mode: ArmMode,
+) -> TargetOverlapMetrics {
+    assert!(
+        cfg.teacher.enabled,
+        "iter-63 target_top3_overlap requires --teacher-forcing (teacher schedule \
+         is the source of prediction_top3_before_teacher)"
+    );
+    match mode {
+        ArmMode::Untrained => assert!(
+            cfg.teacher.no_plasticity,
+            "iter-63 --mode untrained requires no_plasticity = true (operational \
+             definition (a) per ENTRY note: fresh init weights, no plasticity \
+             ever applied)"
+        ),
+        ArmMode::Trained => assert!(
+            !cfg.teacher.no_plasticity,
+            "iter-63 --mode trained requires plasticity enabled (no_plasticity \
+             = false)"
+        ),
+    }
+    assert!(
+        !seeds.is_empty(),
+        "iter-63 target_top3_overlap requires at least one seed"
+    );
+
+    let mut per_seed: Vec<f32> = Vec::with_capacity(seeds.len());
+    for &seed in seeds {
+        let mut cfg_seeded = *cfg;
+        cfg_seeded.seed = seed;
+        if matches!(mode, ArmMode::Untrained) {
+            // Untrained is deterministic per seed (no plasticity ⇒ no
+            // weight updates between epochs). Reward gating off so
+            // dopamine never enters the schedule.
+            cfg_seeded.use_reward = false;
+            cfg_seeded.epochs = cfg_seeded.epochs.max(1);
+        } else {
+            assert!(
+                cfg_seeded.epochs > 0,
+                "iter-63 trained mode requires --epochs > 0"
+            );
+        }
+        let metrics = run_reward_benchmark(corpus, &cfg_seeded);
+        let value = metrics
+            .last()
+            .map(|m| m.prediction_top3_before_teacher)
+            .unwrap_or(0.0);
+        eprintln!(
+            "[iter-63 {arm}] seed={seed} target_top3_overlap={value:.4} \
+             (epochs={ep}, vocab={vocab}, dg={dg})",
+            arm = mode.label(),
+            ep = cfg_seeded.epochs,
+            vocab = corpus.vocab.len(),
+            dg = cfg_seeded.teacher.dg.enabled,
+        );
+        per_seed.push(value);
+    }
+    TargetOverlapMetrics::new(mode, seeds.to_vec(), per_seed)
+}
+
+/// One-sided critical-t value at α=0.05 for the small-n cases iter-63
+/// and the canonical iter-65 escalations need. Falls back to the
+/// asymptotic z=1.96 for unsupported df. Lookup, not interpolation —
+/// keeps the verdict deterministic and inspectable.
+fn t_critical_05(df: usize) -> f32 {
+    match df {
+        1 => 6.314,
+        2 => 2.920,
+        3 => 2.353,
+        4 => 2.132,
+        5 => 2.015,
+        6 => 1.943,
+        7 => 1.895,
+        8 => 1.860,
+        9 => 1.833,
+        10 => 1.812,
+        15 => 1.753,
+        20 => 1.725,
+        30 => 1.697,
+        _ => 1.96,
+    }
+}
+
+/// One-sided critical-t value at α=0.15. Used by the iter-63 (C)
+/// branch — Δ > 0 on ≥ 3/4 seeds plus 0.05 ≤ p < 0.15 ⇒ underpowered
+/// at n=4, escalate to more seeds.
+fn t_critical_15(df: usize) -> f32 {
+    match df {
+        1 => 1.963,
+        2 => 1.386,
+        3 => 1.250,
+        4 => 1.190,
+        5 => 1.156,
+        6 => 1.134,
+        7 => 1.119,
+        8 => 1.108,
+        9 => 1.100,
+        10 => 1.093,
+        15 => 1.074,
+        20 => 1.064,
+        30 => 1.055,
+        _ => 1.04,
+    }
+}
+
+/// Iter-63 paired renderer. Asserts the paired-seed invariant
+/// (untrained.seeds == trained.seeds, position-by-position) and
+/// emits a markdown block with the per-seed table, paired t(n−1),
+/// and the locked branching verdict from the iter-63 ENTRY note.
+///
+/// Verdict logic (per the ENTRY's pre-registered branching matrix):
+/// - **(A)** Δ ≥ threshold on **all** seeds AND `t > t_crit(0.05)`.
+/// - **(B)** Δ < 0 on any seed, OR n_pos ≤ n/2, OR any condition not
+///   covered by (A) / (C). Edge cases collapse here.
+/// - **(C)** n_pos ≥ ⌈3n/4⌉ AND `t > t_crit(0.15)` AND `t ≤
+///   t_crit(0.05)` (underpowered, escalate seeds).
+pub fn render_target_overlap_sweep(
+    untrained: &TargetOverlapMetrics,
+    trained: &TargetOverlapMetrics,
+    threshold: f32,
+) -> String {
+    assert!(
+        matches!(untrained.mode, ArmMode::Untrained),
+        "render_target_overlap_sweep: first argument must be ArmMode::Untrained"
+    );
+    assert!(
+        matches!(trained.mode, ArmMode::Trained),
+        "render_target_overlap_sweep: second argument must be ArmMode::Trained"
+    );
+    assert_eq!(
+        untrained.seeds, trained.seeds,
+        "iter-63 paired-seed invariant violated: untrained seeds {:?} vs \
+         trained seeds {:?}. Paired t(n−1) requires position-by-position \
+         identical seed lists; independently-drawn lists are structurally \
+         invalid for paired analysis.",
+        untrained.seeds, trained.seeds,
+    );
+
+    let n = untrained.seeds.len();
+    let deltas: Vec<f32> = trained
+        .per_seed
+        .iter()
+        .zip(untrained.per_seed.iter())
+        .map(|(t, u)| t - u)
+        .collect();
+    let n_pos = deltas.iter().filter(|&&d| d > 0.0).count();
+    let n_pass = deltas.iter().filter(|&&d| d >= threshold).count();
+    let mean_d = if n == 0 {
+        0.0
+    } else {
+        deltas.iter().sum::<f32>() / n as f32
+    };
+    let sd_d = if n > 1 {
+        let v = deltas.iter().map(|d| (d - mean_d).powi(2)).sum::<f32>() / (n - 1) as f32;
+        v.sqrt()
+    } else {
+        0.0
+    };
+    let df = n.saturating_sub(1);
+    let t_stat = if sd_d > 0.0 {
+        mean_d / (sd_d / (n as f32).sqrt())
+    } else if mean_d > 0.0 {
+        f32::INFINITY
+    } else if mean_d < 0.0 {
+        f32::NEG_INFINITY
+    } else {
+        0.0
+    };
+    let t_c05 = t_critical_05(df);
+    let t_c15 = t_critical_15(df);
+    let p_lt_05 = t_stat > t_c05;
+    let p_lt_15 = t_stat > t_c15;
+
+    // Three-way verdict per ENTRY note. (B) is the catch-all so any
+    // edge case lands there, never silently in (A) or (C).
+    let three_quarters = n.saturating_mul(3).div_ceil(4);
+    let branch = if n_pass == n && p_lt_05 {
+        "(A) PASS — Δ ≥ threshold on n/n seeds AND p < 0.05. iter-64 entry: \
+         CA3/CA1 split on the verified DG read-out."
+    } else if mean_d < 0.0 || n_pos <= n / 2 {
+        "(B) FAIL — Δ negative or directional support on ≤ n/2 seeds. \
+         iter-64 entry: mechanism question first (DG→R2 lr, R2 recurrent \
+         strength, perforant-path re-introduction)."
+    } else if n_pos >= three_quarters && p_lt_15 && !p_lt_05 {
+        "(C) MIXED — n_pos ≥ ⌈3n/4⌉ AND 0.05 ≤ p < 0.15. iter-64 entry: \
+         more seeds at the same architecture; no escalation."
+    } else {
+        "(B) FAIL — collapse case (per ENTRY: edge cases collapse to B, \
+         not (A) and not (C))."
+    };
+
+    let mut s = String::new();
+    s.push_str("### Iter-63: target_top3_overlap (cue → canonical target SDR)\n\n");
+    s.push_str(&format!(
+        "_n_seeds = {n}, threshold = {threshold:.4} (locked in iter-63 ENTRY note before main run)._\n\n"
+    ));
+    s.push_str("**Per-seed:**\n\n");
+    s.push_str("| Seed | untrained | trained | Δ | Δ ≥ threshold |\n");
+    s.push_str("| ---: | ---: | ---: | ---: | :---: |\n");
+    for (i, &d) in deltas.iter().enumerate() {
+        s.push_str(&format!(
+            "| {} | {:.4} | {:.4} | {:+.4} | {} |\n",
+            untrained.seeds[i],
+            untrained.per_seed[i],
+            trained.per_seed[i],
+            d,
+            if d >= threshold { "✓" } else { "✗" },
+        ));
+    }
+    s.push('\n');
+    s.push_str(&format!(
+        "**Aggregate:** μ_untrained = {:.4} ± {:.4}, μ_trained = {:.4} ± {:.4}, \
+         Δ = {:+.4} ± {:.4}, n_pos = {}/{}, n_pass = {}/{}.\n\n",
+        untrained.mean, untrained.std, trained.mean, trained.std, mean_d, sd_d, n_pos, n, n_pass, n,
+    ));
+    s.push_str(&format!(
+        "**Paired t(df={df}):** t = {t_stat:+.3}, t_crit(α=0.05) = {t_c05:.3}, \
+         t_crit(α=0.15) = {t_c15:.3}. p < 0.05 ⇒ {}, p < 0.15 ⇒ {}.\n\n",
+        if p_lt_05 { "✓" } else { "✗" },
+        if p_lt_15 { "✓" } else { "✗" },
+    ));
+    s.push_str(&format!("**Branching verdict:** {branch}\n"));
+    s
+}
+
 /// Render the per-epoch table as a single Markdown block — useful
 /// for pasting into release notes. Includes the iter-46
 /// diagnostics (clamp hit rate, prediction-before-teacher,

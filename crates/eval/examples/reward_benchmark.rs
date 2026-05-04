@@ -18,8 +18,9 @@ use std::time::Instant;
 
 use eval::{
     default_reward_corpus, default_reward_corpus_v64, render_jaccard_floor_diagnosis,
-    render_jaccard_sweep, render_reward_markdown, run_determinism_smoke, run_jaccard_bench,
-    run_jaccard_floor_diagnosis, run_postmortem_diagnostic, run_reward_benchmark, DgConfig,
+    render_jaccard_sweep, render_reward_markdown, render_target_overlap_sweep,
+    run_determinism_smoke, run_jaccard_bench, run_jaccard_floor_diagnosis,
+    run_postmortem_diagnostic, run_reward_benchmark, run_target_overlap_arm, ArmMode, DgConfig,
     Iter49Mode, RewardConfig, TeacherForcingConfig,
 };
 
@@ -289,6 +290,231 @@ fn main() {
             "{}",
             render_jaccard_floor_diagnosis(&reports, threshold, top_n),
         );
+        return;
+    }
+
+    // Iter-63 cue→target metric on DG-enabled brain. Pre-registered
+    // single metric `target_top3_overlap` = iter-46's
+    // `prediction_top3_before_teacher`. CLI surface deliberately
+    // makes mode explicit (--mode <untrained|trained>) so the
+    // iter-50-style "wrong-arm-by-accident" bug class is impossible.
+    //
+    // - `--mode untrained` runs the untrained calibration arm and
+    //   prints per-seed + μ + σ + suggested threshold = max(0.05,
+    //   μ + 2σ). The user copies the threshold into
+    //   `notes/63-cue-target-metric.md` and commits before the
+    //   main run.
+    // - `--mode trained --threshold T` runs the trained arm, then
+    //   re-runs the untrained arm internally with identical seed
+    //   list (deterministic given seed; paired-seed invariant
+    //   asserted in the renderer), and prints the full paired
+    //   sweep + paired t(n−1) + locked branching verdict at
+    //   threshold T.
+    // - `--mode trained --iter46-baseline` (no --threshold) is
+    //   the positive-control path: prints per-seed values + the
+    //   iter-63 ENTRY acceptance band [0.16, 0.22] check. Used
+    //   to verify the new metric wiring reproduces iter-46/50's
+    //   known-working ~0.19 reading before the calibration step.
+    if flag(&args, "--target-overlap-bench") {
+        let seeds_str = parse_string(&args, "--seeds").unwrap_or_else(|| seed.to_string());
+        let seeds: Vec<u64> = seeds_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .collect();
+        if seeds.is_empty() {
+            eprintln!(
+                "--target-overlap-bench: --seeds must contain at least one parseable u64 (got '{seeds_str}')",
+            );
+            std::process::exit(2);
+        }
+        let mode = match parse_string(&args, "--mode").as_deref() {
+            Some("untrained") => ArmMode::Untrained,
+            Some("trained") => ArmMode::Trained,
+            None => {
+                eprintln!(
+                    "--target-overlap-bench: --mode <untrained|trained> is \
+                     required (no implicit code path; see iter-63 ENTRY note).",
+                );
+                std::process::exit(2);
+            }
+            Some(other) => {
+                eprintln!(
+                    "--target-overlap-bench: --mode must be 'untrained' or 'trained' (got '{other}')",
+                );
+                std::process::exit(2);
+            }
+        };
+
+        // For the main-run path (--mode trained, not the iter46-
+        // baseline positive control), --threshold must be present
+        // *before* any compute starts. Pre-registration discipline:
+        // the threshold is locked in notes/63-cue-target-metric.md
+        // by the calibration step; main-run invocations that skip
+        // the lock should fail loudly without burning a sweep.
+        let threshold_main: Option<f32> = if matches!(mode, ArmMode::Trained) && !iter46_baseline {
+            let t: f32 = parse_arg(&args, "--threshold", f32::NAN);
+            if !t.is_finite() {
+                eprintln!(
+                    "--target-overlap-bench --mode trained: --threshold <f32> is \
+                     required for the main run. Run `--mode untrained` first to \
+                     compute μ and σ, lock max(0.05, μ + 2σ) in \
+                     notes/63-cue-target-metric.md, commit, then invoke the main \
+                     run with that threshold value. (Positive-control path with \
+                     --iter46-baseline is exempt and does not need --threshold.)",
+                );
+                std::process::exit(2);
+            }
+            Some(t)
+        } else {
+            None
+        };
+
+        let mut cfg = RewardConfig {
+            epochs,
+            use_reward: true,
+            seed,
+            reps_per_pair: reps,
+            teacher,
+        };
+        // Mode-specific gates applied here so run_target_overlap_arm's
+        // assertions surface configuration mistakes loudly.
+        match mode {
+            ArmMode::Untrained => {
+                cfg.teacher.no_plasticity = true;
+                cfg.use_reward = false;
+            }
+            ArmMode::Trained => {
+                cfg.teacher.no_plasticity = false;
+            }
+        }
+        // Iter-46 metric requires teacher-forcing schedule. Force-
+        // enable so a missing --teacher-forcing flag does not silently
+        // disable the metric.
+        cfg.teacher.enabled = true;
+
+        eprintln!(
+            "[iter-63] target_top3_overlap mode={} seeds={seeds:?} epochs={epochs} \
+             vocab={} dg={} iter46_baseline={iter46_baseline} \
+             decorrelated_init={decorrelated_init} clamp={target_clamp} \
+             teacher_ms={teacher_ms} recall_mode_eval={}",
+            mode.label(),
+            corpus.vocab.len(),
+            cfg.teacher.dg.enabled,
+            cfg.teacher.recall_mode_eval,
+        );
+
+        let arm = run_target_overlap_arm(&corpus, &cfg, &seeds, mode);
+
+        match mode {
+            ArmMode::Untrained => {
+                let suggested = 0.05_f32.max(arm.mean + 2.0 * arm.std);
+                let mut s = String::new();
+                s.push_str("### Iter-63 calibration — untrained baseline\n\n");
+                s.push_str(&format!(
+                    "_n_seeds = {}, vocab = {}, ep = {}, DG = {}, recall-mode = {}_\n\n",
+                    seeds.len(),
+                    corpus.vocab.len(),
+                    epochs,
+                    cfg.teacher.dg.enabled,
+                    cfg.teacher.recall_mode_eval,
+                ));
+                s.push_str("| Seed | target_top3_overlap |\n");
+                s.push_str("| ---: | ---: |\n");
+                for (i, sd) in seeds.iter().enumerate() {
+                    s.push_str(&format!("| {} | {:.4} |\n", sd, arm.per_seed[i]));
+                }
+                s.push('\n');
+                s.push_str(&format!(
+                    "**Aggregate:** μ = {:.4} ± {:.4} (n = {}).\n\n",
+                    arm.mean,
+                    arm.std,
+                    seeds.len(),
+                ));
+                s.push_str(&format!(
+                    "**Suggested threshold = max(0.05, μ + 2σ) = max(0.05, {:.4}) = {:.4}.**\n\n",
+                    arm.mean + 2.0 * arm.std,
+                    suggested,
+                ));
+                s.push_str(
+                    "Lock this number in `notes/63-cue-target-metric.md` *before* \
+                     invoking `--mode trained --threshold <value>` for the main run.\n",
+                );
+                print!("{s}");
+            }
+            ArmMode::Trained => {
+                if iter46_baseline {
+                    // Positive control path: single-arm acceptance against
+                    // the [0.16, 0.22] iter-46/50 band. No threshold, no
+                    // paired sweep — this is a wiring smoke check.
+                    let mut s = String::new();
+                    s.push_str(
+                        "### Iter-63 positive control — iter-46 Arm B baseline through new wiring\n\n",
+                    );
+                    s.push_str(&format!(
+                        "_n_seeds = {}, vocab = {}, ep = {}, iter46_baseline = true._\n\n",
+                        seeds.len(),
+                        corpus.vocab.len(),
+                        epochs,
+                    ));
+                    s.push_str("| Seed | target_top3_overlap | in [0.16, 0.22]? |\n");
+                    s.push_str("| ---: | ---: | :---: |\n");
+                    let mut all_in = true;
+                    for (i, sd) in seeds.iter().enumerate() {
+                        let v = arm.per_seed[i];
+                        let ok = (0.16..=0.22).contains(&v);
+                        if !ok {
+                            all_in = false;
+                        }
+                        s.push_str(&format!(
+                            "| {} | {:.4} | {} |\n",
+                            sd,
+                            v,
+                            if ok { "✓" } else { "✗" },
+                        ));
+                    }
+                    s.push('\n');
+                    s.push_str(&format!(
+                        "**Aggregate:** μ = {:.4} ± {:.4}. Acceptance band [0.16, 0.22] \
+                         (iter-46 / iter-50 reading 0.19 ± 0.03).\n\n",
+                        arm.mean, arm.std,
+                    ));
+                    if all_in {
+                        s.push_str(
+                            "**Verdict: positive control PASSED ✓** — metric wiring \
+                             reproduces iter-46/50 within tolerance. Calibration step \
+                             may proceed.\n",
+                        );
+                    } else {
+                        s.push_str(
+                            "**Verdict: positive control FAILED ✗** — value(s) outside \
+                             [0.16, 0.22] band. This is plumbing drift, not 'close \
+                             enough'. Fix the wiring before running calibration. **Do \
+                             not** pivot architecture (branch B) on a silently-broken \
+                             metric pipeline.\n",
+                        );
+                    }
+                    print!("{s}");
+                } else {
+                    // Main-run path: paired sweep against an internally-
+                    // rerun untrained arm at the same seeds. --threshold
+                    // was validated up-front so we know it is finite
+                    // here.
+                    let threshold = threshold_main.expect(
+                        "threshold_main was validated to be finite for \
+                         --mode trained without --iter46-baseline",
+                    );
+                    let mut cfg_un = cfg;
+                    cfg_un.teacher.no_plasticity = true;
+                    cfg_un.use_reward = false;
+                    let untrained =
+                        run_target_overlap_arm(&corpus, &cfg_un, &seeds, ArmMode::Untrained);
+                    print!(
+                        "{}",
+                        render_target_overlap_sweep(&untrained, &arm, threshold),
+                    );
+                }
+            }
+        }
         return;
     }
 
