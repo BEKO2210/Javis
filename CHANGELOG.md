@@ -135,6 +135,36 @@ amplified that variance. iter-62 disambiguates — the trained
 engram alone is fully stable (same-cue = 1.000); the
 variance was the eval phase, not the training.
 
+### Addendum — floor diagnosis path confirmation
+
+Standalone `--jaccard-floor-diagnosis --plasticity-off-during-
+eval` sweep (4 seeds × 32 epochs, vocab=64 + DG, raw artefact
+at `/tmp/iter62-recall-floor.log`):
+
+| Seed | same | cross | n_pairs |
+| ---: | ---: | ---: | ---: |
+| 42 | **1.000** | 0.027 ± 0.076 | 2016 |
+|  7 | **1.000** | 0.029 ± 0.076 | 2016 |
+| 13 | **1.000** | 0.030 ± 0.080 | 2016 |
+| 99 | **1.000** | 0.027 ± 0.078 | 2016 |
+
+Cross-seed averaged per-pair distribution: median 0.000,
+p95 0.10, max 0.30 (vs iter-58 max 1.000, iter-61 max 0.275).
+Top high-overlap pair `optional` / `scala` 0.300; `fortran`
+most promiscuous (13 of 63 partners ≥ 0.10).
+
+Same-cue = 1.000 reproduces on **4/4 seeds** in the floor
+diagnosis path too — recall-mode invariant holds in both
+eval paths (`run_jaccard_arm` *and*
+`run_jaccard_floor_diagnosis`). The previously observed seed
+42 floor = 0.961 was a stale-binary artefact before the floor
+recall-mode plumbing was rebuilt; the rebuilt binary
+reproduces the bench-side invariant exactly. The remaining
+measurable imperfection is the cross-cue residual floor
+(≈ 0.028), not same-cue recall — the residual issue is
+reframed as cross-cue promiscuity / encoder-collision tail
+for iter-63 to address with a direct cue → target metric.
+
 ## Unreleased — Iteration 61 (DG-bridge full replication)
 
 iter-60's DG smoke (2 seeds × 16 epochs) collapsed the
