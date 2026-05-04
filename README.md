@@ -496,79 +496,122 @@ cargo test --release
 
 ---
 
-## Documentation
+## Iterations
 
-Every iteration is logged in [`notes/`](notes). Each note explains
-**what changed, why, and what was measured**:
+Every iteration is logged in [`notes/`](notes). Each note is a single
+hypothesis, a pre-fixed acceptance criterion, and the measurement that
+either confirms or falsifies it. The chain is the public artefact.
 
-| Note | Topic |
-| --- | --- |
-| 00 | Architecture sketch |
-| 01 | snn-core baseline |
-| 02 | Assembly formation + throughput budget |
-| 03 | E/I balance + sparse adjacency |
-| 04 | Multi-region AER |
-| 05 | Encoder stub |
-| 06 | Pattern completion |
-| 07 | Homeostatic scaling |
-| 08 | Pattern completion with homeostasis |
-| 09 | Decoder |
-| 10 | Multi-concept coexistence |
-| 11 | iSTDP — intrinsic selectivity |
-| 12 | Token-efficiency benchmark |
-| 13 | Live visualisation iter 1 (raster) |
-| 14 | Live visualisation iter 2 (3D brain) |
-| 15 | Live visualisation iter 3 (persistent training) |
-| 16 | Live visualisation iter 4 (Claude API) |
-| 17 | Persistence (snapshots) |
-| 18 | Wikipedia scaling |
-| 19 | Two decode modes |
-| 20 | Bio-inspired optimisations: contextual engrams + BTSP |
-| 21 | Architecture hardening: dead code, bounds checks, lints |
-| 22 | Min-heap pending queue, AMPA/NMDA/GABA channels, zero lints |
-| 23 | Production polish: CI, doc-tests, examples, CHANGELOG |
-| 24 | Structured logging via `tracing` (RUST_LOG, JSON mode, session spans) |
-| 25 | `/health` (liveness) + `/ready` (readiness with brain stats) |
-| 26 | Prometheus metrics: `/metrics` endpoint, counters/histograms/gauges |
-| 27 | Supply-chain hygiene: `cargo-deny` (advisories + licenses + bans + sources) |
-| 28 | MSRV pinned to Rust 1.86, dedicated CI job |
-| 29 | Dependabot (cargo + github-actions, grouped weekly updates) |
-| 30 | `cargo doc -D warnings` as CI gate |
-| 31 | Criterion benchmarks for `Network::step`, `Brain::step`, encode/decode |
-| 32 | Container & deploy: Dockerfile + docker-compose with Prometheus + Grafana |
-| 33 | Docker stack verified end-to-end + snapshot volume |
-| 34 | End-to-end sanity script + Grafana datasource UID fix |
-| 35 | Load test: ~141 recalls/sec sustained, Mutex-serialised, no leak |
-| 36 | Concurrency cap: Semaphore + 503/Retry-After, `JAVIS_MAX_CONCURRENT_SESSIONS` |
-| 37 | Snapshot schema versioning: v2 with metadata, migration chain, v1 backward-compat |
-| 38 | Read-only recall: `Brain::step_immutable` + `RwLock`, 2.5× throughput |
-| 39 | Profile-driven LIF rewrite: pre-summed channel buffer, 1.5× faster step |
-| 40 | Pipeline profile: brain compute is 77 % of recall — not Amdahl-bound yet |
-| 41 | AoS → SoA refactor + WS fire-and-forget: 1.40× pipeline, 2× LIF total |
-| 42 | Validation-at-scale: honest 100-sentence benchmark, FP/FN/recall metrics |
-| 43 | Topology scaling: R2 2 000→10 000, sparser connectivity, retuned iSTDP |
-| 44 | **Breakthrough plasticity stack**: triplet-STDP, R-STDP, BCM metaplasticity, intrinsic plasticity, heterosynaptic norm, structural plasticity, offline replay |
-| 44.1 | Decoder confidence floor (`--decode-threshold`): FP −86%, token reduction +2× |
-| 45 | **Reward-aware pair-association harness**: dopamine + eligibility tag exercised end-to-end, honest "no convergence yet" finding documented |
-| 46 | **Teacher-forcing harness**: R2 target-clamp + 6-phase schedule + R1→R2 gate + anti-causal STDP fix; `clamp = 1.00`, but R1→R2 forward dominance survives — honest diagnosis of next bottleneck |
-| 47a | **Forward-drive scaling + adaptive θ**: INTER_WEIGHT sweep + Diehl-Cook intrinsic plasticity + 5 sparsity metrics; INTER_WEIGHT 1.0 + adaptive θ produces *first* monotone learning signal (target_hit 1.16 → 2.59), but bistability at 0.7 proves k-WTA is necessary for iter-48 |
-| 47a-pm | **Postmortem diagnostics**: 16-epoch saturation test (selectivity *collapses* in epochs 5–15) + per-step cascade trace (oscillatory bursting, NOT onset-burst, early/late ratio 0.97) + θ effect-size measurement (0.05 mV mean, < 0.3 % of 15 mV LIF swing). Reverses iter-48 plan: k-WTA out, **fast iSTDP (Vogels 2011) in** |
-| 48 | **iSTDP-tightening**: `R2_INH_FRAC 0.20→0.30`, `tau_minus 30→8 ms`, `a_plus 0.10→0.30` + new p99 / θ_E / θ_I metrics + `--istdp-during-prediction` A/B flag. Phase 1 smoke (4 ep × 2 configs): **selectivity flipped from −0.045 → +0.0142 stable** for the first time in the chain, `r2_act_mean` in [25, 70] band, no cascade. Acceptance 1.5/3 (selectivity ✅, target_hit/p99 ❌) — paused per protocol, no Phase 2 |
-| 48-sat | **Phase A saturation postmortem**: 16 epochs × both configs, identical trajectory: positive-selectivity *peak* through epochs 1–4 (no iter-44/45/46/47a config ever achieved this), **hard collapse epoch 5**, stable negative −0.008 to −0.012 thereafter. Acceptance 0/3 in both configs ⇒ Postmortem per protocol. Mechanism: **iSTDP cumulative over-inhibition** — distinct from cascade / runaway / θ-overcorrection (w̄ stable, r2_act DROPS at collapse). iter-49 should explore the *under-tuned* side of the boundary (cap w_max, halve a_plus, or activity-gate iSTDP) |
-| 49 | **iSTDP bounds & schedule sweep**: 3 orthogonal axes (WmaxCap, APlusHalf, ActivityGated), 3 distinct failure modes — A never positive (Bekos's 60 %-prior hypothesis falsified), B same collapse epoch with higher peak (+0.0184), C **hyperactivity lock** (`r2_active = 1400` = entire pool fires every trial). 0/3 produce positive learning. **iSTDP is not the primary lever** — the 15× STDP-vs-iSTDP rate asymmetry is the actual bottleneck. iter-50 hypothesis (by elimination): raise STDP `a_plus` 0.020 → 0.060 + `w_max` 0.8 → 2.0 |
-| 50 | **Arm B reproduction (Bekos diagnostic)**: `--iter46-baseline` flag reverts INTER_WEIGHT/R2_INH_FRAC/iSTDP/intrinsic at runtime. Result: **iter-46 Arm B's top-3 = 0.19 reproduces** on current branch code — **3× iter-48's 0.06 with full teacher architecture**. The `selectivity_index` metric (iter-47-49) is structurally meaningless in the no-teacher path (compares arbitrary hash SDR vs unrelated firing); 5 iterations were optimised against the wrong metric. Iter-51 = reductive Arm B parameter study, NOT a-plus sweep, NOT bridge |
-| 51 | **Arm B 16-epoch saturation (the harder read)**: top-3 oscillates 0.06↔0.19 across all 16 epochs, **mean = 0.107** vs random baseline 0.094, 95 % CI `[0.069, 0.145]` includes random — **statistically not distinguishable from chance**. The 0.19 hits in epochs 0/8/9 are noise peaks of a chance-level distribution. Top-1 = 0.00 every epoch. Mean reward 5–10 % less negative than random. **The whole iter-44…50 chain optimised against a baseline never verified to be above chance.** iter-52 = statistical validation (multi-seed + untrained control + trial-to-trial Jaccard), NOT mechanism work |
-| 52 | **Untrained-brain control (`--no-plasticity`)**: gate every `enable_*` plasticity call + L2-norm bit-identity assertion. Sanity assertion immediately caught a **9× weight blowup** in the first run from two un-gated mid-trial enable/disable cycles. After all three gate sites closed: 4 seeds × 16 epochs all bit-identical. Untrained top-3 = **0.039** (95 % CI [−0.008, 0.086]) — significantly *below* random 0.094. Trained vs untrained Δ = **0.068, ≈ 2.2 σ**: plasticity IS doing something. The iter-51 "indistinguishable from chance" reading was too conservative — wrong null. Branch: **Mess-Frage** (decoder bias on fresh brain saturates the metric). iter-53 = decoder-relative readout, NOT new mechanism, NOT parameter sweep |
-| 53 | **Decoder-relative Jaccard (Option B Voll)**: 32-cue × 3-trial matrix with full `brain.reset_state()` between trials (R1 + R2 + cross-region queue + traces, not just R2). Same-cue Jaccard = consistency, cross-cue Jaccard = specificity, Δ-of-Δ = engram formation indicator. Untrained arm (no plasticity, full reset) hits `same_cue_mean = 1.0` exactly (state-reset assertion); trained arm keeps plasticity ON during eval per Bekos's spec, so trial 2 depends on trial 1 *via plasticity, not via membrane state*. Public surface: `JaccardMetrics` / `run_jaccard_bench` / `render_jaccard_sweep` + `--jaccard-bench --seeds N1,N2,…` CLI. Direction caveat: trained same-cue ≤ untrained = 1.0 by construction — read as "how close to 1.0 the trained arm stays under continued plasticity" (engram attractor strength). 4 seeds × 16 epochs sweep: trained same = 0.879 ± 0.039 (engram has moderate attractor strength + plasticity drift, eval-phase L2 +25 to +29); cross-cue **flat at 0.058 ± 0.003 in both arms** (no cue-specificity gain); **Δ-of-Δ = −0.121, FAILED**. iter-54 must address cue-specificity at the architecture or schedule layer (decorrelated initial projections / reward cue-specificity / cue-only schedule via `--association-training-gate-r1r2`), not at the metric layer |
-| 62 | **Recall-mode (plasticity-off-during-eval)**, single-bit intervention. New `--plasticity-off-during-eval` flag (alias `--recall-mode-eval`) disables every plasticity rule (STDP / iSTDP / homeostasis / intrinsic / reward / metaplasticity / heterosynaptic / structural) between training and the jaccard-matrix eval phase; pre/post L2 norms must match bit-for-bit (asserted). Sweep at vocab=64 + DG + recall-mode, 4 seeds × 32 epochs. Per-seed: trained_same went from iter-61's heterogeneous (0.961 / **0.875** / **0.898** / 0.930, 2 of 4 below 0.90) to **1.000 on 4/4 seeds**. Eval-drift L2 went from 0.9–4.6 (with seed 13's sign-flip) to **0 bit-identical on 4/4 seeds**. Cross-cue stayed at the floor (trained 0.028 ± 0.001 vs iter-61's 0.026 ± 0.001 — recall-mode adds ~0.002 to the absolute floor). Δ cross trained-untrained = −0.001 NS — Jaccard is at the geometric floor and no longer measures learning. Per Bekos's iter-63 selector: **branch (A) primary** + **branch (D) secondary**. iter-63 entry: re-wire the iter-46 / 52 direct cue→target metric (canonical-target top-k, target rank, MRR, correct-minus-incorrect) on the DG-enabled brain. Methodological lesson: when a sweep isolates a clean mechanism, the right intervention often has fewer parameters than the wrong one — iter-62 was a single boolean. Headline: **Recall-mode restores same-cue stability; DG separation is now stable under read-only recall** |
-| 61 | **DG-bridge full replication** at 4 seeds × 32 epochs (no new code, just the iter-55/56 lesson applied to iter-60). Cross-cue floor robustly reproduces: per-seed 0.025–0.033, aggregate trained 0.026 ± 0.001, untrained 0.029 ± 0.002 — bit-close to the iter-60 smoke (0.026 / 0.028). Cross-seed averaged per-pair distribution: **median 0.000**, p95 0.10, max 0.275 (vs iter-58's max 1.000). **Δ cross trained-untrained = −0.003, paired t(3) ≈ −2.07, p ≈ 0.13 NS** — Jaccard floor saturated, plasticity adds no measurable cue-specific improvement. Per-seed trained_same: 0.961, **0.875**, **0.898**, 0.930 — **2 of 4 seeds drop below the 0.90 stability threshold**; aggregate (0.916 ± 0.037) hides this with 3× wider std than the smoke. Eval-drift L2: +4.6, +1.6, **−0.9** (sign flip = net depression on seed 13), +3.7. Per Bekos's iter-62 selector: **branch (B) PRIMARY** — DG separates but stability erodes. iter-62 entry: Path 1 plasticity-off-during-eval (recall-mode, branch B prescription) + sub-question direct cue→target metric (top-3 against canonical target — Jaccard floor too low to register plasticity-driven learning). Headline: **DG robustly solves cross-cue separation, but Jaccard no longer measures learning, and same-cue erodes on half the seeds under continued plasticity** |
-| 60 | **DG pattern-separation bridge** (architecture pivot, not capacity). New 3rd region (DG) with k-of-n hashed per-cue SDRs + sparse mossy-fibre-style DG → R2 projection; direct R1 → R2 path scaled to 0.0 (DG sole cue-routing). New CLI: `--dg-bridge --dg-size N --dg-k K --dg-to-r2-fanout F --dg-to-r2-weight W --direct-r1r2-weight-scale S --dg-drive-strength I`. Smoke at vocab=64 c500 ep16 seeds 42,7 with default DG (size=4000, k=80): **untrained cross 0.448 → 0.028 (−94 %)**, **trained cross 0.422 → 0.026 (−94 %)**, **9× lower than iter-54 vocab=32 best of 0.230 at 2× the vocab**. Δ cross trained-untrained collapses to −0.002 — geometry carries the signal, not plasticity. Same-cue drops 1.000 → 0.922 (engram erosion); eval-drift L2 jumps ~100× (+0.04 → +3.3-4.4) — plasticity is now active at eval but eroding rather than building specificity. Per Bekos's iter-61 selector: **branch (A) MASSIVELY confirmed** (trained 0.026 ≪ 0.25-0.30 target), **branch (B) secondary** (Δ trained-untrained tiny). iter-61 entry: full 4-seed × 32-epoch DG replication + isolate cue→target learning task with a different metric (Jaccard floor is now too low for plasticity to register). Methodological lesson: when every training-axis sweep saturates at the same value, the architecture is the lever, not the hyperparameter — biggest single number-move in 14 iterations came from a structural change, not a training sweep |
-| 59 | **R2 capacity scaling for the vocab=64 floor** (no new metric, runtime R2_N override + capacity sweep CLI). Pre-flight ruled out R2_N=16000+ on `R2_N²` recurrent-synapse cost (~120 h+ for ep32 sweep). Sweep at vocab=64 c500 teacher_ms=40 with ep32 (R2=2000 from iter-58, 4 seeds), ep16 (R2=2000 fairness baseline 2 seeds, R2=4000 primary 1 seed), ep4 (R2=8000 smoke 1 seed). At ep16 fixed: Δ cross **deepens 13× from −0.007 (R2=2000) to −0.090 (R2=4000)** but absolute trained_cross only drops 0.04 (0.449 → 0.411), still 0.18 above the vocab=32 best of 0.230. R2=8000 ep4 too undertrained to read. Untrained baseline rises with R2_N (0.448 → 0.501) — KWTA_K=60 over growing R2-E selects an increasingly cue-independent attractor. **Verdict: branch (B) Mixed limit — capacity is *a* limit, not *the* limit.** iter-60 entry: architecture pivot, not "more neurons" — Bekos flagged the Hippocampus / SDM literature (DG/CA3 separation), iter-60 will smoke a DG-like Pattern-Separation bridge. Methodological lesson: the number that matters wasn't trained_cross — it was that Δ deepened 13× while absolute moved 0.04. Plasticity got more room; the read-out floor lives elsewhere |
-| 58 | **Jaccard floor diagnosis — geometry vs plasticity** (no new sweep on training axes; one new diagnostic axis: vocab scaling). Path 1 vocab=32 distribution: smooth and continuous (min 0.000 / median 0.225 / max 0.750), no isolated geometric-collision tail; half the vocab participates in many high-overlap pairs. Path 2 vocab=64: trained cross **rises** to 0.422 ± 0.017 (Δ cross collapses from −0.229 to −0.025, paired t(3) ≈ −2.58 p ≈ 0.08, **NOT significant**); per-pair median shifts +0.20; cue frequency in pairs ≥ 0.30 reaches 92 % of cues; actor/ada/array trio at Jaccard = 1.000 (geometric collision on short 4-letter words). **Direction-of-change verdict: branch (B) PRIMARY architecture floor** — bigger vocab halves block_size (43 → 21 cells/cue), trained_cross *rises* (geometric predicts flat/drop). Branch (C) minor secondary (handful of encoder collisions). New public surface: `JaccardPairSample` / `JaccardFloorReport` / `run_jaccard_floor_diagnosis` / `render_jaccard_floor_diagnosis` / `default_corpus_v64` + CLI flags `--jaccard-floor-diagnosis` / `--corpus-vocab 32\|64` / `--floor-threshold` / `--floor-top-n`. iter-59 entry: real architecture question. Path 3 first as positive control (double R2_N to 4000 → block_size returns to ~62 at vocab=64; ~30 min wallclock). Then Path 1 (learnable / weight-mediated R1→R2) or Path 2 (contrastive iSTDP). Methodological lesson: a saturation ceiling has a direction — find the non-training axis where competing models predict opposite signs of change |
-| 57 | **Phase-length sweep on decorrelated + c500 + ep32** (no new code, three configs × 4 seeds, teacher_ms 40 / 80 / 120): trained cross **non-monotonic** — t40 = 0.230 (replicates iter-56 c500), **t80 = 0.408 catastrophic** (Δ cross collapses from −0.229 to −0.051, 78 % of signal lost; uniformly bad across all 4 seeds), t120 = 0.248 (recovers most of t40; seed 99 t120 = 0.194 is the global best per-seed value across iter-53…57). Mechanism: lead-in formula `(teacher_ms/4).clamp(4,12)` caps at teacher_ms ≥ 48; t80's 1:5.7 lead:clamp ratio pushes iSTDP/homeostasis past stable without enough consolidation to recover, t120's longer consolidation phase re-settles the system. Same-cue stays 1.000 in 12/12 trained arms; eval-drift L2 *decreases* at higher teacher_ms (branch (D) rejected). Per Bekos's iter-58 selector: **branch (C) PRIMARY** (phase-length is sub-effective lever), branch (B) secondary (best aggregate t40 = 0.230 = iter-56 c500 ceiling, no breakthrough). All three training axes (epoch/clamp/phase-length) now saturate near trained cross ~0.20. iter-58 entry = **shift the research question** — geometric vs plastic limit diagnosis (Path 1, ~5 min code) or vocab-scaling stress test (Path 2, ~30 min). Methodological lesson: a 3-point sweep is the minimum for a non-monotonic axis; 2 points would have missed the t80 dip entirely |
-| 56 | **Clamp-strength sweep on decorrelated + ep32** (no new code, three configs × 4 seeds): trained cross 0.272 (c125) → 0.245 (c250) → 0.230 (c500); per-doubling Δ −0.027 then −0.015 (ratio 0.55) ⇒ asymptote ~0.20 combined with iter-55 epoch axis. c250 bit-exactly replicates iter-55 ep32. **c500 has 5× tighter seed std (0.020) vs c125/c250 (0.036/0.041)** — higher clamp flattens the seed distribution. **Half the seeds are non-monotone in clamp**: seed 99's c250 is best with c500 regressing, seed 42's c125 is better than c250. Same-cue stays at 1.000 in 12/12 trained arms (branch δ rejected). Per Bekos's iter-57 selector: **branch (α) magnitude-limited primary**. iter-57 path = Achse C (phase-length tuning, sweep `teacher_ms` 40 → 80, 120 at fixed c500). Methodological lesson: aggregate monotonicity is not seed-level monotonicity — half the seeds break the "higher = better" reading the aggregate alone would set as deployment guidance |
-| 55 | **Epoch sweep on decorrelated + plasticity** (no new code, three configs × 4 seeds): trained cross 0.299 (ep16) → 0.245 (ep32) → 0.229 (ep64); per-doubling Δ −0.054 then −0.016 (ratio 0.30) ⇒ asymptote estimate ~0.21. ep16 bit-exactly replicates iter-54. Per-seed: 42 + 99 keep improving every doubling, 7 plateaus at ep32, **13 regresses at ep64** (0.225 → 0.245), **99 alone breaks same-cue at ep64** (0.984 — first time below 1.0 anywhere in iter-53/54/55). Per Bekos's pre-fixed iter-56 branching matrix: **branch (ii) Saturation primary**, branch (iv) eval-plasticity-still secondary. iter-56 entry = Achse B Clamp-Strength-Sweep; noise-injection / cross-topology = parallel iter-57. Methodological lesson: aggregate Δ-of-Δ rose monotonically (+0.160 → +0.214 → +0.226) which would suggest "keep training", but the per-seed view exposed the ceiling the aggregate hid |
-| 54 | **Hard-decorrelated R1 → R2 init**: `wire_forward_decorrelated` partitions R2-E into vocab-sized disjoint blocks; each R1 cell appearing in *exactly one* cue SDR fans out `FAN_OUT` times into its owner-cue's block, shared cells dropped. Mechanical invariant `assert_decorrelated_disjoint` enforces pairwise-disjoint R2 reach end-to-end — iter-52-style L2-equivalent topology check. `TeacherForcingConfig.decorrelated_init` + `--decorrelated-init` CLI flag (default OFF preserves iter-46/53 random topology). Block math: vocab = 32, R2-E = 1400 ⇒ 43 cells per cue; ~17 unique R1 cells × 12 = 204 connections per cue (vs 12 000 random). 4 seeds × 16 epochs sweep: trained cross = **0.299 ± 0.038** vs untrained 0.459 ± 0.022 → Δ cross = **−0.160, all 4 seeds same direction, paired t(3) ≈ −16, p ≪ 0.001**. Trained same = 1.000 (no attractor erosion; eval-phase L2 drift collapses from iter-53's +25-29 to +0.02-0.25 because the sparser cue-specific drive starves eval-time plasticity). **Δ-of-Δ = +0.160, ACCEPTANCE PASSED**. iter-55 entry per Bekos's branching matrix = M1: keep decorrelation + plasticity combined, sweep training schedule / epochs / target_clamp_strength to amplify the gain |
+> **Latest snapshot (iter-62).** DG bridge solves cue separation
+> (cross-cue 0.026 trained vs 0.029 untrained); recall-mode keeps the
+> engram stable (same-cue = 1.000 on 4/4 seeds, post-eval L2 bit-identical
+> to pre-eval). The Jaccard cross-cue metric is now at the geometric
+> floor; **iter-63** = re-wire the iter-46/52 direct cue→target metric on
+> the DG-enabled brain. → [notes/62](notes/62-recall-mode-plasticity-off-eval.md)
+
+### Phase 0 — Bio foundations · iter 00–19
+
+<details>
+<summary>20 iterations: core SNN, encoder, decoder, viz, persistence</summary>
+
+| # | Topic |
+| ---: | --- |
+| 00 | [Architecture sketch](notes/00-architektur.md) |
+| 01 | [snn-core baseline](notes/01-snn-core-baseline.md) |
+| 02 | [Assembly formation + throughput budget](notes/02-assembly-und-throughput.md) |
+| 03 | [E/I balance + sparse adjacency](notes/03-ei-balance-und-adjazenz.md) |
+| 04 | [Multi-region AER](notes/04-multi-region-aer.md) |
+| 05 | [Encoder stub](notes/05-encoder-stub.md) |
+| 06 | [Pattern completion](notes/06-pattern-completion.md) |
+| 07 | [Homeostatic scaling](notes/07-homeostasis.md) |
+| 08 | [Pattern completion + homeostasis](notes/08-pattern-completion-mit-homeostase.md) |
+| 09 | [Decoder](notes/09-decoder.md) |
+| 10 | [Multi-concept coexistence](notes/10-multi-concept-coexistence.md) |
+| 11 | [iSTDP — intrinsic selectivity](notes/11-istdp-intrinsische-selektivitaet.md) |
+| 12 | [Token-efficiency benchmark](notes/12-token-effizienz.md) |
+| 13 | [Live viz iter 1 (raster)](notes/13-live-viz-iter1.md) |
+| 14 | [Live viz iter 2 (3D brain)](notes/14-live-viz-iter2-3d.md) |
+| 15 | [Live viz iter 3 (persistent training)](notes/15-live-viz-iter3-persistent.md) |
+| 16 | [Live viz iter 4 (Claude API)](notes/16-live-viz-iter4-llm.md) |
+| 17 | [Persistence (snapshots)](notes/17-persistenz.md) |
+| 18 | [Wikipedia scaling](notes/18-wikipedia-skalierung.md) |
+| 19 | [Two decode modes](notes/19-zwei-decode-modi.md) |
+
+</details>
+
+### Phase 1 — Production polish · iter 20–43
+
+<details>
+<summary>24 iterations: hardening, CI, observability, deploy, scaling</summary>
+
+| # | Topic |
+| ---: | --- |
+| 20 | [Bio-inspired optimisations: contextual engrams + BTSP](notes/20-bio-optimierungen.md) |
+| 21 | [Architecture hardening: dead code, bounds checks, lints](notes/21-architektur-haertung.md) |
+| 22 | [Min-heap pending queue, AMPA/NMDA/GABA, zero lints](notes/22-heap-channels-lints.md) |
+| 23 | [Production polish: CI, doc-tests, examples, CHANGELOG](notes/23-production-polish.md) |
+| 24 | [Structured logging via `tracing` (RUST_LOG, JSON, spans)](notes/24-tracing-observability.md) |
+| 25 | [`/health` + `/ready` probes](notes/25-health-readiness-probes.md) |
+| 26 | [Prometheus metrics: `/metrics` endpoint](notes/26-prometheus-metrics.md) |
+| 27 | [Supply-chain hygiene: `cargo-deny`](notes/27-supply-chain-cargo-deny.md) |
+| 28 | [MSRV pinned to Rust 1.86](notes/28-msrv-rust-186.md) |
+| 29 | [Dependabot (cargo + GH-actions, weekly)](notes/29-dependabot.md) |
+| 30 | [`cargo doc -D warnings` as CI gate](notes/30-rustdoc-warnings-as-errors.md) |
+| 31 | [Criterion benchmarks for `step` / encode / decode](notes/31-criterion-benchmarks.md) |
+| 32 | [Container & deploy: Docker + Compose + Prom + Grafana](notes/32-container-deploy.md) |
+| 33 | [Docker stack verified end-to-end + snapshot volume](notes/33-docker-stack-verified.md) |
+| 34 | [End-to-end sanity script + Grafana datasource fix](notes/34-end-to-end-sanity.md) |
+| 35 | [Load test: ~141 recalls/sec sustained, no leak](notes/35-load-test.md) |
+| 36 | [Concurrency cap: Semaphore + 503/Retry-After](notes/36-concurrency-cap.md) |
+| 37 | [Snapshot schema versioning: v2 + migration chain](notes/37-snapshot-versioning.md) |
+| 38 | [Read-only recall: `step_immutable` + `RwLock`, 2.5×](notes/38-read-only-recall.md) |
+| 39 | [Profile-driven LIF rewrite: pre-summed channels, 1.5×](notes/39-profile-and-autovec.md) |
+| 40 | [Pipeline profile: brain compute is 77 % of recall](notes/40-pipeline-profile.md) |
+| 41 | [AoS → SoA + WS fire-and-forget: 1.40× pipeline, 2× LIF](notes/41-aos-to-soa.md) |
+| 42 | [Validation-at-scale: 100-sentence FP/FN/recall benchmark](notes/42-scale-validation.md) |
+| 43 | [Topology scaling: R2 2 000→10 000, sparser, retuned iSTDP](notes/43-topology-scaling.md) |
+
+</details>
+
+### Phase 2 — Associative learning research · iter 44–62
+
+The pair-association track. Each row = one hypothesis, pre-fixed
+acceptance, measurable outcome. Verdict: ✅ pass · ⚠ partial /
+diagnosis · ❌ fail · 🚀 architectural pivot.
+
+| # | Headline | Verdict | Note |
+| ---: | --- | :---: | :---: |
+| 44 | Plasticity stack: triplet-STDP, R-STDP, BCM, intrinsic, heterosynaptic, structural, replay | ✅ landed | [→](notes/44-breakthrough-plasticity.md) |
+| 44.1 | Decoder confidence floor `--decode-threshold`: FP −86 %, token reduction +2× | ✅ | [→](notes/44-breakthrough-plasticity.md) |
+| 45 | Reward harness: dopamine + eligibility tag exercised end-to-end | ⚠ no convergence | [→](notes/45-reward-bench.md) |
+| 46 | Teacher-forcing: 6-phase + R2 clamp + anti-causal STDP fix; clamp = 1.00 | ⚠ R1→R2 dominates | [→](notes/46-teacher-forcing.md) |
+| 47a | Forward-drive sweep + Diehl-Cook θ: first monotone learning signal at INTER_WEIGHT = 1.0 | ⚠ collapses ep ≥ 5 | [→](notes/47a-forward-drive-and-adaptive-threshold.md) |
+| 47a-pm | Postmortem: oscillatory bursts, θ effect 0.05 mV (< 0.3 % of LIF swing) — pivots iter-48 plan | ⚠ diagnosis | [→](notes/47a-postmortem.md) |
+| 48 | iSTDP-tightening (Vogels 2011): selectivity flips +0.014 stable | ⚠ acceptance 1.5/3 | [→](notes/48-istdp-tightening.md) |
+| 48-sat | Phase-A 16-ep saturation: peak ep 1–4, hard collapse ep 5; iSTDP cumulative over-inhibition | ❌ acceptance 0/3 | [→](notes/48-saturation.md) |
+| 49 | iSTDP bounds & schedule sweep (3 axes): 0/3 produce learning | ❌ iSTDP not the lever | [→](notes/49-istdp-bounds-and-schedule.md) |
+| 50 | Arm B reproduction `--iter46-baseline`: `selectivity_index` was wrong metric for 5 iterations | ⚠ measurement bug | [→](notes/50-arm-b-reproduction.md) |
+| 51 | Arm B 16-epoch saturation: top-3 mean 0.107 vs random 0.094, 95 % CI includes random | ❌ chance-level | [→](notes/51-arm-b-saturation.md) |
+| 52 | Untrained control `--no-plasticity`: trained vs untrained Δ = 0.068, ≈ 2.2 σ | ⚠ Mess-Frage | [→](notes/52-untrained-control.md) |
+| 53 | Decoder-relative Jaccard (cross-cue + same-cue + Δ-of-Δ); 4 seeds × 16 ep | ❌ Δ-of-Δ = −0.121 | [→](notes/53-decoder-relative-jaccard.md) |
+| 54 | Hard-decorrelated R1 → R2 init (disjoint blocks per cue); paired t(3) ≈ −16, p ≪ 0.001 | ✅ Δ-of-Δ = +0.160 | [→](notes/54-decorrelated-init.md) |
+| 55 | Epoch sweep 16/32/64: per-doubling Δ −0.054 → −0.016, asymptote ~0.21 | ⚠ saturation | [→](notes/55-epoch-sweep.md) |
+| 56 | Clamp-strength sweep 125/250/500: trained 0.272 → 0.245 → 0.230, 5× tighter std at c500 | ⚠ magnitude-limited | [→](notes/56-clamp-strength.md) |
+| 57 | Phase-length sweep 40/80/120: t40 best, t80 catastrophic, t120 recovers — non-monotone | ⚠ ceiling holds | [→](notes/57-phase-length.md) |
+| 58 | Geometry-vs-plasticity diagnostic: vocab=32 → 64 *raises* trained_cross +0.192 | ✅ architecture floor | [→](notes/58-jaccard-floor-diagnosis.md) |
+| 59 | R2 capacity scaling: Δ deepens 13× (R2 2 000 → 4 000) but absolute floor moves only 0.04 | ⚠ branch-B mixed | [→](notes/59-r2-capacity-scaling.md) |
+| 60 | **DG bridge** (R1 → DG → R2, k-of-n hashed SDRs): trained cross 0.45 → 0.03 (**−94 %**) | 🚀 architecture pivot | [→](notes/60-dg-pattern-separation-bridge.md) |
+| 61 | DG full replication 4 seeds × 32 ep: cross robust; 2/4 seeds erode same-cue (0.875, 0.898) | ⚠ recall instability | [→](notes/61-dg-bridge-full-replication.md) |
+| 62 | Recall-mode `--plasticity-off-during-eval`: same-cue = 1.000 on 4/4 seeds, post-eval L2 bit-identical | ✅ stability solved | [→](notes/62-recall-mode-plasticity-off-eval.md) |
+
+**Where we are.** DG separation is robust under read-only recall.
+The Jaccard cross-cue floor (≈ 0.026) is now geometric, not plastic —
+the metric has done its job and no longer measures cue-specific learning.
+**iter-63** re-introduces the iter-46/52 direct cue → target metric
+(canonical-target top-k overlap, target rank, MRR, correct-minus-
+incorrect) on the DG-enabled brain. Most of the metric machinery
+already exists in `RewardEpochMetrics`; the work is wiring, not
+research.
 
 ---
 
