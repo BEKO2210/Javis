@@ -4,6 +4,137 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 62 (recall-mode: plasticity-off-during-eval)
+
+iter-61 closed the iter-60 DG separation question and isolated
+the new construction site: same-cue erodes on 2 of 4 seeds,
+eval-drift L2 +0.9 to +4.6 (10×–100× the no-DG baseline),
+including a sign-flip on seed 13. The mechanistic reading:
+under DG the cue-driven R2 traffic is denser, so the same
+eval-time plasticity rate eats more of the engram per trial.
+iter-62 tests this hypothesis directly: disable every plasticity
+rule between training and the jaccard-matrix eval phase. If
+the iter-61 erosion is recall-time drift, recall-mode
+eliminates it; if not, the erosion is encoded in the trained
+weights themselves.
+
+### Added — single commit (code prep + final results)
+
+- `TeacherForcingConfig.recall_mode_eval: bool` (default false).
+- `run_jaccard_arm`: when `recall_mode_eval && !no_plasticity`,
+  call `disable_stdp / disable_istdp / disable_homeostasis /
+  disable_intrinsic_plasticity / disable_reward_learning /
+  disable_metaplasticity / disable_heterosynaptic /
+  disable_structural` on R2 between training and eval. Pre-eval
+  and post-eval L2 norms must match bit-for-bit (asserted).
+- `run_jaccard_floor_diagnosis`: same protocol mirrored.
+- CLI: `--plasticity-off-during-eval`, `--recall-mode-eval`
+  (alias). Build / clippy / 10 tests still green.
+
+### Verified — 4 seeds × 32 epochs at vocab=64 + DG + recall-mode
+
+**Per-seed comparison iter-61 (eval plasticity ON) vs
+iter-62 (recall-mode):**
+
+| Seed | iter-61 same | **iter-62 same** | iter-61 eval-drift L2 | **iter-62 eval-drift L2** | iter-61 cross | iter-62 cross |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 0.961 | **1.000** ✓ | +4.60 | **0.000** ✓ | 0.028 | 0.027 |
+|  7 | 0.875 | **1.000** ✓ | +1.65 | **0.000** ✓ | 0.026 | 0.029 |
+| 13 | 0.898 | **1.000** ✓ | −0.89 | **0.000** ✓ | 0.025 | 0.030 |
+| 99 | 0.930 | **1.000** ✓ | +3.73 | **0.000** ✓ | 0.026 | 0.027 |
+
+**Stability is the headline:** every seed went from
+heterogeneous (4/4 below 1.000, 2/4 below 0.90) to **exactly
+1.000** under recall-mode. Eval-drift L2 went from a 0.9–4.6
+range (with seed 13's sign flip) to **bit-identical pre/post
+on all 4 seeds**. The L2 invariant assertion fired on every
+trained arm — no plasticity path leaked through the
+disable_* gates.
+
+### Aggregate
+
+| | iter-58 no-DG | iter-60 smoke | iter-61 DG full | **iter-62 recall-mode** |
+| --- | ---: | ---: | ---: | ---: |
+| Untrained cross | 0.448 | 0.028 | 0.029 ± 0.002 | **0.029 ± 0.002** |
+| Trained cross | 0.422 | 0.026 | 0.026 ± 0.001 | **0.028 ± 0.001** |
+| Δ cross | −0.025 | −0.002 | −0.003 (NS) | **−0.001 (NS)** |
+| Trained same | 1.000 | 0.922 | 0.916 ± 0.037 | **1.000 ± 0.000** |
+| Eval-drift L2 | +0.04 | +3.3–4.4 | −0.9 to +4.6 | **0 (bit-identical, 4/4)** |
+
+iter-62 collapses two iter-61 open numbers to zero (eval-
+drift L2 → 0; Δ same → 0) while keeping cross-cue at the
+same floor.
+
+### Honest reading
+
+**Four separated readings:**
+
+1. **Separation: still robust, ~0.002 higher floor under
+   recall-mode.** Per-seed cross-cue 0.027 / 0.029 / 0.030 /
+   0.027. Aggregate 0.028 ± 0.001 (vs iter-61's 0.026 ± 0.001).
+   Eval-time plasticity in iter-61 was *very slightly* lowering
+   the floor on top of the geometric floor — but at the cost
+   of heterogeneous same-cue erosion. The trade was bad.
+2. **Learning: still invisible at the floor.** Δ cross
+   trained-untrained = −0.001, paired t(3) ≈ −0.6, p ≈ 0.6 NS.
+   Recall-mode does not change this — Jaccard is at the
+   geometric floor and no longer measures plasticity-driven
+   cue-specific learning. Expected branch (D).
+3. **Stability: solved.** All 4 seeds at same-cue = 1.000.
+   The iter-61 erosion (2 of 4 below 0.90) was a recall-
+   time artefact, not a trained-weight property.
+4. **Drift: by construction zero.** L2 bit-identity asserted
+   on every trained arm. iter-52's weight-stability invariant
+   now applies to the trained-arm eval phase whenever recall-
+   mode is on.
+
+**Verdict per Bekos's iter-63 branching matrix:**
+
+  - (A) Recall-mode success: ✓ PRIMARY (4/4 seeds at 1.000;
+    eval-drift bit-identical; cross stays low).
+  - (B) Stabilises same but cross rises: ❌ (cross-cue floor
+    moved by +0.002, within noise).
+  - (C) Recall-mode does not help: ❌ (it fully restored
+    same-cue).
+  - (D) Recall-mode works, learning still invisible: ✓
+    secondary (Δ cross = −0.001 NS, expected at the floor).
+
+**iter-63 entry: branch (A) primary + branch (D) secondary.**
+Recall-mode is the right intervention. The Jaccard cross-cue
+metric has done its job; iter-63 needs a direct cue → target
+metric to register plasticity-driven learning on top of the
+DG geometry. Most candidates already implemented in
+`RewardEpochMetrics` from iter-46 / 52 (canonical-target
+top-k, target rank, MRR, correct-minus-incorrect, per-pair
+target activation) and just need re-wiring on the DG path.
+
+**Headline: Recall-mode restores same-cue stability; DG
+separation is now stable under read-only recall.**
+
+### Methodological lesson
+
+iter-61 surfaced two confounded numbers: same-cue
+heterogeneous (2 of 4 seeds < 0.90) and eval-drift L2 high
+(0.9–4.6). The mechanistic hypothesis — "DG produces denser
+cue-driven R2 activity, so the same eval-time plasticity
+rate eats more engram per trial" — was directly testable
+with one bit: disable plasticity during eval. iter-62 set
+that bit. Same-cue went to 1.000 across all seeds and eval-
+drift to 0 bit-identical, both confirming the hypothesis.
+**The right intervention often has fewer parameters than the
+wrong one — in iter-62 it was a single boolean.** Whenever
+a sweep isolates a clean mechanism, look for the simplest
+one-bit intervention to test it; treat new architecture as a
+last resort.
+
+The corollary: the iter-58 / 59 / 60 / 61 same-cue numbers
+were measuring *recall-time plasticity dynamics* on top of
+the engram, not the engram itself. Under iter-53's
+"plasticity ON during eval" protocol, DG's denser R2 traffic
+amplified that variance. iter-62 disambiguates — the trained
+engram alone is fully stable (same-cue = 1.000); the
+variance was the eval phase, not the training.
+
 ## Unreleased — Iteration 61 (DG-bridge full replication)
 
 iter-60's DG smoke (2 seeds × 16 epochs) collapsed the
@@ -2665,5 +2796,3 @@ For pre-Iteration-8 details, see the corresponding research notes.
 
 Loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Categories used per release: `Added`, `Changed`, `Removed`, `Result`.
-
-- iter-62 (in progress): recall-mode eval flag to disable plasticity during Jaccard evaluation.

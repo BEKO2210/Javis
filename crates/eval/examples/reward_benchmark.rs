@@ -84,6 +84,13 @@ fn main() {
     // Any positive value rebuilds R2 at the requested size.
     let r2_n: u32 = parse_arg(&args, "--r2-n", 0_u32);
 
+    // Iter-62 recall-mode: when set, every plasticity rule is
+    // disabled between training and the jaccard-matrix eval phase.
+    // Training itself is unchanged. The eval-phase L2 invariant
+    // is then re-asserted (pre / post bit-identical).
+    let recall_mode_eval =
+        flag(&args, "--plasticity-off-during-eval") || flag(&args, "--recall-mode-eval");
+
     // Iter-60: DG pattern-separation bridge. `--dg-bridge` adds a
     // third region (DG) with per-cue k-of-n hashed SDRs and a
     // sparse mossy-fibre-style projection to R2. The direct
@@ -96,8 +103,6 @@ fn main() {
     let dg_to_r2_weight: f32 = parse_arg(&args, "--dg-to-r2-weight", 1.0_f32);
     let direct_r1r2_weight_scale: f32 = parse_arg(&args, "--direct-r1r2-weight-scale", 0.0_f32);
     let dg_drive_strength: f32 = parse_arg(&args, "--dg-drive-strength", 200.0_f32);
-    let recall_mode_eval =
-        flag(&args, "--plasticity-off-during-eval") || flag(&args, "--recall-mode-eval");
 
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
@@ -163,6 +168,7 @@ fn main() {
         gated_ramp_epochs: 2,
         iter46_baseline,
         no_plasticity,
+        recall_mode_eval,
         decorrelated_init,
         r2_n,
         dg: DgConfig {
@@ -204,7 +210,6 @@ fn main() {
             seed,
             reps_per_pair: 0,
             teacher: t,
-            eval_plasticity: !recall_mode_eval,
         };
         run_determinism_smoke(&corpus, &cfg);
         return;
@@ -239,7 +244,6 @@ fn main() {
             seed,
             reps_per_pair: reps,
             teacher,
-            eval_plasticity: !recall_mode_eval,
         };
         let sweep = run_jaccard_bench(&corpus, &cfg, &seeds);
         print!("{}", render_jaccard_sweep(&sweep));
@@ -279,7 +283,6 @@ fn main() {
             seed,
             reps_per_pair: reps,
             teacher,
-            eval_plasticity: !recall_mode_eval,
         };
         let reports = run_jaccard_floor_diagnosis(&corpus, &cfg, &seeds);
         print!(
@@ -346,7 +349,6 @@ fn main() {
                 seed,
                 reps_per_pair: reps,
                 teacher: t,
-                eval_plasticity: !recall_mode_eval,
             };
             let t0 = Instant::now();
             let sweep = run_jaccard_bench(&corpus, &cfg, &seeds);
@@ -440,7 +442,6 @@ fn main() {
             seed,
             reps_per_pair: reps,
             teacher: t,
-            eval_plasticity: !recall_mode_eval,
         };
         let _ = run_postmortem_diagnostic(&corpus, &cfg, postmortem_train);
         return;
@@ -477,7 +478,6 @@ fn main() {
                 seed,
                 reps_per_pair: reps,
                 teacher: TeacherForcingConfig::off(),
-                eval_plasticity: !recall_mode_eval,
             },
         );
         eprintln!("  baseline done in {:.1} s", t0.elapsed().as_secs_f32());
@@ -506,7 +506,6 @@ fn main() {
                 seed,
                 reps_per_pair: reps,
                 teacher,
-                eval_plasticity: !recall_mode_eval,
             },
         );
         eprintln!(

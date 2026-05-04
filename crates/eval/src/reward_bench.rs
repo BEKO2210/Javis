@@ -514,6 +514,21 @@ pub struct TeacherForcingConfig {
     /// with `iter46_baseline = true` for the strict iter-46-Arm-B
     /// untrained variant.
     pub no_plasticity: bool,
+    /// Iter-62 recall-mode: when `true`, every plasticity rule
+    /// (STDP, iSTDP, homeostasis, intrinsic, reward learning,
+    /// structural) is disabled *between training and the
+    /// jaccard-matrix eval phase*. Training itself is unchanged.
+    /// The dictionary build + jaccard matrix + every drive after
+    /// training run on a frozen-weight brain. Equivalent in role
+    /// to iter-52's `no_plasticity` but applied only to the eval
+    /// half of the run; the iter-52 L2 bit-identity invariant is
+    /// re-asserted across the eval phase when this is on.
+    ///
+    /// Tests whether the iter-61 trained-same erosion (2 of 4
+    /// seeds < 0.90) and the +/-0.9 to +4.6 eval-drift L2 are
+    /// caused by plasticity acting during recall, or by the
+    /// trained dynamics themselves.
+    pub recall_mode_eval: bool,
     /// Iter-54 hard-decorrelated R1 → R2 wiring. When `true`,
     /// `wire_forward_decorrelated` replaces the standard random
     /// wire-up: each vocab word's R1 SDR cells project *only* into
@@ -591,6 +606,7 @@ impl Default for TeacherForcingConfig {
             gated_ramp_epochs: 2,
             iter46_baseline: false,
             no_plasticity: false,
+            recall_mode_eval: false,
             decorrelated_init: false,
             r2_n: 0,
             dg: DgConfig {
@@ -633,6 +649,7 @@ impl TeacherForcingConfig {
             gated_ramp_epochs: 2,
             iter46_baseline: false,
             no_plasticity: false,
+            recall_mode_eval: false,
             decorrelated_init: false,
             r2_n: 0,
             dg: DgConfig {
@@ -671,11 +688,6 @@ pub struct RewardConfig {
     /// Iter-46 teacher-forcing schedule. Default `off` — the
     /// pre-iter-46 cue+target-through-R1 path is preserved.
     pub teacher: TeacherForcingConfig,
-    /// Iter-62 recall-mode switch: when `false`, the evaluation
-    /// pipeline (dictionary build + Jaccard matrix) runs in read-only
-    /// mode by disabling every plasticity mechanism that can persist
-    /// weight/state changes. Training is unchanged.
-    pub eval_plasticity: bool,
 }
 
 impl RewardConfig {
@@ -686,7 +698,6 @@ impl RewardConfig {
             seed: 42,
             reps_per_pair: 4,
             teacher: TeacherForcingConfig::off(),
-            eval_plasticity: true,
         }
     }
     pub const fn with_reward(epochs: usize) -> Self {
@@ -696,7 +707,6 @@ impl RewardConfig {
             seed: 42,
             reps_per_pair: 4,
             teacher: TeacherForcingConfig::off(),
-            eval_plasticity: true,
         }
     }
     pub const fn with_teacher(epochs: usize) -> Self {
@@ -706,7 +716,6 @@ impl RewardConfig {
             seed: 42,
             reps_per_pair: 4,
             teacher: TeacherForcingConfig::enabled(),
-            eval_plasticity: true,
         }
     }
 }
@@ -3523,19 +3532,26 @@ fn run_jaccard_arm(
         &dg_sdr_map,
     );
 
-    // Iter-62 recall-mode evaluation: optionally force a strict
-    // read-only eval pass so dictionary build + Jaccard probing
-    // cannot mutate persistent weights.
-    if !cfg.eval_plasticity {
-        brain.disable_stdp_all();
-        brain.disable_istdp_all();
-        brain.disable_homeostasis_all();
-        for region in &mut brain.regions {
-            region.network.disable_metaplasticity();
-            region.network.disable_intrinsic_plasticity();
-            region.network.disable_structural();
-            region.network.set_neuromodulator(0.0);
-        }
+    // Iter-62 recall-mode: when --plasticity-off-during-eval is
+    // set on a trained arm, disable every plasticity rule before
+    // the eval phase. Training stays unchanged; only the
+    // dictionary build + jaccard matrix collection run on a
+    // frozen-weight brain. The post-eval L2 invariant below
+    // catches any plasticity path that escaped the gate.
+    let recall_mode_active = cfg.teacher.recall_mode_eval && !no_plasticity;
+    if recall_mode_active {
+        brain.regions[1].network.disable_stdp();
+        brain.regions[1].network.disable_istdp();
+        brain.regions[1].network.disable_homeostasis();
+        brain.regions[1].network.disable_intrinsic_plasticity();
+        brain.regions[1].network.disable_reward_learning();
+        brain.regions[1].network.disable_metaplasticity();
+        brain.regions[1].network.disable_heterosynaptic();
+        brain.regions[1].network.disable_structural();
+        eprintln!(
+            "[iter-62 {arm}] seed={} recall-mode: every plasticity rule disabled before eval (STDP / iSTDP / homeostasis / intrinsic / reward / metaplasticity / heterosynaptic / structural)",
+            cfg.seed,
+        );
     }
 
     let l2_pre_eval = brain_synapse_l2_norms(&brain);
@@ -3570,6 +3586,26 @@ fn run_jaccard_arm(
             identical,
             "iter-53: --no-plasticity arm changed weights (seed={}, arm={arm}). \
              pre={pre_l2:?} post={l2_post_eval:?}",
+            cfg.seed,
+        );
+    } else if recall_mode_active {
+        // Iter-62 recall-mode invariant: with every plasticity rule
+        // disabled before eval, the dictionary build + jaccard
+        // matrix must NOT change synapse weights. Pre-eval and
+        // post-eval L2 norms must match bit-for-bit. Catches any
+        // plasticity path the disable_* calls missed.
+        let identical = l2_pre_eval
+            .iter()
+            .zip(l2_post_eval.iter())
+            .all(|(a, b)| a == b);
+        assert!(
+            identical,
+            "iter-62 recall-mode invariant violated: weights changed during eval (seed={}, arm={arm}). \
+             pre={l2_pre_eval:?} post={l2_post_eval:?}",
+            cfg.seed,
+        );
+        eprintln!(
+            "[iter-62 trained recall-mode] seed={} pre={l2_pre_eval:?} post={l2_post_eval:?} (bit-identical ✓)",
             cfg.seed,
         );
     } else {
@@ -3801,6 +3837,28 @@ pub fn run_jaccard_floor_diagnosis(
             &dg_sdr_map,
         );
 
+        // Iter-62 recall-mode: same protocol as run_jaccard_arm —
+        // freeze every plasticity rule before the eval phase so
+        // the floor-diagnosis numbers come from the post-training
+        // weight state, not from a continuation of training during
+        // recall.
+        let recall_mode_active = cfg_seeded.teacher.recall_mode_eval;
+        let l2_pre_eval = brain_synapse_l2_norms(&brain);
+        if recall_mode_active {
+            brain.regions[1].network.disable_stdp();
+            brain.regions[1].network.disable_istdp();
+            brain.regions[1].network.disable_homeostasis();
+            brain.regions[1].network.disable_intrinsic_plasticity();
+            brain.regions[1].network.disable_reward_learning();
+            brain.regions[1].network.disable_metaplasticity();
+            brain.regions[1].network.disable_heterosynaptic();
+            brain.regions[1].network.disable_structural();
+            eprintln!(
+                "[iter-62 floor] seed={} recall-mode: every plasticity rule disabled before eval",
+                cfg_seeded.seed,
+            );
+        }
+
         let vocab: Vec<String> = corpus.vocab.iter().cloned().collect();
         let dict = build_vocab_dictionary(
             &mut brain,
@@ -3819,6 +3877,20 @@ pub fn run_jaccard_floor_diagnosis(
             &dg_sdr_map,
             cfg_seeded.teacher.dg.drive_strength,
         );
+
+        if recall_mode_active {
+            let l2_post_eval = brain_synapse_l2_norms(&brain);
+            let identical = l2_pre_eval
+                .iter()
+                .zip(l2_post_eval.iter())
+                .all(|(a, b)| a == b);
+            assert!(
+                identical,
+                "iter-62 recall-mode invariant violated in floor diagnosis (seed={}). \
+                 pre={l2_pre_eval:?} post={l2_post_eval:?}",
+                cfg_seeded.seed,
+            );
+        }
 
         eprintln!(
             "[iter-58 floor] seed={} same={:.3}±{:.3} cross={:.3}±{:.3} (n_cues={}, n_pairs={})",
@@ -4292,7 +4364,6 @@ mod tests {
                 // Tiny reps_per_pair so the smoke test stays fast.
                 reps_per_pair: 1,
                 teacher: TeacherForcingConfig::off(),
-                eval_plasticity: true,
             };
             let metrics = run_reward_benchmark(&small, &cfg);
             assert_eq!(metrics.len(), 2);
