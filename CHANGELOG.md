@@ -4,6 +4,125 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 63 (cue → target metric on DG-enabled brain)
+
+iter-62 verified DG separation under read-only recall (same-cue =
+1.000 on 4/4 seeds, post-eval L2 bit-identical), but the Jaccard
+cross-cue metric had hit the geometric floor — it could no longer
+register plasticity-driven cue-specific learning. iter-63 re-wires
+the iter-44/45 decoder-relative `top3_accuracy` metric onto the
+DG-enabled brain through new `--target-overlap-bench` plumbing,
+with single-metric pre-registration, calibrated threshold, and
+explicit branching matrix.
+
+### Plumbing fix (PR #34, merged)
+
+iter-63 v1 caught two bugs of the kind iter-52 was designed to
+prevent. v2 fixes both via a refactor onto shared helpers:
+
+- **Silent wiring gap.** `run_target_overlap_arm` v1 routed through
+  `run_reward_benchmark`, which ignores `decorrelated_init` and
+  `dg.enabled`. Numbers came from a vanilla random-wired non-DG
+  brain even though the diagnostic eprintln spelled out `dg=true`.
+  Fix: new `build_benchmark_brain` helper as the single source of
+  truth for benchmark-brain construction, mirroring the iter-54 /
+  iter-60 wiring exactly. `run_jaccard_arm` and
+  `run_jaccard_floor_diagnosis` are refactored onto the helper,
+  numerically **bit-identical** to pre-refactor (locked by three
+  snapshot tests at seed=42 ep=2 reps=2 across vanilla /
+  decorrelated / decorrelated+DG+recall configs).
+- **iter-52-invariant gap.** The original 5-rule
+  `enable_*` gating in `run_reward_benchmark` left
+  metaplasticity / heterosynaptic / structural / BCM unattended —
+  good enough for iter-52's `epochs=0` untrained jaccard arm,
+  catastrophic for iter-63's `epochs=32` untrained calibration
+  loop (R2-recurrent L2 went 159.87 → 1606.87 in v1).
+  Fix: new `disable_all_plasticity` helper covering all 8 rules,
+  plus a save/restore patch in `run_teacher_trial` that no longer
+  blindly re-enables STDP / iSTDP at the end of prediction and
+  teacher phases. Now respects the externally-disabled state
+  end-to-end.
+
+`run_reward_benchmark` is intentionally NOT refactored — its
+numerics anchor iter-46's 0.19 baseline and iter-51's 0.107 stable
+estimator, both of which iter-63's positive control verified.
+Marked legacy with TODO(iter-64+).
+
+### Pre-measurement correction (single commit, before calibration)
+
+The positive control fired on its first invocation, returning 0.0000
+instead of the expected ~0.19. Diagnosis:
+
+1. **Wrong metric.** v1 read `prediction_top3_before_teacher` (iter-46
+   teacher-schedule SDR-overlap, no calibrated baseline). The iter-46
+   / iter-50 0.19 was actually `top3_accuracy` (iter-44/45 decoder
+   metric, computed in both teacher and non-teacher schedules).
+2. **Wrong aggregation.** Even with `top3_accuracy`, iter-46/50's
+   0.19 was the ep0 peak of an oscillating signal (iter-51 16-epoch
+   mean = 0.107, 95 % CI [0.069, 0.145]). Last-epoch / max readings
+   are not robust against the per-epoch oscillation; mean across all
+   epochs is.
+
+Both corrected pre-measurement: metric switched to
+mean(`top3_accuracy`) over the run's epochs, positive-control band
+recalibrated to `[0.07, 0.15]` (iter-51 stable estimator). Re-run of
+the positive control returned **0.1094 ✓** — within iter-51's CI,
+plumbing verified.
+
+### Calibration — locked threshold 0.0621
+
+Run command: `--target-overlap-bench --mode untrained --seeds
+42,7,13,99 --epochs 32 --decorrelated-init --teacher-forcing
+--target-clamp-strength 500 --teacher-ms 40 --corpus-vocab 64
+--dg-bridge --plasticity-off-during-eval`.
+
+| Seed | `target_top3_overlap` |
+| ---: | ---: |
+| 42 | 0.0127 |
+| 7  | 0.0000 |
+| 13 | 0.0498 |
+| 99 | 0.0156 |
+
+`μ_untrained = 0.0195`, `σ_untrained = 0.0213`. Threshold formula
+`max(0.05, μ + 2σ) = max(0.05, 0.0621) = 0.0621`. The `μ + 2σ` arm
+wins the max — the noise band of the untrained DG-enabled brain is
+wider than the +0.05 floor. Trained arm must beat
+`Δ ≥ 0.0621` on **all four seeds** AND clear `paired t(3) > 2.353
+(one-sided p < 0.05)` for branch (A) PASS.
+
+The untrained mean (0.0195) is below the `3/64 ≈ 0.047` random
+baseline — consistent with DG-bridge geometry: random R1 → DG
+hash + sparse mossy-fibre projection routes cues to R2
+sub-populations the dictionary's fingerprint phase captures but
+that don't align with the canonical target SDR. The trained arm has
+real ground to gain.
+
+iter-52 invariant **held on all 4 seeds** through the 32-epoch
+training loop under `disable_all_plasticity` — the regression-test
+win for the iter-63 plumbing-fix's `run_teacher_trial` save/restore
+patch. Pre-fix, the same calibration run had panicked.
+
+### Next step (iter-63 main run)
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --target-overlap-bench --mode trained --threshold 0.0621 \
+  --seeds 42,7,13,99 --epochs 32 \
+  --decorrelated-init --teacher-forcing \
+  --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval
+```
+
+Branching applied automatically per the locked matrix:
+
+- **(A)** Δ ≥ 0.0621 on 4/4 seeds AND p < 0.05 → iter-64 = CA3/CA1
+  split on verified DG read-out.
+- **(B)** Δ < 0 on any seed OR Δ > 0 on ≤ 2/4 → iter-64 = mechanism
+  question first (DG→R2 lr, R2 recurrent strength, perforant-path).
+- **(C)** Δ > 0 on ≥ 3/4 AND 0.05 ≤ p < 0.15 → more seeds at the
+  same architecture, no escalation.
+- Edge cases collapse to (B).
+
 ## Unreleased — Iteration 62 (recall-mode: plasticity-off-during-eval)
 
 iter-61 closed the iter-60 DG separation question and isolated
