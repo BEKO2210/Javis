@@ -4295,29 +4295,32 @@ impl TargetOverlapMetrics {
     }
 }
 
-/// Iter-63 single-arm runner. For each seed, runs the iter-46
-/// teacher-forcing schedule via [`run_reward_benchmark`] and reads
-/// the *last* epoch's `prediction_top3_before_teacher` as the
-/// per-seed `target_top3_overlap`. The metric is computed during
-/// the prediction phase with `plasticity_during_prediction = false`
-/// (iter-46 default) — measurements are read-only by construction;
-/// no extra recall-mode plumbing is required at this level.
+/// Iter-63 single-arm runner. For each seed, runs the configured
+/// schedule via [`run_reward_benchmark`] and aggregates each epoch's
+/// `top3_accuracy` (iter-44/45 decoder-relative metric — does the
+/// cue-driven R2 response decode to the canonical target word in
+/// the per-epoch dictionary?). The per-seed `target_top3_overlap`
+/// is the **mean of `top3_accuracy` across all epochs** — iter-51
+/// showed iter-46-Arm-B-style brains oscillate per-epoch, so mean
+/// is the stable estimator where last-epoch is not.
+///
+/// Note: `prediction_top3_before_teacher` is *not* the metric
+/// behind iter-63's positive-control band — that's a teacher-
+/// schedule-only SDR-overlap metric without a calibrated baseline.
+/// `top3_accuracy` is the metric iter-46 / iter-50 / iter-51
+/// calibrated 0.19 / 0.107 against. See `notes/63-cue-target-
+/// metric.md` "pre-measurement correction" section.
 ///
 /// Mode invariants are asserted: untrained requires
 /// `no_plasticity = true`, trained requires plasticity enabled.
-/// `cfg.teacher.enabled` must be true (the metric is undefined
-/// without the teacher schedule).
+/// `cfg.teacher.enabled` is left to the caller — `top3_accuracy`
+/// is computed in both teacher and non-teacher schedules.
 pub fn run_target_overlap_arm(
     corpus: &RewardCorpus,
     cfg: &RewardConfig,
     seeds: &[u64],
     mode: ArmMode,
 ) -> TargetOverlapMetrics {
-    assert!(
-        cfg.teacher.enabled,
-        "iter-63 target_top3_overlap requires --teacher-forcing (teacher schedule \
-         is the source of prediction_top3_before_teacher)"
-    );
     match mode {
         ArmMode::Untrained => assert!(
             cfg.teacher.no_plasticity,
@@ -4353,15 +4356,24 @@ pub fn run_target_overlap_arm(
             );
         }
         let metrics = run_reward_benchmark(corpus, &cfg_seeded);
-        let value = metrics
-            .last()
-            .map(|m| m.prediction_top3_before_teacher)
-            .unwrap_or(0.0);
+        // Iter-63 metric (post pre-measurement correction): mean of
+        // iter-44/45 `top3_accuracy` across all epochs. Rationale
+        // documented in notes/63-cue-target-metric.md "pre-measurement
+        // correction" section: the iter-46/50 baseline of 0.19 was
+        // computed with this metric (decoder top-3 vs target word),
+        // not with `prediction_top3_before_teacher` (teacher-schedule
+        // SDR overlap). iter-51 also showed Arm B oscillates per-epoch,
+        // so mean is a stable estimator where last-epoch is not.
+        let value = if metrics.is_empty() {
+            0.0
+        } else {
+            metrics.iter().map(|m| m.top3_accuracy).sum::<f32>() / metrics.len() as f32
+        };
         eprintln!(
             "[iter-63 {arm}] seed={seed} target_top3_overlap={value:.4} \
-             (epochs={ep}, vocab={vocab}, dg={dg})",
+             (mean top3_accuracy over {n_ep} epochs, vocab={vocab}, dg={dg})",
             arm = mode.label(),
-            ep = cfg_seeded.epochs,
+            n_ep = metrics.len(),
             vocab = corpus.vocab.len(),
             dg = cfg_seeded.teacher.dg.enabled,
         );

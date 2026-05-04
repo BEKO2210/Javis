@@ -39,24 +39,88 @@ metric and a calibrated threshold.
 > `target_top3_overlap`, by a margin large enough to exceed
 > noise from the geometric floor.
 
-`target_top3_overlap` is operationally identical to iter-46's
-existing `prediction_top3_before_teacher` metric: the fraction
-of real-pair prediction-phase trials whose top-k decoded R2
-response contained **any** neuron from the cue's
-canonical-target SDR (`canonical_target_r2_sdr` in
-`reward_bench.rs`). Re-using the iter-46 metric verbatim — and
-exposing it through new `--target-overlap-bench --mode <X>`
-plumbing — is what makes the positive-control band [0.16,
-0.22] meaningful: that band is calibrated to iter-46 / iter-50's
-reading of `prediction_top3_before_teacher ≈ 0.19`. A
-different metric (granular overlap fraction, target rank,
-MRR) would require a re-calibrated band and is out of
-scope for iter-63.
+`target_top3_overlap` is the **mean of iter-44/45's
+`top3_accuracy` across all epochs** of the run. `top3_accuracy`
+is the per-epoch decoder-relative metric: at the end of every
+epoch the brain's per-cue R2 response is decoded via the
+per-epoch dictionary, and the cue counts as a hit iff the
+canonical target word is in the decoder's top-3. iter-51
+showed iter-46-Arm-B-style brains oscillate per-epoch (0.06 ↔
+0.19 across 16 epochs); the **mean across epochs** is the
+stable estimator (iter-51 reading: 0.107 ± noise, 95 % CI
+[0.069, 0.145]).
+
+This is the metric iter-46 / iter-50 / iter-51 calibrated
+their baseline against. Reusing it verbatim — exposed through
+the new `--target-overlap-bench --mode <X>` plumbing — is
+what makes the positive-control band meaningful.
+
+**Note on `prediction_top3_before_teacher` (iter-46
+teacher-schedule SDR-overlap metric).** This is a *separate*
+metric from `top3_accuracy` and is **not** what iter-63 uses:
+- It is computed only when `--teacher-forcing` is enabled
+  (per-trial prediction phase, vs canonical target SDR).
+- It has **no calibrated baseline** in the iter-46 / iter-50
+  / iter-51 chain. The 0.19 reading those notes report is
+  `top3_accuracy`, not this metric.
+- iter-63 keeps the field intact in `RewardEpochMetrics` for
+  future iterations that may want to re-calibrate against it.
+  It is *not* the iter-63 read-out.
 
 **One metric. One comparison. No top-1 side-eye, no MRR
 peek, no per-pair sub-analysis.** This is the iter-50 / 51
 lesson: multiple-comparison drift is what produces 5
 iterations against the wrong metric.
+
+## Pre-measurement correction
+
+After committing the iter-63 plumbing, the positive control
+(`--target-overlap-bench --mode trained --iter46-baseline
+--teacher-forcing --seeds 42 --epochs 16`) returned 0.0000 —
+clearly a wiring failure. Diagnosis surfaced two issues:
+
+1. **Wrong metric.** The plumbing read
+   `prediction_top3_before_teacher` (iter-46 teacher-schedule
+   metric, only populated when teacher-forcing is on, no
+   calibrated baseline). The iter-46 / 50 baseline of 0.19
+   was actually `top3_accuracy` (iter-44/45 decoder metric,
+   computed always). Source: `notes/50-arm-b-reproduction.md`
+   line 51 ("CLI omits `--teacher-forcing`"), line 74 (table
+   row showing 0.19 in the top-3 column of `render_markdown`).
+2. **Wrong aggregation.** Even with `top3_accuracy`, the
+   iter-46 / 50 ep0 reading of 0.19 was *peak*, not stable.
+   iter-51's 16-epoch saturation showed Arm B oscillates
+   0.06 ↔ 0.19 with mean = 0.107. Last-epoch or max
+   readings are not robust against the oscillation; mean
+   across all epochs is.
+
+Both points are corrected here, *before* any measurement is
+locked, *before* the calibration step. The corrections are
+documented in this section as an explicit pre-measurement
+adjustment — **not** a post-hoc result adjustment. The
+positive-control gate is exactly the mechanism designed to
+catch this class of bug, and it caught it on the first
+invocation. Pre-registration discipline is preserved: no
+trained-arm data has been peeked at, the threshold formula
+is unchanged, and the branching matrix is unchanged.
+
+Concrete patches applied in the same correction commit:
+
+- `run_target_overlap_arm`: per-seed value =
+  mean(top3_accuracy across all epochs), not last-epoch
+  prediction_top3_before_teacher.
+- Doc comment of `run_target_overlap_arm` updated to spell
+  out the metric and aggregation choice.
+- CLI `--target-overlap-bench` block: dropped the
+  `cfg.teacher.enabled = true` force-set
+  (`top3_accuracy` is independent of the teacher schedule).
+- Positive-control band: **[0.07, 0.15]** (iter-51 stable
+  estimator μ ± noise band), **not** [0.16, 0.22] (iter-46
+  / 50 ep0 peak). The new band brackets iter-51's 95 % CI
+  with a small margin.
+- `prediction_top3_before_teacher`: **kept**, not deleted —
+  flagged here as a separate, currently-uncalibrated metric
+  available for future iterations.
 
 ## Pre-registered acceptance threshold
 
@@ -159,16 +223,24 @@ cargo run --release -p eval --example reward_benchmark -- \
 ```
 
 Acceptance for the positive control: trained
-`target_top3_overlap` on iter-46 Arm B falls within
-**[0.16, 0.22]** (iter-46 / iter-50 reading 0.19 ± 0.03,
-where ±0.03 absorbs known seed and binning noise from
-iter-46). Outside this band — including a value that is
-"close" but only 0.13 or 0.25 — counts as **plumbing
-drift**, not "close enough", and triggers a wiring fix
-before calibration. The 0.047 random-baseline floor is
-explicitly rejected as a pass: the control fails if the
-metric is silent. **Do not** pivot architecture (branch B)
-on a silently-broken or drifting metric pipeline.
+`target_top3_overlap` on iter-46 Arm B (= mean
+top3_accuracy over 16 epochs) falls within **[0.07, 0.15]**
+— iter-51's stable-estimator band (16-epoch mean = 0.107,
+95 % CI [0.069, 0.145], with a small margin to absorb
+seed-level variation). Outside this band — including a
+value that is "close" but only 0.05 or 0.18 — counts as
+**plumbing drift**, not "close enough", and triggers a
+wiring fix before calibration. The 0.047 random-baseline
+floor is explicitly rejected as a pass: the control fails
+if the metric is silent. **Do not** pivot architecture
+(branch B) on a silently-broken or drifting metric
+pipeline.
+
+(Note: the earlier ENTRY draft set this band at [0.16,
+0.22] against the iter-46 ep0 peak of 0.19. That band was
+corrected pre-measurement after the positive-control gate
+caught the metric-definition mismatch — see the
+"Pre-measurement correction" section below.)
 
 This control was the gap iter-50 surfaced retrospectively
 (`selectivity_index` was structurally meaningless in the

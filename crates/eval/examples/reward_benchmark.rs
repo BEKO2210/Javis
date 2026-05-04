@@ -294,10 +294,16 @@ fn main() {
     }
 
     // Iter-63 cue→target metric on DG-enabled brain. Pre-registered
-    // single metric `target_top3_overlap` = iter-46's
-    // `prediction_top3_before_teacher`. CLI surface deliberately
-    // makes mode explicit (--mode <untrained|trained>) so the
-    // iter-50-style "wrong-arm-by-accident" bug class is impossible.
+    // single metric `target_top3_overlap` = mean of iter-44/45's
+    // `top3_accuracy` across all epochs (per-epoch decoder top-3 vs
+    // canonical target word; iter-51 stable estimator). The earlier
+    // ENTRY draft used `prediction_top3_before_teacher` — that was
+    // corrected pre-measurement after the positive-control gate
+    // caught a metric-definition mismatch (see notes/63-cue-target-
+    // metric.md "pre-measurement correction" section). CLI surface
+    // deliberately makes mode explicit (--mode <untrained|trained>)
+    // so the iter-50-style "wrong-arm-by-accident" bug class is
+    // impossible.
     //
     // - `--mode untrained` runs the untrained calibration arm and
     //   prints per-seed + μ + σ + suggested threshold = max(0.05,
@@ -312,9 +318,10 @@ fn main() {
     //   threshold T.
     // - `--mode trained --iter46-baseline` (no --threshold) is
     //   the positive-control path: prints per-seed values + the
-    //   iter-63 ENTRY acceptance band [0.16, 0.22] check. Used
-    //   to verify the new metric wiring reproduces iter-46/50's
-    //   known-working ~0.19 reading before the calibration step.
+    //   iter-63 ENTRY acceptance band [0.07, 0.15] check (iter-51
+    //   stable estimator: mean top3_accuracy over 16 epochs = 0.107,
+    //   95% CI [0.069, 0.145]). Used to verify the new metric wiring
+    //   reproduces iter-51's reading before the calibration step.
     if flag(&args, "--target-overlap-bench") {
         let seeds_str = parse_string(&args, "--seeds").unwrap_or_else(|| seed.to_string());
         let seeds: Vec<u64> = seeds_str
@@ -377,7 +384,11 @@ fn main() {
             teacher,
         };
         // Mode-specific gates applied here so run_target_overlap_arm's
-        // assertions surface configuration mistakes loudly.
+        // assertions surface configuration mistakes loudly. Iter-63
+        // uses `top3_accuracy` (iter-44/45 decoder metric — computed
+        // in both teacher and non-teacher schedules), so we do *not*
+        // force `cfg.teacher.enabled = true`. The caller chooses the
+        // schedule via `--teacher-forcing` exactly as iter-46 / 50 did.
         match mode {
             ArmMode::Untrained => {
                 cfg.teacher.no_plasticity = true;
@@ -387,10 +398,6 @@ fn main() {
                 cfg.teacher.no_plasticity = false;
             }
         }
-        // Iter-46 metric requires teacher-forcing schedule. Force-
-        // enable so a missing --teacher-forcing flag does not silently
-        // disable the metric.
-        cfg.teacher.enabled = true;
 
         eprintln!(
             "[iter-63] target_top3_overlap mode={} seeds={seeds:?} epochs={epochs} \
@@ -444,8 +451,14 @@ fn main() {
             ArmMode::Trained => {
                 if iter46_baseline {
                     // Positive control path: single-arm acceptance against
-                    // the [0.16, 0.22] iter-46/50 band. No threshold, no
-                    // paired sweep — this is a wiring smoke check.
+                    // the [0.07, 0.15] iter-51 stable-estimator band. No
+                    // threshold, no paired sweep — this is a wiring smoke
+                    // check. Band corrected pre-measurement (see notes/
+                    // 63-cue-target-metric.md "pre-measurement correction"
+                    // section): iter-50's ep0 reading was 0.19 but iter-51
+                    // showed Arm B oscillates per-epoch with mean = 0.107
+                    // and 95% CI [0.069, 0.145] over 16 epochs. The mean
+                    // estimator is what `run_target_overlap_arm` returns.
                     let mut s = String::new();
                     s.push_str(
                         "### Iter-63 positive control — iter-46 Arm B baseline through new wiring\n\n",
@@ -456,12 +469,14 @@ fn main() {
                         corpus.vocab.len(),
                         epochs,
                     ));
-                    s.push_str("| Seed | target_top3_overlap | in [0.16, 0.22]? |\n");
+                    s.push_str(
+                        "| Seed | target_top3_overlap (mean top3_accuracy) | in [0.07, 0.15]? |\n",
+                    );
                     s.push_str("| ---: | ---: | :---: |\n");
                     let mut all_in = true;
                     for (i, sd) in seeds.iter().enumerate() {
                         let v = arm.per_seed[i];
-                        let ok = (0.16..=0.22).contains(&v);
+                        let ok = (0.07..=0.15).contains(&v);
                         if !ok {
                             all_in = false;
                         }
@@ -474,20 +489,23 @@ fn main() {
                     }
                     s.push('\n');
                     s.push_str(&format!(
-                        "**Aggregate:** μ = {:.4} ± {:.4}. Acceptance band [0.16, 0.22] \
-                         (iter-46 / iter-50 reading 0.19 ± 0.03).\n\n",
+                        "**Aggregate:** μ = {:.4} ± {:.4}. Acceptance band [0.07, 0.15] \
+                         (iter-51 stable estimator: mean top3_accuracy over 16 epochs = \
+                         0.107, 95% CI [0.069, 0.145]; iter-46 / iter-50 ep0 reading was \
+                         0.19 but per-epoch oscillation makes max-style banding \
+                         non-robust).\n\n",
                         arm.mean, arm.std,
                     ));
                     if all_in {
                         s.push_str(
                             "**Verdict: positive control PASSED ✓** — metric wiring \
-                             reproduces iter-46/50 within tolerance. Calibration step \
-                             may proceed.\n",
+                             reproduces iter-51's stable estimator within tolerance. \
+                             Calibration step may proceed.\n",
                         );
                     } else {
                         s.push_str(
                             "**Verdict: positive control FAILED ✗** — value(s) outside \
-                             [0.16, 0.22] band. This is plumbing drift, not 'close \
+                             [0.07, 0.15] band. This is plumbing drift, not 'close \
                              enough'. Fix the wiring before running calibration. **Do \
                              not** pivot architecture (branch B) on a silently-broken \
                              metric pipeline.\n",
