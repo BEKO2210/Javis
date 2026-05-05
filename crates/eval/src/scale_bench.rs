@@ -145,7 +145,7 @@ impl ScaleReport {
         // Top-5 noisiest queries by FP count, useful for the writeup
         // when we need a concrete cross-bleed example.
         let mut noisy: Vec<&ScaleQueryResult> = self.per_query.iter().collect();
-        noisy.sort_by(|a, b| b.false_positives.len().cmp(&a.false_positives.len()));
+        noisy.sort_by_key(|r| std::cmp::Reverse(r.false_positives.len()));
         let top: Vec<&&ScaleQueryResult> = noisy.iter().take(5).collect();
         if top.iter().any(|r| !r.false_positives.is_empty()) {
             out.push_str("Top-5 cross-bleed examples (most false positives):\n\n");
