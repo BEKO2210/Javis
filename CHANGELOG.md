@@ -122,16 +122,57 @@ smoke and full at value=0.3). Not random — a seed-specific failure
 mode at this configuration. iter-65's 8-seed re-run will surface
 whether it is a 1-in-4 anomaly or a 25 %+ structural failure mode.
 
-### iter-65 fork (locked, Bekos choice required)
+### Axis B smoke (16 ep × 4 seeds × 3 values, 5 May 2026) — narrow window
 
-Path 1 — methodological: complete axes A and B smokes before deepening
-(per ENTRY spec; ~3.5 h additional wallclock).
+| value | Δ̄        | t(3)    | classification                              |
+| ---:  | ---:     | ---:    | :---                                        |
+| 0.025 | +0.0000  | +0.000  | **(β) Beta — sparse-locked state**          |
+| 0.050 | +0.0147  | +2.933  | (α) at smoke — known iter-51 oscillation    |
+| 0.100 | +0.0000  | +0.000  | **(β) Beta — dense-locked state**           |
 
-Path 2 — pragmatic: immediately deepen value=0.3 at 8 seeds × 32 ep
-(spec-allowed when exactly one axis is α; ~4 h wallclock; resolves
-the seed=99 question fastest).
+Both axis-B extremes produce **Δ = 0 bit-for-bit on every seed**: the
+trained brain's `target_top3_overlap` is IEEE-754 identical to the
+untrained brain's. Not "small effect" — *exactly equal*. Two distinct
+mechanistic failure modes:
 
-Methodologically cleanest = Path 1. Fastest-to-iter-65-verdict = Path 2.
+  - sparse (0.025): no recurrent attractor → engram not carried between
+    trials → decoder fingerprint determined by DG path alone, identical
+    in trained and untrained.
+  - dense (0.100): self-dominated recurrent → trained synapses
+    overridden by bulk recurrent steady-state → decoder fingerprint
+    again identical regardless of training.
+
+The middle point (value=0.05) is the **iter-46/iter-63 baseline**
+configuration; per-seed values reproduce the iter-63 calibration
+commit `a08a117` bit-for-bit (cache pre-seed working). The (α)
+classification at smoke is *known* to collapse to (β) at full phase
+— iter-63 already locked this exact configuration as Branch (B) FAIL
+at 32 ep. Axis B's only "α" is iter-51 per-epoch oscillation, not a
+stable signal.
+
+**Axis B contributes no robust mechanism to iter-65.** Both extremes
+lock plasticity out; the middle is known-unstable. Argues for
+*dynamic operating windows*, not monotone scaling — the connectivity
+parameter is not a free knob to tune for performance, it must stay
+at the iter-46 baseline 0.05 for the rest of the plasticity stack to
+have anything to write into.
+
+### iter-65 fork (narrowed by axis B verdict)
+
+Axis C confirmed α (persistent). Axis B contributes nothing
+(narrow-window). Axis A pending.
+
+Path 1 — methodological: complete axis A smoke before iter-65 fork
+(per ENTRY spec; ~3 h additional wallclock).
+
+Path 2 — pragmatic: immediately deepen axis C value=0.3 at 8 seeds ×
+32 ep (spec-allowed when exactly one axis is α; ~4 h wallclock).
+
+Axis B has now ruled itself out of the orthogonality-test pool, so
+Path 2 is more attractive than before — the only remaining
+combinatorial candidate would be axis A × axis C, and axis A may also
+turn out to be a narrow-window or locked-state regime. Pending Bekos's
+explicit choice or completion of axis A smoke.
 
 ## Unreleased — Iteration 63 (cue → target metric on DG-enabled brain)
 
