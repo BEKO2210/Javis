@@ -191,6 +191,89 @@ launched. The calibration commit will be a self-contained
 "iter-63 calibration: lock threshold = X" entry in the
 chain.
 
+### Calibration result — locked
+
+Run on the post-plumbing-fix code (commit `112a469` and its
+ancestors, all on `main` after PR #34 merged). Run command
+exactly as specified in the *Run command sequence* section:
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --target-overlap-bench --mode untrained \
+  --seeds 42,7,13,99 --epochs 32 \
+  --decorrelated-init --teacher-forcing \
+  --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval
+```
+
+Per-seed:
+
+| Seed | `target_top3_overlap` (mean of `top3_accuracy` over 32 epochs) |
+| ---: | ---: |
+| 42 | 0.0127 |
+| 7  | 0.0000 |
+| 13 | 0.0498 |
+| 99 | 0.0156 |
+
+**Aggregate:** `μ_untrained = 0.0195`, `σ_untrained = 0.0213`
+(n = 4, sample std).
+
+**Threshold formula evaluated:**
+
+```text
+acceptance_threshold = max(0.05, μ + 2·σ)
+                     = max(0.05, 0.0195 + 2 · 0.0213)
+                     = max(0.05, 0.0621)
+                     = 0.0621
+```
+
+**Locked threshold for the iter-63 trained main run: `0.0621`.**
+
+The `μ + 2σ` branch wins the max — i.e. the noise band of the
+untrained DG-enabled brain is wider than the +0.05 absolute
+floor would have been. The trained arm must beat
+`Δ = trained_seed − untrained_seed ≥ 0.0621` on **all four
+seeds** AND clear `paired t(3) > 2.353 (one-sided p < 0.05)`
+to satisfy branch (A). Anything weaker collapses to (B) or
+(C) per the branching matrix below.
+
+#### Reading on the untrained baseline
+
+`μ_untrained = 0.0195` is **below** the `3/64 ≈ 0.047`
+random-baseline expectation. That is consistent with the
+DG-bridge architecture: with random R1 → DG hash + sparse
+mossy-fibre projection + recall-mode (no plasticity), an
+untrained brain produces an R2 response whose top-3
+fingerprint mostly does not contain the canonical-target
+SDR cells — the random hash routes cues to disjoint R2
+sub-populations that the dictionary's per-word
+fingerprint phase then captures but in a way that does
+not align with the canonical target. The trained arm has
+real ground to gain (anywhere from 0.062 to ~0.5 if
+plasticity actually maps cue → target through DG → R2).
+
+`σ_untrained = 0.0213` is non-trivial — seed 7 hit 0.000
+and seed 13 hit 0.0498, a 0.05 absolute spread on a small
+metric. The wide band is exactly why the `μ + 2σ` arm of
+the threshold formula matters: a flat +0.05 threshold
+would have been comparable to seed 13's untrained value
+alone. Pre-registered formula prevents that confound.
+
+#### iter-52 invariant on the calibration run
+
+Trained-mode plasticity is `false` for the untrained arm
+(`--mode untrained` enforces `no_plasticity = true`); the
+iter-63 v2 runner (`run_target_overlap_arm` post
+plumbing-fix) calls `disable_all_plasticity` at the top
+of each seed's run, then asserts `assert_no_weight_drift`
+after the 32-epoch loop. The assertion **passed on all 4
+seeds** — no plasticity path leaked through, the weights
+the eval-time decoder saw were identical to the freshly
+initialised weights. This is the regression-test win from
+the iter-63 plumbing-fix's `run_teacher_trial`
+save/restore patch: pre-fix, the same calibration run
+panicked with R2-recurrent L2 159.87 → 1606.87.
+
 ## Pre-registered branching matrix
 
 After the trained run completes, exactly one branch applies:
