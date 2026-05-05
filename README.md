@@ -502,16 +502,19 @@ Every iteration is logged in [`notes/`](notes). Each note is a single
 hypothesis, a pre-fixed acceptance criterion, and the measurement that
 either confirms or falsifies it. The chain is the public artefact.
 
-> **Latest snapshot (iter-64, in flight).** iter-63 closed Branch (B)
-> FAIL: 32 ep of full plasticity on the DG-enabled brain produced no
-> measurable cue→target learning signal (`Δ̄ = −0.0027 ± 0.0300`,
-> `t(3) = −0.179`, `n_pass = 0/4`). iter-64 isolates **three diagnostic
-> axes** — `dg_to_r2_weight` (A), `r2_p_connect` (B),
-> `direct_r1r2_weight_scale` (C) — and classifies each per-value as α/β/γ/δ
-> against an iter-63-derived noise band. Axis-C smoke (16 ep × 4 seeds)
-> hit two α points: `value=0.0` (iter-51 oscillation, expected) and
-> **`value=0.3` (perforant-path sweet-spot, seed 7 wakes up)**. Full-phase
-> 32 ep run on `value=0.3` is currently confirming whether α persists.
+> **Latest snapshot (iter-64, axis C confirmed).** iter-63 closed
+> Branch (B) FAIL on the DG-only configuration (`Δ̄ = −0.0027`,
+> `t(3) = −0.179`, `n_pass = 0/4`). iter-64 axis C
+> (`direct_r1r2_weight_scale` — perforant-path re-introduction) found
+> **a persistent α at `value=0.3`**: smoke (16 ep) `Δ̄ = +0.0190` and full
+> (32 ep) `Δ̄ = +0.0164`, both with `n_pos = 3/4` and `t(3) > 0`. Three
+> seeds learn (seed=42, 7, 13); seed=99 is a deterministic negative
+> outlier across both phases. The headline contrast: DG-alone (`value=0.0`)
+> shows α at smoke and **collapses to iter-63 Branch (B) at full** —
+> classic iter-51 oscillation. **30 % perforant + DG holds α through
+> both phases** — the perforant-path mechanism hypothesis is provisionally
+> confirmed. iter-65 fork (Path 1: complete axes A + B first / Path 2:
+> immediate 8-seed deepen at `value=0.3`) awaiting Bekos's choice.
 > → [notes/64](notes/64-mechanism-diagnosis.md), [notes/63](notes/63-cue-target-metric.md)
 
 ### Phase 0 — Bio foundations · iter 00–19
@@ -609,7 +612,7 @@ diagnosis · ❌ fail · 🚀 architectural pivot.
 | 61 | DG full replication 4 seeds × 32 ep: cross robust; 2/4 seeds erode same-cue (0.875, 0.898) | ⚠ recall instability | [→](notes/61-dg-bridge-full-replication.md) |
 | 62 | Recall-mode `--plasticity-off-during-eval`: same-cue = 1.000 on 4/4 seeds, post-eval L2 bit-identical | ✅ stability solved | [→](notes/62-recall-mode-plasticity-off-eval.md) |
 | 63 | Direct cue→target metric on DG brain: `target_top3_overlap` mean across epochs, threshold = `max(0.05, μ + 2σ) = 0.0621` locked from calibration | ❌ Branch (B) FAIL · Δ̄ = −0.003, t(3) = −0.18 | [→](notes/63-cue-target-metric.md) |
-| 64 | Mechanism diagnosis (3 axes, isolated): pre-registered α/β/γ/δ per-value classification against `σ_untrained_iter63 = 0.0213` band. Axis C smoke α at `value=0.3`, full-phase verification in flight | ⏳ in flight · axis C smoke 2α/2β | [→](notes/64-mechanism-diagnosis.md) |
+| 64 | Mechanism diagnosis (3 axes, isolated): pre-registered α/β/γ/δ per-value classification against `σ_untrained_iter63 = 0.0213` band. Axis C `value=0.3` (30 % perforant + DG): α at both smoke (`Δ̄=+0.019`) and full (`Δ̄=+0.016`); persistent across phase change. seed=99 deterministic negative outlier; seed=7 wakes up | ⏳ axes A + B pending · axis C α confirmed | [→](notes/64-mechanism-diagnosis.md) |
 
 **Where we are.** iter-63 closed the Jaccard chain by re-introducing
 the iter-44/45 decoder-relative `top3_accuracy` on the DG-enabled brain,
