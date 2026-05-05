@@ -17,11 +17,12 @@
 use std::time::Instant;
 
 use eval::{
-    default_reward_corpus, default_reward_corpus_v64, render_jaccard_floor_diagnosis,
-    render_jaccard_sweep, render_reward_markdown, render_target_overlap_sweep,
-    run_determinism_smoke, run_jaccard_bench, run_jaccard_floor_diagnosis,
-    run_postmortem_diagnostic, run_reward_benchmark, run_target_overlap_arm, ArmMode, DgConfig,
-    Iter49Mode, RewardConfig, TeacherForcingConfig,
+    default_reward_corpus, default_reward_corpus_v64, render_axis_sweep,
+    render_jaccard_floor_diagnosis, render_jaccard_sweep, render_reward_markdown,
+    render_target_overlap_sweep, run_axis_sweep, run_determinism_smoke, run_jaccard_bench,
+    run_jaccard_floor_diagnosis, run_postmortem_diagnostic, run_reward_benchmark,
+    run_target_overlap_arm, ArmMode, DgConfig, Iter49Mode, RewardConfig, SweepAxis,
+    TeacherForcingConfig,
 };
 
 fn main() {
@@ -199,6 +200,31 @@ fn main() {
             std::process::exit(2);
         }
     };
+
+    // Iter-64 mutual-exclusion guard: the bench-mode flags below all
+    // claim main() and return; passing more than one is almost
+    // certainly a CLI mistake. Earlier iterations relied on
+    // first-flag-wins ordering, which silently dropped later flags.
+    // Iter-64 fails loudly so the operator sees the conflict.
+    let bench_modes_present: Vec<&str> = [
+        "--determinism-smoke",
+        "--jaccard-bench",
+        "--jaccard-floor-diagnosis",
+        "--target-overlap-bench",
+        "--axis-sweep",
+        "--r2-capacity-sweep",
+        "--debug-cascade",
+    ]
+    .into_iter()
+    .filter(|name| flag(&args, name) || parse_string(&args, name).is_some())
+    .collect();
+    if bench_modes_present.len() > 1 {
+        eprintln!(
+            "iter-64 mutual-exclusion: pick one bench mode at a time. Got: {:?}",
+            bench_modes_present,
+        );
+        std::process::exit(2);
+    }
 
     // Iter-53 determinism smoke (Bekos's pre-implementation gate):
     // bypass everything else, run the 1-cue × 3-trial determinism
@@ -534,6 +560,136 @@ fn main() {
                 }
             }
         }
+        return;
+    }
+
+    // Iter-64 mechanism-diagnosis axis sweep. Three isolated axes
+    // per notes/64-mechanism-diagnosis.md:
+    //   --axis-sweep dg-to-r2-weight        (axis A)
+    //   --axis-sweep r2-p-connect           (axis B)
+    //   --axis-sweep direct-r1r2-weight-scale (axis C)
+    //
+    // Two-phase logic: --axis-sweep-phase smoke = 16 epochs (default),
+    // full = 32 epochs. Explicit `--epochs N` from the user overrides
+    // the phase default.
+    //
+    // Mutually exclusive with --jaccard-bench / --jaccard-floor-
+    // diagnosis / --target-overlap-bench (those return early above);
+    // here we additionally fail loudly if any of them was passed
+    // alongside --axis-sweep.
+    if let Some(axis_arg) = parse_string(&args, "--axis-sweep") {
+        // Mutual-exclusion guard. The earlier blocks already returned
+        // for their own flags; this catches the case where multiple
+        // bench-mode flags are passed simultaneously and we reached
+        // the axis-sweep branch via flag-ordering quirks.
+        for other in [
+            "--jaccard-bench",
+            "--jaccard-floor-diagnosis",
+            "--target-overlap-bench",
+            "--determinism-smoke",
+            "--r2-capacity-sweep",
+        ] {
+            if flag(&args, other) || parse_string(&args, other).is_some() {
+                eprintln!(
+                    "--axis-sweep: cannot be combined with {other}; pick one bench mode at a time."
+                );
+                std::process::exit(2);
+            }
+        }
+
+        let axis = match SweepAxis::parse_cli(&axis_arg) {
+            Some(a) => a,
+            None => {
+                eprintln!(
+                    "--axis-sweep: unknown axis '{axis_arg}'. Allowed: dg-to-r2-weight, \
+                     r2-p-connect, direct-r1r2-weight-scale."
+                );
+                std::process::exit(2);
+            }
+        };
+
+        // Default value lists per axis (notes/64 ENTRY locked).
+        let default_values: &[f32] = match axis {
+            SweepAxis::DgToR2Weight => &[0.1_f32, 0.5, 1.0, 2.0],
+            SweepAxis::R2PConnect => &[0.025_f32, 0.05, 0.10],
+            SweepAxis::DirectR1R2WeightScale => &[0.0_f32, 0.1, 0.3, 1.0],
+        };
+        let values: Vec<f32> = match parse_string(&args, "--values") {
+            Some(s) => {
+                let parsed: Vec<f32> = s
+                    .split(',')
+                    .filter_map(|t| t.trim().parse::<f32>().ok())
+                    .collect();
+                if parsed.is_empty() {
+                    eprintln!("--values: must contain at least one parseable f32 (got '{s}')");
+                    std::process::exit(2);
+                }
+                parsed
+            }
+            None => default_values.to_vec(),
+        };
+
+        let seeds_str = parse_string(&args, "--seeds").unwrap_or_else(|| seed.to_string());
+        let seeds: Vec<u64> = seeds_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .collect();
+        if seeds.is_empty() {
+            eprintln!(
+                "--axis-sweep: --seeds must contain at least one parseable u64 (got '{seeds_str}')",
+            );
+            std::process::exit(2);
+        }
+
+        // Two-phase epoch logic. Default = smoke (16). Explicit
+        // `--epochs` overrides the phase default.
+        let phase_str =
+            parse_string(&args, "--axis-sweep-phase").unwrap_or_else(|| "smoke".to_string());
+        let phase_default_epochs: usize = match phase_str.as_str() {
+            "smoke" => 16,
+            "full" => 32,
+            other => {
+                eprintln!("--axis-sweep-phase: must be 'smoke' or 'full' (got '{other}')");
+                std::process::exit(2);
+            }
+        };
+        // Detect whether the user passed --epochs explicitly. parse_arg
+        // returns the default 4 silently; we re-check the args for the
+        // literal flag to distinguish "user said 4" from "user said
+        // nothing".
+        let epochs_explicit = args.iter().any(|a| a == "--epochs");
+        let epochs_used = if epochs_explicit {
+            epochs
+        } else {
+            phase_default_epochs
+        };
+
+        // The `teacher` config built earlier from the CLI flags
+        // already carries `decorrelated_init`, `dg.enabled`,
+        // `recall_mode_eval`, etc. The axis sweep overrides exactly
+        // one parameter per value via `apply_axis_value` inside
+        // `run_axis_sweep`; everything else stays as configured.
+
+        eprintln!(
+            "[iter-64 axis-sweep] axis={axis} values={values:?} seeds={seeds:?} \
+             phase={phase_str} epochs={epochs_used} (explicit={epochs_explicit}) \
+             vocab={} dg={dg} decorrelated={dec} recall_mode={rec}",
+            corpus.vocab.len(),
+            axis = axis.label(),
+            dg = teacher.dg.enabled,
+            dec = teacher.decorrelated_init,
+            rec = teacher.recall_mode_eval,
+        );
+
+        let cfg = RewardConfig {
+            epochs: epochs_used,
+            use_reward: true,
+            seed,
+            reps_per_pair: reps,
+            teacher,
+        };
+        let result = run_axis_sweep(&corpus, &cfg, &seeds, axis, &values);
+        print!("{}", render_axis_sweep(&result));
         return;
     }
 
