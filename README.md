@@ -502,12 +502,17 @@ Every iteration is logged in [`notes/`](notes). Each note is a single
 hypothesis, a pre-fixed acceptance criterion, and the measurement that
 either confirms or falsifies it. The chain is the public artefact.
 
-> **Latest snapshot (iter-62).** DG bridge solves cue separation
-> (cross-cue 0.026 trained vs 0.029 untrained); recall-mode keeps the
-> engram stable (same-cue = 1.000 on 4/4 seeds, post-eval L2 bit-identical
-> to pre-eval). The Jaccard cross-cue metric is now at the geometric
-> floor; **iter-63** = re-wire the iter-46/52 direct cue→target metric on
-> the DG-enabled brain. → [notes/62](notes/62-recall-mode-plasticity-off-eval.md)
+> **Latest snapshot (iter-64, in flight).** iter-63 closed Branch (B)
+> FAIL: 32 ep of full plasticity on the DG-enabled brain produced no
+> measurable cue→target learning signal (`Δ̄ = −0.0027 ± 0.0300`,
+> `t(3) = −0.179`, `n_pass = 0/4`). iter-64 isolates **three diagnostic
+> axes** — `dg_to_r2_weight` (A), `r2_p_connect` (B),
+> `direct_r1r2_weight_scale` (C) — and classifies each per-value as α/β/γ/δ
+> against an iter-63-derived noise band. Axis-C smoke (16 ep × 4 seeds)
+> hit two α points: `value=0.0` (iter-51 oscillation, expected) and
+> **`value=0.3` (perforant-path sweet-spot, seed 7 wakes up)**. Full-phase
+> 32 ep run on `value=0.3` is currently confirming whether α persists.
+> → [notes/64](notes/64-mechanism-diagnosis.md), [notes/63](notes/63-cue-target-metric.md)
 
 ### Phase 0 — Bio foundations · iter 00–19
 
@@ -573,7 +578,7 @@ either confirms or falsifies it. The chain is the public artefact.
 
 </details>
 
-### Phase 2 — Associative learning research · iter 44–62
+### Phase 2 — Associative learning research · iter 44–64
 
 The pair-association track. Each row = one hypothesis, pre-fixed
 acceptance, measurable outcome. Verdict: ✅ pass · ⚠ partial /
@@ -603,15 +608,32 @@ diagnosis · ❌ fail · 🚀 architectural pivot.
 | 60 | **DG bridge** (R1 → DG → R2, k-of-n hashed SDRs): trained cross 0.45 → 0.03 (**−94 %**) | 🚀 architecture pivot | [→](notes/60-dg-pattern-separation-bridge.md) |
 | 61 | DG full replication 4 seeds × 32 ep: cross robust; 2/4 seeds erode same-cue (0.875, 0.898) | ⚠ recall instability | [→](notes/61-dg-bridge-full-replication.md) |
 | 62 | Recall-mode `--plasticity-off-during-eval`: same-cue = 1.000 on 4/4 seeds, post-eval L2 bit-identical | ✅ stability solved | [→](notes/62-recall-mode-plasticity-off-eval.md) |
+| 63 | Direct cue→target metric on DG brain: `target_top3_overlap` mean across epochs, threshold = `max(0.05, μ + 2σ) = 0.0621` locked from calibration | ❌ Branch (B) FAIL · Δ̄ = −0.003, t(3) = −0.18 | [→](notes/63-cue-target-metric.md) |
+| 64 | Mechanism diagnosis (3 axes, isolated): pre-registered α/β/γ/δ per-value classification against `σ_untrained_iter63 = 0.0213` band. Axis C smoke α at `value=0.3`, full-phase verification in flight | ⏳ in flight · axis C smoke 2α/2β | [→](notes/64-mechanism-diagnosis.md) |
 
-**Where we are.** DG separation is robust under read-only recall.
-The Jaccard cross-cue floor (≈ 0.026) is now geometric, not plastic —
-the metric has done its job and no longer measures cue-specific learning.
-**iter-63** re-introduces the iter-46/52 direct cue → target metric
-(canonical-target top-k overlap, target rank, MRR, correct-minus-
-incorrect) on the DG-enabled brain. Most of the metric machinery
-already exists in `RewardEpochMetrics`; the work is wiring, not
-research.
+**Where we are.** iter-63 closed the Jaccard chain by re-introducing
+the iter-44/45 decoder-relative `top3_accuracy` on the DG-enabled brain,
+calibrating threshold against the untrained baseline (μ_untrained =
+0.0195 ± 0.0213, threshold = 0.0621), and running the trained main
+run at 4 seeds × 32 epochs. Verdict: Branch (B) FAIL. Plasticity
+*does not write* a cue → target signal that the decoder can read
+on the iter-63 configuration. iter-60 (separation) and iter-62
+(recall stability) demonstrably work — what is missing is a measurable
+signal that the *post-DG path maps cue → target*, not just *separates
+cues*.
+
+**iter-64** runs three isolated mechanism-diagnosis axes —
+`dg_to_r2_weight` (DG dominance), `r2_p_connect` (recurrent attractor
+strength), `direct_r1r2_weight_scale` (perforant path re-introduction)
+— each with a per-value α/β/γ/δ classification against the iter-63
+noise band. **Axis C (perforant path) smoke surfaced an α at
+`value=0.3`**: three seeds show meaningful positive Δ (seed=42 = +0.043,
+seed=7 = +0.037, seed=13 = +0.023), with seed=99 the lone outlier.
+The biological reading: a *moderate* perforant path provides a stable
+"raw cue" handle that R2 plasticity can shape into a target-aligned
+engram while DG (mossy fibres) maintains separation. The full-phase
+(32 ep) confirmation run on `value=0.3` is currently in flight; if α
+persists, iter-65 deepens at 8 seeds × 32 ep on this point.
 
 ---
 
