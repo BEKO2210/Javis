@@ -88,17 +88,50 @@ Per-value tally: α=2, β=2, γ=0, δ=0.
   configuration locked Δ̄ = −0.0027 (Branch B FAIL). The α-at-
   smoke pattern is exactly why the two-phase logic exists.
 
-### Next step
+### Axis C full phase on value=0.3 (32 ep × 4 seeds, 5 May 2026) — α confirmed
 
-`value=0.3` full phase (32 ep × 4 seeds) launched after this
-commit to verify the α persists at full epochs. If it does,
-iter-65 = deepen at 8 seeds × 32 ep on this point. If it drops
-to β/γ at 32 ep (following the value=0.0 oscillation pattern),
-the smoke α was artefactual; axis C contributes no robust
-mechanism and iter-64 advances to axis B and axis A smokes
-before the iter-65 fork.
+| value | μ_untrained | μ_trained | Δ̄ | σ_Δ | n_pos | t(3) | classification |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
+| 0.300 | 0.0242 | 0.0405 | +0.0164 | 0.0328 | 3/4 | +0.996 | **(α) Alpha — persistent** |
 
-Result will be appended in the next commit.
+Per-seed smoke vs full:
+
+  seed=42: +0.0430 → +0.0215  ✓ persistent positive
+  seed=7:  +0.0371 → +0.0215  ✓ persistent positive (wakes up at both phases)
+  seed=13: +0.0234 → +0.0508  ✓ persistent positive (doubled, near iter-63 0.0621 threshold)
+  seed=99: −0.0273 → −0.0283  ✗ persistent negative outlier
+
+The α at value=0.3 is **not** an iter-51 oscillation artefact — at 32
+epochs the directional pattern preserves: 3/4 seeds positive, t(3) > 0,
+n_pos = 3/4 ≥ ⌈3·4/4⌉ = 3.
+
+The headline contrast vs value=0.0:
+
+  value=0.0 (DG-only): smoke α (Δ̄=+0.0147, t=+2.93) → full β (Δ̄=−0.0027,
+    t=−0.18). Iter-63 Branch (B) FAIL pattern. Collapses.
+  value=0.3 (30% perforant + DG): smoke α (Δ̄=+0.0190, t=+1.19) → full
+    α (Δ̄=+0.0164, t=+0.996). Holds.
+
+iter-64 ENTRY's third mechanistic hypothesis — "perforant-path
+re-introduction provides a stable raw-cue substrate that R2 plasticity
+can shape into a target-aligned engram while DG (mossy fibres)
+maintains separation" — is provisionally confirmed.
+
+seed=99 is the lone deterministic negative outlier (consistent across
+smoke and full at value=0.3). Not random — a seed-specific failure
+mode at this configuration. iter-65's 8-seed re-run will surface
+whether it is a 1-in-4 anomaly or a 25 %+ structural failure mode.
+
+### iter-65 fork (locked, Bekos choice required)
+
+Path 1 — methodological: complete axes A and B smokes before deepening
+(per ENTRY spec; ~3.5 h additional wallclock).
+
+Path 2 — pragmatic: immediately deepen value=0.3 at 8 seeds × 32 ep
+(spec-allowed when exactly one axis is α; ~4 h wallclock; resolves
+the seed=99 question fastest).
+
+Methodologically cleanest = Path 1. Fastest-to-iter-65-verdict = Path 2.
 
 ## Unreleased — Iteration 63 (cue → target metric on DG-enabled brain)
 

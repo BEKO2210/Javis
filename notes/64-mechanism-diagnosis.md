@@ -431,11 +431,9 @@ be confirmed at 32 ep (full phase) before we trust it.
 value=0.0's α-at-smoke / β-at-full pattern is the cautionary
 proof that smoke-α alone is not a stable verdict.
 
-### Provisional next step (full phase on value=0.3)
+### Axis C full phase on value=0.3 (32 ep × 4 seeds)
 
-Per the iter-64 ENTRY two-phase logic ("16 ep first, full
-32 ep run only for axes/values that classify α or δ at
-smoke"), the next run is:
+Run command:
 
 ```sh
 cargo run --release -p eval --example reward_benchmark -- \
@@ -446,17 +444,122 @@ cargo run --release -p eval --example reward_benchmark -- \
   --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval
 ```
 
-If `value=0.3` retains α at 32 epochs (Δ̄ > 0, n_pos ≥ 3/4,
-t(3) > 0), iter-65 fork: deepen this point at 8 seeds.
+Wallclock: ~2 h on local hardware (4 trained + 4 untrained
+runs at 32 ep, no cache hits — process-local cache empty at
+process start, only iter-63 baseline value=0.0 pre-seeded).
 
-If it drops to β/γ at 32 epochs (i.e. follows the
-value=0.0 oscillation pattern), the smoke α was an
-oscillation artefact, axis C contributes no robust mechanism,
-and iter-64 advances to axis B and axis A smokes before the
-iter-65 fork.
+**Renderer table (full phase, value=0.3):**
 
-The 32-ep full-phase result will be appended to this section
-once the run completes.
+| value | μ_untrained | μ_trained | Δ̄ | σ_Δ | n_pos | n_pass(0.0621) | t(df=3) | classification |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
+| 0.300 | 0.0242 | 0.0405 | +0.0164 | 0.0328 | 3/4 | 0/4 | +0.996 | **(α) Alpha — persistent** |
+
+**Per-seed comparison (smoke vs full):**
+
+| seed | smoke Δ (16 ep) | full Δ (32 ep) | direction stability |
+| ---: | ---: | ---: | :--- |
+| 42 | +0.0430 | +0.0215 | ✓ persistent positive |
+| 7  | +0.0371 | +0.0215 | ✓ persistent positive (seed=7 wakes up at both phases) |
+| 13 | +0.0234 | +0.0508 | ✓ persistent positive (doubled — closer to iter-63 0.0621 threshold) |
+| 99 | −0.0273 | −0.0283 | ✗ persistent negative outlier |
+
+### Mechanistic verdict — α confirmed at full phase
+
+The smoke α at value=0.3 was **not** an iter-51 per-epoch
+oscillation artefact. At 32 epochs the directional pattern
+is preserved: 3/4 seeds clear positive Δ, the negative
+outlier (seed=99) is *deterministic across both phases*
+rather than a phase-of-oscillation artefact, and Δ̄ stays
+above the (β) band (|Δ̄|=0.0164 vs σ_untrained_iter63=0.0213
+— inside the band by magnitude but `n_pos = 3/4` and `t > 0`
+land it at α).
+
+The headline contrast against value=0.0:
+
+| | smoke (16 ep) | full (32 ep) | persistence |
+| --- | --- | --- | :--- |
+| value=0.0 (DG-only) | Δ̄=+0.0147, t=+2.93, α | Δ̄=−0.0027, t=−0.18, β / iter-63 Branch (B) | **collapses** |
+| value=0.3 (perforant + DG) | Δ̄=+0.0190, t=+1.19, α | Δ̄=+0.0164, t=+0.996, α | **holds** |
+
+DG alone (value=0.0) catches an oscillation peak at 16 ep
+that full 32 ep averages out. Adding a 30%-scale perforant
+path (value=0.3) produces a learning signal that does not
+collapse over 32 ep — the iter-64 ENTRY's third
+mechanistic hypothesis ("perforant-path re-introduction
+provides a stable raw-cue substrate that R2 plasticity can
+shape") is **provisionally confirmed**.
+
+### seed=99 — consistent negative outlier
+
+seed=99 is the only seed where the trained brain
+underperforms the untrained brain at value=0.3, *and the
+deficit is consistent across smoke (−0.0273) and full
+(−0.0283)*. This is not random oscillation — it is a
+seed-specific failure mode at this configuration. Possible
+mechanisms:
+
+- The R1 → R2 random wiring at seed=99 happens to align
+  poorly with the DG-mossy-fibre projection at this 30%
+  perforant scale, so plasticity *destroys* the
+  cue-aligned read-out instead of strengthening it.
+- The R2 recurrent attractor at seed=99 builds a
+  cue-orthogonal mode that competes with the
+  decoder-dictionary fingerprint phase.
+
+iter-65's 8-seed re-run will surface whether seed=99 is a
+1-in-4 outlier or a 25 %+ failure mode at value=0.3.
+σ_Δ = 0.0328 (vs σ_untrained_iter63 = 0.0213) flags the
+elevated seed-level variance directly — the smoke + full
+agreement on the rank order means the variance is a
+property of the configuration, not a measurement artefact.
+
+### iter-65 entry per the locked branching matrix
+
+The iter-64 ENTRY's iter-65 fork applies once all three
+axes complete. Strictly:
+
+> Exactly one axis (α) → iter-65 = deepen at 8 seeds × 32 ep
+> at the most promising value, with paired-t power
+> computation. CA3/CA1 still deferred.
+
+Axis C has produced an α at full phase (the only axis with
+data so far). Two equally honest paths from here:
+
+**Path 1 (per the locked spec): complete axes A and B
+smokes first**, then make the iter-65 fork decision based on
+the cross-axis pattern. This preserves the ENTRY's locked
+methodology and avoids early-deepening on what could turn
+out to be the second-best axis. Wallclock cost: ~3.5 h
+(axis A smoke ~2 h, axis B smoke ~1.5 h).
+
+**Path 2 (pragmatic, evidence-driven): immediately deepen
+value=0.3 at 8 seeds × 32 ep**, knowing the spec allows
+this when "exactly one axis (α)" applies. The seed=99
+outlier question is the most informative remaining
+ambiguity at this point; spending the wallclock on
+disambiguating it makes more headline-progress than
+mapping the other two axes. Wallclock cost: ~4 h (8 seeds
+× 32 ep × 2 arms = 16 runs).
+
+The methodologically-cleanest path is **Path 1**. The
+operationally-fastest path to a clear iter-65 verdict is
+**Path 2**.
+
+### What this commit appends
+
+- Full-phase value=0.3 renderer table.
+- Smoke vs full per-seed comparison.
+- Mechanistic verdict (α confirmed; perforant-path
+  hypothesis provisionally validated).
+- Diagnosis on seed=99 as deterministic outlier.
+- iter-65 fork choice (Path 1 vs Path 2) for Bekos's
+  decision.
+
+No goalpost-shift: the locked α threshold was
+`Δ̄ > 0 AND n_pos ≥ ⌈3n/4⌉ AND t > 0`. value=0.3 at full
+satisfies all three (`+0.0164 > 0`, `3/4 ≥ 3`, `+0.996 > 0`).
+The seed-99 outlier is documented as a question for iter-65,
+not as a reason to relax the matrix.
 
 ## Files to write (post-Go, in implementation phase)
 
