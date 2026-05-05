@@ -373,18 +373,70 @@ fn run_javis_recall_inner(corpus: &[&str], query: &str) -> (Vec<u32>, EngramDict
     run_javis_recall_inner_modes(corpus, query, FingerprintMode::Forward)
 }
 
-/// Common backbone for both fingerprint modes. Phases 1–3:
-/// 1. Train R2 on the corpus with full plasticity.
-/// 2. Build the dictionary either by isolated forward fingerprints
-///    (Forward) or by sharing the kWTA pattern of each sentence
-///    across its words (Contextual).
-/// 3. Run the query and return the kWTA-filtered recall indices plus
-///    the trained dictionary.
-fn run_javis_recall_inner_modes(
-    corpus: &[&str],
-    query: &str,
-    mode: FingerprintMode,
-) -> (Vec<u32>, EngramDictionary) {
+/// CI-speedup cache. Phases 1–2 (train + fingerprint dictionary) are
+/// the slow part — on a shared GitHub-Actions runner each run takes
+/// ~30–60 s. The integration tests in `eval/tests/associative_recall.
+/// rs` and `eval/tests/wiki_benchmark.rs` call the pipeline 5 × 5
+/// times, which compounds to multi-hour CI builds. Keying the cache
+/// by `(corpus contents, mode)` lets the per-query phase 3 reuse a
+/// pre-trained brain — Brain is `Clone`, so concurrent `--test-
+/// threads=2` queries each get their own fresh state without
+/// retraining.
+///
+/// The cache is process-local (`OnceLock`) and never invalidated:
+/// the corpora used by the test suite are `&'static`, so contents
+/// never change. Production callers that mutate corpora should
+/// bypass the cache by reaching into the per-call train + fingerprint
+/// path; none currently do.
+#[derive(Clone)]
+struct TrainedCacheEntry {
+    enc: TextEncoder,
+    brain: Brain,
+    dict: EngramDictionary,
+}
+
+fn cache_key(corpus: &[&str], mode: FingerprintMode) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    corpus.len().hash(&mut h);
+    for chunk in corpus {
+        chunk.len().hash(&mut h);
+        chunk.hash(&mut h);
+    }
+    (mode as u8).hash(&mut h);
+    h.finish()
+}
+
+fn cached_trained(corpus: &[&str], mode: FingerprintMode) -> TrainedCacheEntry {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static CACHE: OnceLock<Mutex<HashMap<u64, TrainedCacheEntry>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = cache_key(corpus, mode);
+
+    {
+        let guard = cache.lock().unwrap();
+        if let Some(entry) = guard.get(&key) {
+            return entry.clone();
+        }
+    }
+
+    // Cache miss — train fresh outside the lock so concurrent test
+    // threads don't serialize on one another's training cost. The
+    // first thread to reach the populate step wins; subsequent inserts
+    // are no-ops via `entry().or_insert_with`. Duplicate work is
+    // bounded by the number of test threads (default 2 in CI).
+    let entry = train_fresh(corpus, mode);
+    let mut guard = cache.lock().unwrap();
+    guard.entry(key).or_insert_with(|| entry.clone());
+    entry
+}
+
+/// Train a brain on `corpus` from scratch and build the dictionary.
+/// Phases 1–2 of the pipeline; phase 3 (per-query recall) is what
+/// the caller does on the cloned cache entry.
+fn train_fresh(corpus: &[&str], mode: FingerprintMode) -> TrainedCacheEntry {
     let enc = TextEncoder::with_stopwords(ENC_N, ENC_K, STOPWORDS.iter().copied());
     let vocab = vocabulary(corpus, &enc);
 
@@ -455,7 +507,28 @@ fn run_javis_recall_inner_modes(
         }
     }
 
-    // -------- Phase 3: query recall --------
+    TrainedCacheEntry { enc, brain, dict }
+}
+
+/// Common backbone for both fingerprint modes. Phases 1–3:
+/// 1. Train R2 on the corpus with full plasticity. (cached)
+/// 2. Build the dictionary either by isolated forward fingerprints
+///    (Forward) or by sharing the kWTA pattern of each sentence
+///    across its words (Contextual). (cached)
+/// 3. Run the query and return the kWTA-filtered recall indices plus
+///    the trained dictionary.
+fn run_javis_recall_inner_modes(
+    corpus: &[&str],
+    query: &str,
+    mode: FingerprintMode,
+) -> (Vec<u32>, EngramDictionary) {
+    let TrainedCacheEntry {
+        enc,
+        mut brain,
+        dict,
+    } = cached_trained(corpus, mode);
+
+    // -------- Phase 3: query recall (per-query, not cached) --------
     let query_sdr = enc.encode(query);
     if query_sdr.indices.is_empty() {
         return (Vec::new(), dict);
