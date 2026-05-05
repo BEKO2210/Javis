@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.svg" alt="Javis" width="640">
+<img src="assets/logo-animated.svg" alt="Javis — animated logo with spike pulses propagating from R1 to R2" width="640">
 
 <br/>
 
@@ -11,7 +11,7 @@ retrieves it through pattern completion. Sits between your retrieval layer and
 your LLM, returning a few decoded concepts instead of full document chunks.
 
 [![Rust edition 2021](https://img.shields.io/badge/rust-edition%202021-CE422B?logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![License: MIT](https://img.shields.io/badge/license-MIT-3a86ff)](#license)
+[![License: PolyForm Noncommercial 1.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0-d62828)](#license)
 [![CI](https://img.shields.io/github/actions/workflow/status/BEKO2210/Javis/ci.yml?branch=main&label=ci&logo=github)](.github/workflows/ci.yml)
 [![Tests 130/130](https://img.shields.io/badge/tests-130%2F130%20passing-3fb950)](#tests)
 [![Clippy clean](https://img.shields.io/badge/clippy-0%20warnings-3fb950)](#tests)
@@ -21,9 +21,35 @@ your LLM, returning a few decoded concepts instead of full document chunks.
 [![Observability](https://img.shields.io/badge/observability-tracing%20%C2%B7%20Prometheus-7aa2ff)](#production-readiness)
 [![Container](https://img.shields.io/badge/container-Docker%20%2B%20Compose-2496ed?logo=docker&logoColor=white)](#run-with-docker)
 [![Bio inspired](https://img.shields.io/badge/bio--inspired-LIF%20%C2%B7%20STDP%20%C2%B7%20iSTDP%20%C2%B7%20BTSP-62d6ff)](#plasticity)
-[![Iter 44](https://img.shields.io/badge/iter--44-Triplet%20%C2%B7%20R--STDP%20%C2%B7%20BCM%20%C2%B7%20Replay-ff66c4)](#plasticity)
+[![Iter 64](https://img.shields.io/badge/iter--64-Mechanism%20diagnosis%20%C2%B7%20perforant%20%CE%B1%20at%200.3-ff66c4)](#iterations)
+
+> **⚠ Research-only license.** Javis is licensed under
+> [PolyForm Noncommercial 1.0.0](LICENSE). It is **not** for production
+> deployment, commercial integration, or any operational system that affects
+> real people, real decisions, real services, or real infrastructure. See the
+> [research-use addendum](LICENSE#project-specific-research-use-addendum-non-binding-intent-statement)
+> for the licensor's intent statement.
 
 </div>
+
+---
+
+## Table of contents
+
+- [Why Javis](#why-javis) — the pitch in 30 seconds.
+- [Architecture diagram](#architecture-diagram) — animated R1 → DG → R2 walk-through.
+- [Performance profile](#performance-profile) — what the network actually does today.
+- [Architecture (text)](#architecture) — the iter-44 plasticity stack and decoder.
+- [Quick start](#quick-start) — clone → build → recall.
+- [Live 3D brain](#live-3d-brain) — the in-browser visualisation.
+- [Plasticity](#plasticity) — STDP / iSTDP / BCM / R-STDP / homeostasis.
+- [Token efficiency](#token-efficiency--the-small-corpus-picture) — Javis vs. naive RAG.
+- [Production readiness](#production-readiness) — tracing, metrics, container, MSRV, deny.
+- [Project structure](#project-structure) — the workspace layout.
+- [Tests](#tests) — what runs in CI and what the gates are.
+- [Iterations](#iterations) — every hypothesis, pre-fixed criterion, and verdict from iter-00 to today.
+- [References](#references) — papers behind the plasticity choices.
+- [License](#license) — research-use only.
 
 ---
 
@@ -47,6 +73,29 @@ Javis:       "rust"                                                    2 tokens
 
 That gap is the whole pitch. Whether it holds at scale — and where it stops
 holding — is reported below in plain numbers, not slogans.
+
+---
+
+## Architecture diagram
+
+The iter-60+ DG bridge architecture, with spike pulses propagating from R1
+(input cortex, k=20 SDR) through the DG hash (4 000 cells, k-of-n sparse code)
+and the direct perforant path (configurable scale, iter-64 sweet-spot at 0.3)
+into R2 (memory cortex, 2 000 LIF, 70 % E + 30 % I, fully recurrent with
+STDP / iSTDP / BCM / homeostasis / intrinsic-θ / R-STDP / heterosynaptic /
+structural plasticity). A 3-second loop:
+
+<div align="center">
+
+<img src="assets/architecture-animated.svg" alt="Animated architecture: R1 → DG (mossy fibres) + direct perforant path → R2, with spike pulses propagating along axons" width="900">
+
+</div>
+
+**The blue paths (R1 → DG → R2 mossy fibres)** are always on at full
+weight; **the dashed grey path (direct R1 → R2 perforant)** is the iter-64
+mechanism diagnosis axis — at scale `0.0` (DG-only, iter-63 baseline) the
+brain separates cues but does not learn cue → target on the decoder; at
+scale `0.3` it does (iter-64 axis C verdict, see [Iterations](#iterations)).
 
 ---
 
@@ -655,4 +704,30 @@ literature. Key papers:
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+**[PolyForm Noncommercial 1.0.0](LICENSE)** — research, education, and
+personal study only. **Not** for commercial use, production deployment, or
+any operational system that affects real people, real decisions, real
+services, or real infrastructure.
+
+The full text is in [`LICENSE`](LICENSE) along with a project-specific,
+non-binding [research-use addendum](LICENSE#project-specific-research-use-addendum-non-binding-intent-statement)
+spelling out the licensor's intent.
+
+Researchers using Javis are expected to:
+
+1. Run experiments in controlled / sandboxed environments, not on
+   production infrastructure.
+2. Not deploy any derivative work as a service to third parties.
+3. Cite the project and the relevant `notes/NN-*.md` iteration when
+   publishing results.
+4. Disclose modifications to the codebase when sharing experimental
+   results that depend on those modifications.
+
+Commercial licenses are not currently offered. Inquiries: open an issue.
+
+The `Cargo.toml` `license` field uses the standard
+`LicenseRef-PolyForm-Noncommercial-1.0.0` SPDX-LicenseRef form;
+`cargo-deny` `[licenses].private = { ignore = true }` is set in
+`deny.toml` so transitive dependencies are still license-checked
+against the SPDX allow-list, but the workspace's own crates (all
+`publish = false`) are not flagged for the non-SPDX identifier.

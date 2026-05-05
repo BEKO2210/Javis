@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 220" width="800" height="220" role="img" aria-label="Javis: Spiking Neural Memory">
+  <title>Javis</title>
+  <desc>Animated logo: two anatomical lobes (R1 input cortex on the left, R2 memory cortex on the right) connected by inter-region axons; spike pulses propagate from R1 into R2 along the axon trails on a 2.4-second loop. Wordmark "javis" with the tagline "SPIKING NEURAL MEMORY".</desc>
+
+  <defs>
+    <linearGradient id="lobe-r1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3a86ff"/>
+      <stop offset="100%" stop-color="#1c4baa"/>
+    </linearGradient>
+    <linearGradient id="lobe-r2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ff66c4"/>
+      <stop offset="100%" stop-color="#a83274"/>
+    </linearGradient>
+    <radialGradient id="r1-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#7aa2ff" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#3a86ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="r2-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#ffb1de" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#ff66c4" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="220" fill="#0d1117"/>
+
+  <!-- ============================================================
+       R1 (input cortex) — left lobe
+       ============================================================ -->
+  <g transform="translate(70,110)">
+    <!-- Outer halo: pulses on every soma fire -->
+    <circle cx="0" cy="0" r="56" fill="url(#r1-glow)" opacity="0.6">
+      <animate attributeName="r" values="56;64;56" dur="2.4s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0.55;0.85;0.55" dur="2.4s" repeatCount="indefinite"/>
+    </circle>
+    <!-- Lobe -->
+    <ellipse cx="0" cy="0" rx="48" ry="40" fill="url(#lobe-r1)" stroke="#7aa2ff" stroke-width="1.5"/>
+    <!-- Soma cluster (excitatory neurons) -->
+    <g fill="#e6f0ff">
+      <circle cx="-22" cy="-12" r="2.5"/>
+      <circle cx="-10" cy="-22" r="2.5"/>
+      <circle cx="6" cy="-18" r="2.5"/>
+      <circle cx="22" cy="-8" r="2.5"/>
+      <circle cx="-26" cy="6" r="2.5"/>
+      <circle cx="-12" cy="14" r="2.5"/>
+      <circle cx="4" cy="18" r="2.5"/>
+      <circle cx="20" cy="10" r="2.5"/>
+      <circle cx="-4" cy="0" r="2.5"/>
+      <circle cx="14" cy="0" r="2.5"/>
+    </g>
+    <!-- Region label -->
+    <text x="0" y="62" text-anchor="middle" fill="#7aa2ff" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11" font-weight="600" letter-spacing="2">R1</text>
+  </g>
+
+  <!-- ============================================================
+       R2 (memory cortex) — right lobe with inhibitory cells
+       ============================================================ -->
+  <g transform="translate(330,110)">
+    <circle cx="0" cy="0" r="62" fill="url(#r2-glow)" opacity="0.6">
+      <animate attributeName="r" values="62;72;62" dur="2.4s" begin="0.6s" repeatCount="indefinite"/>
+      <animate attributeName="opacity" values="0.55;0.9;0.55" dur="2.4s" begin="0.6s" repeatCount="indefinite"/>
+    </circle>
+    <ellipse cx="0" cy="0" rx="54" ry="44" fill="url(#lobe-r2)" stroke="#ffb1de" stroke-width="1.5"/>
+    <!-- Excitatory soma -->
+    <g fill="#fff0f8">
+      <circle cx="-26" cy="-14" r="2.5"/>
+      <circle cx="-12" cy="-24" r="2.5"/>
+      <circle cx="4" cy="-22" r="2.5"/>
+      <circle cx="22" cy="-12" r="2.5"/>
+      <circle cx="-30" cy="2" r="2.5"/>
+      <circle cx="-14" cy="20" r="2.5"/>
+      <circle cx="2" cy="22" r="2.5"/>
+      <circle cx="20" cy="16" r="2.5"/>
+      <circle cx="-4" cy="-2" r="2.5"/>
+      <circle cx="14" cy="6" r="2.5"/>
+    </g>
+    <!-- Inhibitory soma (red triangles) -->
+    <g fill="#ff5050">
+      <polygon points="-20,-4 -16,-12 -12,-4"/>
+      <polygon points="10,-8 14,-16 18,-8"/>
+      <polygon points="-8,12 -4,4 0,12"/>
+    </g>
+    <text x="0" y="68" text-anchor="middle" fill="#ffb1de" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11" font-weight="600" letter-spacing="2">R2</text>
+  </g>
+
+  <!-- ============================================================
+       Inter-region axons (R1 → R2) with travelling spike pulses
+       Three parallel paths, staggered phase
+       ============================================================ -->
+  <g stroke="#62d6ff" stroke-width="1.6" fill="none" opacity="0.5">
+    <path id="axon1" d="M 130 96 C 200 80, 250 80, 290 100"/>
+    <path id="axon2" d="M 130 110 C 200 110, 250 110, 290 110"/>
+    <path id="axon3" d="M 130 124 C 200 140, 250 140, 290 120"/>
+  </g>
+
+  <!-- Spike pulses traveling along axons -->
+  <g fill="#62d6ff">
+    <circle r="3.6">
+      <animateMotion dur="2.4s" repeatCount="indefinite" begin="0s">
+        <mpath href="#axon1"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.9;1" dur="2.4s" repeatCount="indefinite" begin="0s"/>
+    </circle>
+    <circle r="3.6">
+      <animateMotion dur="2.4s" repeatCount="indefinite" begin="0.4s">
+        <mpath href="#axon2"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.9;1" dur="2.4s" repeatCount="indefinite" begin="0.4s"/>
+    </circle>
+    <circle r="3.6">
+      <animateMotion dur="2.4s" repeatCount="indefinite" begin="0.8s">
+        <mpath href="#axon3"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.9;1" dur="2.4s" repeatCount="indefinite" begin="0.8s"/>
+    </circle>
+    <!-- Second wave for density -->
+    <circle r="3.0" opacity="0.7">
+      <animateMotion dur="2.4s" repeatCount="indefinite" begin="1.2s">
+        <mpath href="#axon1"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;0.7;0.7;0" keyTimes="0;0.1;0.9;1" dur="2.4s" repeatCount="indefinite" begin="1.2s"/>
+    </circle>
+    <circle r="3.0" opacity="0.7">
+      <animateMotion dur="2.4s" repeatCount="indefinite" begin="1.6s">
+        <mpath href="#axon3"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;0.7;0.7;0" keyTimes="0;0.1;0.9;1" dur="2.4s" repeatCount="indefinite" begin="1.6s"/>
+    </circle>
+  </g>
+
+  <!-- ============================================================
+       Wordmark
+       ============================================================ -->
+  <g transform="translate(440,118)">
+    <text x="0" y="0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="64" font-weight="700" fill="#e6f0ff" letter-spacing="-1">javis</text>
+    <text x="3" y="32" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11" font-weight="500" fill="#62d6ff" letter-spacing="6">SPIKING&#160;&#160;NEURAL&#160;&#160;MEMORY</text>
+  </g>
+</svg>
