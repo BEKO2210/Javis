@@ -1863,6 +1863,17 @@ fn run_teacher_trial(
     // identified by the iter-47a postmortem.
     let suppress_stdp = !cfg.plasticity_during_prediction;
     let suppress_istdp = !cfg.plasticity_during_prediction && !cfg.istdp_during_prediction;
+    // Iter-63 plumbing fix: save the *current* plasticity state and
+    // restore it at the end. The previous "always enable_*(rest_*)"
+    // behaviour silently re-enabled STDP / iSTDP even when the
+    // caller had them disabled (e.g. iter-63 untrained mode under
+    // disable_all_plasticity), turning a "no plasticity" run into
+    // a partial-plasticity run mid-trial. Bit-identity for
+    // run_jaccard_arm / run_reward_benchmark is preserved because
+    // those callers always pass `rest_stdp` / `rest_istdp` matching
+    // the prior state when plasticity is on.
+    let prior_stdp = brain.regions[1].network.stdp;
+    let prior_istdp = brain.regions[1].network.istdp;
     if suppress_stdp {
         brain.regions[1].network.disable_stdp();
     }
@@ -1893,10 +1904,16 @@ fn run_teacher_trial(
         )
     };
     if suppress_stdp {
-        brain.regions[1].network.enable_stdp(rest_stdp);
+        match prior_stdp {
+            Some(p) => brain.regions[1].network.enable_stdp(p),
+            None => brain.regions[1].network.disable_stdp(),
+        }
     }
     if suppress_istdp {
-        brain.regions[1].network.enable_istdp(rest_istdp);
+        match prior_istdp {
+            Some(p) => brain.regions[1].network.enable_istdp(p),
+            None => brain.regions[1].network.disable_istdp(),
+        }
     }
     let pred_topk = top_k_indices(&pred_counts, cfg.wta_k.max(1));
     outcome.prediction_topk = pred_topk.clone();
@@ -1924,6 +1941,12 @@ fn run_teacher_trial(
     //      establish a pre-spike pattern that the clamped target
     //      cells then *follow*, giving STDP the right timing
     //      asymmetry.
+    // Iter-63 plumbing fix: same save/restore as the prediction
+    // phase above. Save *current* state; restore to the same
+    // Option<…> value so callers with plasticity off don't get it
+    // turned back on mid-trial.
+    let prior_stdp_t = brain.regions[1].network.stdp;
+    let prior_istdp_t = brain.regions[1].network.istdp;
     if !cfg.plasticity_during_teacher {
         brain.regions[1].network.disable_stdp();
         brain.regions[1].network.disable_istdp();
@@ -1973,9 +1996,21 @@ fn run_teacher_trial(
         )
     };
     if !cfg.plasticity_during_teacher {
-        brain.regions[1].network.enable_stdp(rest_stdp);
-        brain.regions[1].network.enable_istdp(rest_istdp);
+        match prior_stdp_t {
+            Some(p) => brain.regions[1].network.enable_stdp(p),
+            None => brain.regions[1].network.disable_stdp(),
+        }
+        match prior_istdp_t {
+            Some(p) => brain.regions[1].network.enable_istdp(p),
+            None => brain.regions[1].network.disable_istdp(),
+        }
     }
+    // Acknowledge the legacy `rest_stdp` / `rest_istdp` parameters —
+    // they are preserved on the public function signature for
+    // caller-compat but no longer drive the plasticity restore (the
+    // saved-state mechanism above does, which is what makes
+    // iter-63's untrained-mode iter-52 invariant hold).
+    let _ = (rest_stdp, rest_istdp);
     // Diagnostic: how reliably did the clamp drive the intended
     // set? Reuses `target_set` already built in the prediction
     // phase above (iter-47 selectivity readout).
@@ -2341,6 +2376,24 @@ pub fn run_postmortem_diagnostic(
     intrinsic_stats(&brain, &r2_e)
 }
 
+/// **Legacy iter-44 / iter-46 reward-benchmark runner.** Do **not**
+/// extend with new architectural axes (DG bridge, decorrelated
+/// init, recall-mode eval, future CA3/CA1 split). The iter-63
+/// plumbing fix lifted the brain-build code into
+/// `build_benchmark_brain` and the plasticity gating into
+/// `disable_all_plasticity`; new runners must consume those
+/// helpers instead of going through this function.
+///
+/// This function is kept verbatim because its numerical output
+/// is the **calibrated baseline** behind iter-46's 0.19 reading
+/// and iter-51's 0.107 stable estimator — both of which iter-63
+/// uses as the positive-control band. Refactoring this code path
+/// would invalidate those calibrations.
+///
+/// TODO(iter-64+): if a future iteration needs this runner on a
+/// DG-enabled brain, build a v2 alongside (mirroring
+/// `run_target_overlap_arm`'s helper-based structure) rather than
+/// modifying this function.
 pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<RewardEpochMetrics> {
     // Iter-50 diagnostic: when iter46_baseline is set, build the
     // brain with the original iter-46 INTER_WEIGHT (2.0) and
@@ -3378,19 +3431,58 @@ fn evaluate_jaccard_matrix_with_pairs(
     (metrics, per_pair)
 }
 
-/// Iter-53 single-arm runner. Builds the brain, optionally trains
-/// it (a no-op when `cfg.epochs == 0` or `cfg.teacher.no_plasticity`),
-/// freezes plasticity for the eval phase, builds the vocabulary
-/// fingerprint dictionary against the post-training brain, then
-/// computes the Jaccard matrix.
+// =====================================================================
+// Iter-63 plumbing-fix shared helpers.
+//
+// Single source of truth for benchmark-brain construction and for
+// the plasticity-disable stack. iter-63 caught the kind of silent-
+// wiring-gap bug iter-52 was designed to prevent: brain-build code
+// was duplicated across run_jaccard_arm and run_jaccard_floor_
+// diagnosis, and a third caller (run_target_overlap_arm) silently
+// went through run_reward_benchmark which ignores the iter-54 /
+// iter-60 flags entirely. This produced numbers that *looked* like
+// the iter-63 config but actually came from a vanilla random-wired
+// non-DG brain.
+//
+// Going forward, every new runner that needs a "benchmark brain"
+// must call `build_benchmark_brain` and `disable_all_plasticity`
+// instead of building one inline. The legacy `run_reward_benchmark`
+// path is intentionally NOT refactored — its numerics are the iter-46
+// / iter-51 baselines that the iter-63 positive control verified
+// minutes before this refactor, and breaking that contract would
+// invalidate the calibration.
+// =====================================================================
+
+/// Output of `build_benchmark_brain`. Caller-friendly metadata keeps
+/// the helper pure (no `eprintln!`) so the legacy log strings — which
+/// differ per caller (`[iter-54 …]` for jaccard arm, `[iter-58 floor]`
+/// for floor diagnosis) — can stay at the call site verbatim.
+struct BrainBuild {
+    brain: Brain,
+    encoder: TextEncoder,
+    r2_e: BTreeSet<usize>,
+    target_r2_map: std::collections::HashMap<String, Vec<u32>>,
+    dg_sdr_map: std::collections::HashMap<String, Vec<u32>>,
+    /// `effective_r2_n(&cfg.teacher)` — the R2 size used for this
+    /// build. Returned so callers can log it without re-computing.
+    r2_n_used: usize,
+    /// `Some(block_size)` when `decorrelated_init` was used; `None`
+    /// otherwise. `block_size = r2_e.len() / vocab.len()`.
+    decorrelated_block_size: Option<usize>,
+}
+
+/// Single source of truth for benchmark-brain construction. Replaces
+/// ~70 lines of duplicated brain-build code in `run_jaccard_arm` and
+/// `run_jaccard_floor_diagnosis`. Adding a new architectural axis
+/// (e.g. CA3/CA1 split, perforant-path re-introduction) means
+/// touching this function only.
 ///
-/// Asserts the iter-52 invariant on `no_plasticity` arms: pre-run
-/// L2 norms must equal post-eval L2 norms bit-for-bit.
-fn run_jaccard_arm(
-    corpus: &RewardCorpus,
-    cfg: &RewardConfig,
-    arm: &'static str,
-) -> JaccardArmResult {
+/// Behaviour mirrors the existing inline code exactly — RNG seeds,
+/// salt constants, region order, wiring sequence — so the iter-63
+/// snapshot tests
+/// (`jaccard_bench_snapshot_{vanilla,decorrelated,decorrelated_dg_recall}`)
+/// still pass bit-identically.
+fn build_benchmark_brain(corpus: &RewardCorpus, cfg: &RewardConfig) -> BrainBuild {
     let (inter_weight, inh_frac) = if cfg.teacher.iter46_baseline {
         (2.0_f32, 0.20_f32)
     } else {
@@ -3398,16 +3490,13 @@ fn run_jaccard_arm(
     };
     let r2_n_used = effective_r2_n(&cfg.teacher);
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
-    // Iter-60: when DG bridge is on, scale R1 → R2 direct weights
-    // by `direct_r1r2_weight_scale` (default 0.0 = direct path off,
-    // DG becomes the sole cue-routing path).
     let effective_inter_weight = if cfg.teacher.dg.enabled {
         inter_weight * cfg.teacher.dg.direct_r1r2_weight_scale
     } else {
         inter_weight
     };
-    let mut brain = if cfg.teacher.decorrelated_init {
-        // Iter-54: hard-decorrelated R1 → R2 wiring.
+
+    let (mut brain, decorrelated_block_size) = if cfg.teacher.decorrelated_init {
         let mut b = Brain::new(DT);
         b.add_region(build_input_region());
         b.add_region(build_memory_region(
@@ -3424,24 +3513,158 @@ fn run_jaccard_arm(
             effective_inter_weight,
         );
         assert_decorrelated_disjoint(&b, &encoder, &vocab_vec);
+        let r2_e_size = r2_e_set(&b).len();
+        let block_size = r2_e_size / corpus.vocab.len().max(1);
+        (b, Some(block_size))
+    } else {
+        (
+            fresh_brain_with(cfg.seed, effective_inter_weight, inh_frac, r2_n_used),
+            None,
+        )
+    };
+
+    if cfg.teacher.dg.enabled {
+        brain.add_region(build_dg_region(cfg.teacher.dg.size as usize));
+        wire_dg_to_r2(&mut brain, &cfg.teacher.dg, cfg.seed.wrapping_add(0xD9));
+    }
+
+    let r2_e = r2_e_set(&brain);
+
+    let target_r2_map: std::collections::HashMap<String, Vec<u32>> = {
+        let pool = r2_e_pool(&r2_e);
+        let salt = cfg.seed ^ 0xCAFE_F00D_DEAD_BEEFu64;
+        corpus
+            .vocab
+            .iter()
+            .map(|w| {
+                (
+                    w.clone(),
+                    canonical_target_r2_sdr(w, &pool, TARGET_R2_K, salt),
+                )
+            })
+            .collect()
+    };
+
+    let dg_sdr_map: std::collections::HashMap<String, Vec<u32>> = if cfg.teacher.dg.enabled {
+        let salt = cfg.seed ^ 0xDEAD_BEEF_F00D_BABEu64;
+        corpus
+            .vocab
+            .iter()
+            .map(|w| {
+                (
+                    w.clone(),
+                    dg_sdr_for_cue(
+                        w,
+                        cfg.teacher.dg.size as usize,
+                        cfg.teacher.dg.k as usize,
+                        salt,
+                    ),
+                )
+            })
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    BrainBuild {
+        brain,
+        encoder,
+        r2_e,
+        target_r2_map,
+        dg_sdr_map,
+        r2_n_used,
+        decorrelated_block_size,
+    }
+}
+
+/// Single source of truth for plasticity gating. Disables every
+/// plasticity rule that can mutate weights — STDP, iSTDP,
+/// homeostasis, intrinsic plasticity, reward learning,
+/// metaplasticity, heterosynaptic scaling, structural plasticity —
+/// on the given region's `Network`. Adding a new plasticity
+/// mechanism in `snn-core` means touching this function only.
+///
+/// Iter-62 introduced this exact stack inline in `run_jaccard_arm`'s
+/// recall-mode branch. Iter-63 lifts it to a top-level helper so
+/// every runner that needs a "frozen weights" guarantee can call it
+/// without forgetting a rule.
+fn disable_all_plasticity(brain: &mut Brain, region_idx: usize) {
+    let net = &mut brain.regions[region_idx].network;
+    net.disable_stdp();
+    net.disable_istdp();
+    net.disable_homeostasis();
+    net.disable_intrinsic_plasticity();
+    net.disable_reward_learning();
+    net.disable_metaplasticity();
+    net.disable_heterosynaptic();
+    net.disable_structural();
+}
+
+/// Per-region L2 norms of synapse weights — companion to the iter-52
+/// invariant check. Type alias so callers can pass these around
+/// without committing to a concrete container.
+type WeightSnapshot = Vec<f64>;
+
+/// Capture the current weight state of every region as L2 norms.
+/// Trivial wrapper over `brain_synapse_l2_norms`; the named alias
+/// makes the iter-52 invariant intent explicit at call sites.
+fn snapshot_weights(brain: &Brain) -> WeightSnapshot {
+    brain_synapse_l2_norms(brain)
+}
+
+/// Iter-52 / iter-62 invariant: bit-identical weight L2 norms
+/// pre/post a "frozen weights" phase. Caller passes a `context`
+/// string (e.g. "iter-63 untrained calibration") so the panic
+/// message identifies which guarantee was violated.
+fn assert_no_weight_drift(pre: &WeightSnapshot, post: &WeightSnapshot, context: &str) {
+    assert_eq!(
+        pre.len(),
+        post.len(),
+        "{context}: weight snapshot region count changed ({} → {})",
+        pre.len(),
+        post.len(),
+    );
+    let identical = pre.iter().zip(post.iter()).all(|(a, b)| a == b);
+    assert!(
+        identical,
+        "{context}: weight invariant violated (pre/post not bit-identical). \
+         pre={pre:?} post={post:?}"
+    );
+}
+
+/// Iter-53 single-arm runner. Builds the brain, optionally trains
+/// it (a no-op when `cfg.epochs == 0` or `cfg.teacher.no_plasticity`),
+/// freezes plasticity for the eval phase, builds the vocabulary
+/// fingerprint dictionary against the post-training brain, then
+/// computes the Jaccard matrix. Asserts the iter-52 invariant on
+/// `no_plasticity` arms: pre-run L2 norms must equal post-eval L2
+/// norms bit-for-bit.
+fn run_jaccard_arm(
+    corpus: &RewardCorpus,
+    cfg: &RewardConfig,
+    arm: &'static str,
+) -> JaccardArmResult {
+    let BrainBuild {
+        mut brain,
+        encoder,
+        r2_e,
+        target_r2_map,
+        dg_sdr_map,
+        r2_n_used,
+        decorrelated_block_size,
+    } = build_benchmark_brain(corpus, cfg);
+
+    if let Some(block_size) = decorrelated_block_size {
         eprintln!(
             "[iter-54 {arm}] seed={} decorrelated init: vocab={} R2_N={} R2-E={} block_size={} (disjoint invariant ✓)",
             cfg.seed,
             corpus.vocab.len(),
             r2_n_used,
-            r2_e_set(&b).len(),
-            r2_e_set(&b).len() / corpus.vocab.len(),
+            r2_e.len(),
+            block_size,
         );
-        b
-    } else {
-        fresh_brain_with(cfg.seed, effective_inter_weight, inh_frac, r2_n_used)
-    };
-    // Iter-60: add DG region (region 2) and wire DG → R2. Per-cue
-    // DG SDRs are precomputed below (after r2_e is known); here
-    // we just lay down the structural projection.
+    }
     if cfg.teacher.dg.enabled {
-        brain.add_region(build_dg_region(cfg.teacher.dg.size as usize));
-        wire_dg_to_r2(&mut brain, &cfg.teacher.dg, cfg.seed.wrapping_add(0xD9));
         eprintln!(
             "[iter-60 {arm}] seed={} DG bridge: dg_size={} dg_k={} dg_to_r2_fanout={} dg_to_r2_weight={:.2} direct_r1r2_scale={:.2}",
             cfg.seed,
@@ -3452,7 +3675,6 @@ fn run_jaccard_arm(
             cfg.teacher.dg.direct_r1r2_weight_scale,
         );
     }
-    let r2_e = r2_e_set(&brain);
 
     let stdp_params = stdp();
     let initial_istdp = if cfg.teacher.iter46_baseline {
@@ -3478,47 +3700,7 @@ fn run_jaccard_arm(
             .enable_reward_learning(reward_params());
     }
 
-    let pre_l2 = brain_synapse_l2_norms(&brain);
-
-    // Canonical-target map (used only by the teacher schedule;
-    // built unconditionally so seeded RNG paths stay stable).
-    let target_r2_map: std::collections::HashMap<String, Vec<u32>> = {
-        let pool = r2_e_pool(&r2_e);
-        let salt = cfg.seed ^ 0xCAFE_F00D_DEAD_BEEFu64;
-        corpus
-            .vocab
-            .iter()
-            .map(|w| {
-                (
-                    w.clone(),
-                    canonical_target_r2_sdr(w, &pool, TARGET_R2_K, salt),
-                )
-            })
-            .collect()
-    };
-
-    // Iter-60 DG pattern-separation: build per-cue DG SDR map
-    // when DG bridge is enabled, empty otherwise.
-    let dg_sdr_map: std::collections::HashMap<String, Vec<u32>> = if cfg.teacher.dg.enabled {
-        let salt = cfg.seed ^ 0xDEAD_BEEF_F00D_BABEu64;
-        corpus
-            .vocab
-            .iter()
-            .map(|w| {
-                (
-                    w.clone(),
-                    dg_sdr_for_cue(
-                        w,
-                        cfg.teacher.dg.size as usize,
-                        cfg.teacher.dg.k as usize,
-                        salt,
-                    ),
-                )
-            })
-            .collect()
-    } else {
-        std::collections::HashMap::new()
-    };
+    let pre_l2 = snapshot_weights(&brain);
 
     train_brain_inplace(
         &mut brain,
@@ -3532,29 +3714,24 @@ fn run_jaccard_arm(
         &dg_sdr_map,
     );
 
-    // Iter-62 recall-mode: when --plasticity-off-during-eval is
-    // set on a trained arm, disable every plasticity rule before
-    // the eval phase. Training stays unchanged; only the
-    // dictionary build + jaccard matrix collection run on a
-    // frozen-weight brain. The post-eval L2 invariant below
-    // catches any plasticity path that escaped the gate.
+    // Iter-62 recall-mode: when --plasticity-off-during-eval is set
+    // on a trained arm, disable every plasticity rule before the
+    // eval phase. Training stays unchanged; only the dictionary
+    // build + jaccard matrix collection run on a frozen-weight
+    // brain. The post-eval L2 invariant below catches any plasticity
+    // path that escaped the gate. Iter-63 lifted the disable stack
+    // into `disable_all_plasticity` so a missing rule cannot leak
+    // through.
     let recall_mode_active = cfg.teacher.recall_mode_eval && !no_plasticity;
     if recall_mode_active {
-        brain.regions[1].network.disable_stdp();
-        brain.regions[1].network.disable_istdp();
-        brain.regions[1].network.disable_homeostasis();
-        brain.regions[1].network.disable_intrinsic_plasticity();
-        brain.regions[1].network.disable_reward_learning();
-        brain.regions[1].network.disable_metaplasticity();
-        brain.regions[1].network.disable_heterosynaptic();
-        brain.regions[1].network.disable_structural();
+        disable_all_plasticity(&mut brain, 1);
         eprintln!(
             "[iter-62 {arm}] seed={} recall-mode: every plasticity rule disabled before eval (STDP / iSTDP / homeostasis / intrinsic / reward / metaplasticity / heterosynaptic / structural)",
             cfg.seed,
         );
     }
 
-    let l2_pre_eval = brain_synapse_l2_norms(&brain);
+    let l2_pre_eval = snapshot_weights(&brain);
 
     let vocab: Vec<String> = corpus.vocab.iter().cloned().collect();
     let dict = build_vocab_dictionary(
@@ -3575,18 +3752,19 @@ fn run_jaccard_arm(
         cfg.teacher.dg.drive_strength,
     );
 
-    let l2_post_eval = brain_synapse_l2_norms(&brain);
+    let l2_post_eval = snapshot_weights(&brain);
 
     if no_plasticity {
-        // Untrained arm: plasticity was never enabled; eval must
-        // be a pure read. Pre-train and post-eval L2 must match
+        // Untrained arm: plasticity was never enabled; eval must be
+        // a pure read. Pre-train and post-eval L2 must match
         // bit-for-bit (the iter-52 invariant carried forward).
-        let identical = pre_l2.iter().zip(l2_post_eval.iter()).all(|(a, b)| a == b);
-        assert!(
-            identical,
-            "iter-53: --no-plasticity arm changed weights (seed={}, arm={arm}). \
-             pre={pre_l2:?} post={l2_post_eval:?}",
-            cfg.seed,
+        assert_no_weight_drift(
+            &pre_l2,
+            &l2_post_eval,
+            &format!(
+                "iter-53: --no-plasticity arm changed weights (seed={}, arm={arm})",
+                cfg.seed
+            ),
         );
     } else if recall_mode_active {
         // Iter-62 recall-mode invariant: with every plasticity rule
@@ -3594,15 +3772,13 @@ fn run_jaccard_arm(
         // matrix must NOT change synapse weights. Pre-eval and
         // post-eval L2 norms must match bit-for-bit. Catches any
         // plasticity path the disable_* calls missed.
-        let identical = l2_pre_eval
-            .iter()
-            .zip(l2_post_eval.iter())
-            .all(|(a, b)| a == b);
-        assert!(
-            identical,
-            "iter-62 recall-mode invariant violated: weights changed during eval (seed={}, arm={arm}). \
-             pre={l2_pre_eval:?} post={l2_post_eval:?}",
-            cfg.seed,
+        assert_no_weight_drift(
+            &l2_pre_eval,
+            &l2_post_eval,
+            &format!(
+                "iter-62 recall-mode invariant violated: weights changed during eval (seed={}, arm={arm})",
+                cfg.seed
+            ),
         );
         eprintln!(
             "[iter-62 trained recall-mode] seed={} pre={l2_pre_eval:?} post={l2_post_eval:?} (bit-identical ✓)",
@@ -3716,57 +3892,26 @@ pub fn run_jaccard_floor_diagnosis(
         let mut cfg_seeded = *cfg;
         cfg_seeded.seed = seed;
 
-        // -- Brain construction (mirrors run_jaccard_arm) ---------
-        let (inter_weight, inh_frac) = if cfg_seeded.teacher.iter46_baseline {
-            (2.0_f32, 0.20_f32)
-        } else {
-            (INTER_WEIGHT, R2_INH_FRAC)
-        };
-        let r2_n_used = effective_r2_n(&cfg_seeded.teacher);
-        let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
-        let effective_inter_weight = if cfg_seeded.teacher.dg.enabled {
-            inter_weight * cfg_seeded.teacher.dg.direct_r1r2_weight_scale
-        } else {
-            inter_weight
-        };
-        let mut brain = if cfg_seeded.teacher.decorrelated_init {
-            let mut b = Brain::new(DT);
-            b.add_region(build_input_region());
-            b.add_region(build_memory_region(
-                cfg_seeded.seed.wrapping_add(1),
-                inh_frac,
-                r2_n_used,
-            ));
-            let vocab_vec: Vec<String> = corpus.vocab.iter().cloned().collect();
-            let _blocks = wire_forward_decorrelated(
-                &mut b,
-                &encoder,
-                &vocab_vec,
-                cfg_seeded.seed.wrapping_add(2),
-                effective_inter_weight,
-            );
-            assert_decorrelated_disjoint(&b, &encoder, &vocab_vec);
+        let BrainBuild {
+            mut brain,
+            encoder,
+            r2_e,
+            target_r2_map,
+            dg_sdr_map,
+            r2_n_used,
+            decorrelated_block_size,
+        } = build_benchmark_brain(corpus, &cfg_seeded);
+
+        if let Some(block_size) = decorrelated_block_size {
             eprintln!(
                 "[iter-58 floor] seed={} decorrelated init: vocab={} R2_N={} R2-E={} block_size={} (disjoint invariant ✓)",
                 cfg_seeded.seed,
                 corpus.vocab.len(),
                 r2_n_used,
-                r2_e_set(&b).len(),
-                r2_e_set(&b).len() / corpus.vocab.len(),
-            );
-            b
-        } else {
-            fresh_brain_with(cfg_seeded.seed, effective_inter_weight, inh_frac, r2_n_used)
-        };
-        if cfg_seeded.teacher.dg.enabled {
-            brain.add_region(build_dg_region(cfg_seeded.teacher.dg.size as usize));
-            wire_dg_to_r2(
-                &mut brain,
-                &cfg_seeded.teacher.dg,
-                cfg_seeded.seed.wrapping_add(0xD9),
+                r2_e.len(),
+                block_size,
             );
         }
-        let r2_e = r2_e_set(&brain);
 
         let stdp_params = stdp();
         let initial_istdp = if cfg_seeded.teacher.iter46_baseline {
@@ -3788,43 +3933,6 @@ pub fn run_jaccard_floor_diagnosis(
                 .enable_reward_learning(reward_params());
         }
 
-        let target_r2_map: std::collections::HashMap<String, Vec<u32>> = {
-            let pool = r2_e_pool(&r2_e);
-            let salt = cfg_seeded.seed ^ 0xCAFE_F00D_DEAD_BEEFu64;
-            corpus
-                .vocab
-                .iter()
-                .map(|w| {
-                    (
-                        w.clone(),
-                        canonical_target_r2_sdr(w, &pool, TARGET_R2_K, salt),
-                    )
-                })
-                .collect()
-        };
-
-        let dg_sdr_map: std::collections::HashMap<String, Vec<u32>> =
-            if cfg_seeded.teacher.dg.enabled {
-                let salt = cfg_seeded.seed ^ 0xDEAD_BEEF_F00D_BABEu64;
-                corpus
-                    .vocab
-                    .iter()
-                    .map(|w| {
-                        (
-                            w.clone(),
-                            dg_sdr_for_cue(
-                                w,
-                                cfg_seeded.teacher.dg.size as usize,
-                                cfg_seeded.teacher.dg.k as usize,
-                                salt,
-                            ),
-                        )
-                    })
-                    .collect()
-            } else {
-                std::collections::HashMap::new()
-            };
-
         train_brain_inplace(
             &mut brain,
             corpus,
@@ -3838,21 +3946,14 @@ pub fn run_jaccard_floor_diagnosis(
         );
 
         // Iter-62 recall-mode: same protocol as run_jaccard_arm —
-        // freeze every plasticity rule before the eval phase so
-        // the floor-diagnosis numbers come from the post-training
-        // weight state, not from a continuation of training during
-        // recall.
+        // freeze every plasticity rule before the eval phase so the
+        // floor-diagnosis numbers come from the post-training weight
+        // state, not from a continuation of training during recall.
+        // Iter-63: lifted to `disable_all_plasticity` helper.
         let recall_mode_active = cfg_seeded.teacher.recall_mode_eval;
-        let l2_pre_eval = brain_synapse_l2_norms(&brain);
+        let l2_pre_eval = snapshot_weights(&brain);
         if recall_mode_active {
-            brain.regions[1].network.disable_stdp();
-            brain.regions[1].network.disable_istdp();
-            brain.regions[1].network.disable_homeostasis();
-            brain.regions[1].network.disable_intrinsic_plasticity();
-            brain.regions[1].network.disable_reward_learning();
-            brain.regions[1].network.disable_metaplasticity();
-            brain.regions[1].network.disable_heterosynaptic();
-            brain.regions[1].network.disable_structural();
+            disable_all_plasticity(&mut brain, 1);
             eprintln!(
                 "[iter-62 floor] seed={} recall-mode: every plasticity rule disabled before eval",
                 cfg_seeded.seed,
@@ -3879,16 +3980,14 @@ pub fn run_jaccard_floor_diagnosis(
         );
 
         if recall_mode_active {
-            let l2_post_eval = brain_synapse_l2_norms(&brain);
-            let identical = l2_pre_eval
-                .iter()
-                .zip(l2_post_eval.iter())
-                .all(|(a, b)| a == b);
-            assert!(
-                identical,
-                "iter-62 recall-mode invariant violated in floor diagnosis (seed={}). \
-                 pre={l2_pre_eval:?} post={l2_post_eval:?}",
-                cfg_seeded.seed,
+            let l2_post_eval = snapshot_weights(&brain);
+            assert_no_weight_drift(
+                &l2_pre_eval,
+                &l2_post_eval,
+                &format!(
+                    "iter-62 recall-mode invariant violated in floor diagnosis (seed={})",
+                    cfg_seeded.seed
+                ),
             );
         }
 
@@ -4295,26 +4394,36 @@ impl TargetOverlapMetrics {
     }
 }
 
-/// Iter-63 single-arm runner. For each seed, runs the configured
-/// schedule via [`run_reward_benchmark`] and aggregates each epoch's
-/// `top3_accuracy` (iter-44/45 decoder-relative metric — does the
-/// cue-driven R2 response decode to the canonical target word in
-/// the per-epoch dictionary?). The per-seed `target_top3_overlap`
-/// is the **mean of `top3_accuracy` across all epochs** — iter-51
-/// showed iter-46-Arm-B-style brains oscillate per-epoch, so mean
-/// is the stable estimator where last-epoch is not.
+/// Iter-63 single-arm runner — v2, post plumbing-fix refactor.
 ///
-/// Note: `prediction_top3_before_teacher` is *not* the metric
-/// behind iter-63's positive-control band — that's a teacher-
-/// schedule-only SDR-overlap metric without a calibrated baseline.
-/// `top3_accuracy` is the metric iter-46 / iter-50 / iter-51
-/// calibrated 0.19 / 0.107 against. See `notes/63-cue-target-
-/// metric.md` "pre-measurement correction" section.
+/// For each seed, builds the iter-63-config brain via the shared
+/// `build_benchmark_brain` helper (which honours `decorrelated_init`
+/// and `dg.enabled` — the bug v1 had was silently dropping these
+/// because it routed through `run_reward_benchmark`, which ignores
+/// both flags). Trains in place using the same per-trial schedule
+/// as `train_brain_inplace` / `run_reward_benchmark`, computes the
+/// iter-44/45 `top3_accuracy` after every epoch, and returns the
+/// mean across epochs as the per-seed `target_top3_overlap`.
 ///
-/// Mode invariants are asserted: untrained requires
-/// `no_plasticity = true`, trained requires plasticity enabled.
-/// `cfg.teacher.enabled` is left to the caller — `top3_accuracy`
-/// is computed in both teacher and non-teacher schedules.
+/// Plasticity gating is centralised: untrained mode calls
+/// `disable_all_plasticity` (the iter-62 8-rule stack) before
+/// training begins, then asserts `assert_no_weight_drift` after
+/// the run completes — closing the iter-52 invariant gap that v1
+/// hit at vocab=64 + epochs=32 (R2-recurrent L2 went 159.87 →
+/// 1606.87 because metaplasticity / heterosynaptic / structural
+/// were not gated). Trained mode enables the iter-46 plasticity
+/// stack (STDP + iSTDP + homeostasis + intrinsic + reward), and
+/// the per-epoch eval phase temporarily disables every rule
+/// (full 8-rule stack when `recall_mode_eval` is on, just
+/// STDP + iSTDP otherwise — matching the iter-46 read-only-eval
+/// convention).
+///
+/// The metric is the iter-44/45 `top3_accuracy` (cue → R2 →
+/// decoder dictionary → top-3 vs target word). iter-46 / iter-50 /
+/// iter-51 calibrated this metric: positive-control band [0.07,
+/// 0.15] (iter-51 mean = 0.107, 95 % CI [0.069, 0.145]).
+/// Pre-measurement-correction notes in `notes/63-cue-target-
+/// metric.md`.
 pub fn run_target_overlap_arm(
     corpus: &RewardCorpus,
     cfg: &RewardConfig,
@@ -4343,10 +4452,8 @@ pub fn run_target_overlap_arm(
     for &seed in seeds {
         let mut cfg_seeded = *cfg;
         cfg_seeded.seed = seed;
+
         if matches!(mode, ArmMode::Untrained) {
-            // Untrained is deterministic per seed (no plasticity ⇒ no
-            // weight updates between epochs). Reward gating off so
-            // dopamine never enters the schedule.
             cfg_seeded.use_reward = false;
             cfg_seeded.epochs = cfg_seeded.epochs.max(1);
         } else {
@@ -4355,31 +4462,286 @@ pub fn run_target_overlap_arm(
                 "iter-63 trained mode requires --epochs > 0"
             );
         }
-        let metrics = run_reward_benchmark(corpus, &cfg_seeded);
-        // Iter-63 metric (post pre-measurement correction): mean of
-        // iter-44/45 `top3_accuracy` across all epochs. Rationale
-        // documented in notes/63-cue-target-metric.md "pre-measurement
-        // correction" section: the iter-46/50 baseline of 0.19 was
-        // computed with this metric (decoder top-3 vs target word),
-        // not with `prediction_top3_before_teacher` (teacher-schedule
-        // SDR overlap). iter-51 also showed Arm B oscillates per-epoch,
-        // so mean is a stable estimator where last-epoch is not.
-        let value = if metrics.is_empty() {
-            0.0
-        } else {
-            metrics.iter().map(|m| m.top3_accuracy).sum::<f32>() / metrics.len() as f32
-        };
+
+        let value = run_target_overlap_one_seed(corpus, &cfg_seeded, mode);
         eprintln!(
             "[iter-63 {arm}] seed={seed} target_top3_overlap={value:.4} \
-             (mean top3_accuracy over {n_ep} epochs, vocab={vocab}, dg={dg})",
+             (mean top3_accuracy over {n_ep} epochs, vocab={vocab}, dg={dg}, \
+             decorrelated={dec}, recall_mode={rec})",
             arm = mode.label(),
-            n_ep = metrics.len(),
+            n_ep = cfg_seeded.epochs,
             vocab = corpus.vocab.len(),
             dg = cfg_seeded.teacher.dg.enabled,
+            dec = cfg_seeded.teacher.decorrelated_init,
+            rec = cfg_seeded.teacher.recall_mode_eval,
         );
         per_seed.push(value);
     }
     TargetOverlapMetrics::new(mode, seeds.to_vec(), per_seed)
+}
+
+/// Runs the iter-63 schedule for a single seed and returns the
+/// mean of per-epoch `top3_accuracy`. Internal helper — the public
+/// `run_target_overlap_arm` is the one tests / CLI exercises.
+fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: ArmMode) -> f32 {
+    let BrainBuild {
+        mut brain,
+        encoder,
+        r2_e,
+        target_r2_map,
+        dg_sdr_map,
+        r2_n_used,
+        decorrelated_block_size,
+    } = build_benchmark_brain(corpus, cfg);
+
+    if let Some(block_size) = decorrelated_block_size {
+        eprintln!(
+            "[iter-63 {arm}] seed={} decorrelated init: vocab={} R2_N={} R2-E={} block_size={} (disjoint invariant ✓)",
+            cfg.seed,
+            corpus.vocab.len(),
+            r2_n_used,
+            r2_e.len(),
+            block_size,
+            arm = mode.label(),
+        );
+    }
+    if cfg.teacher.dg.enabled {
+        eprintln!(
+            "[iter-63 {arm}] seed={} DG bridge: dg_size={} dg_k={} dg_to_r2_fanout={} dg_to_r2_weight={:.2} direct_r1r2_scale={:.2}",
+            cfg.seed,
+            cfg.teacher.dg.size,
+            cfg.teacher.dg.k,
+            cfg.teacher.dg.to_r2_fanout,
+            cfg.teacher.dg.to_r2_weight,
+            cfg.teacher.dg.direct_r1r2_weight_scale,
+            arm = mode.label(),
+        );
+    }
+
+    let no_plasticity = cfg.teacher.no_plasticity;
+    let teacher_active = cfg.teacher.enabled;
+    let recall_mode_active = cfg.teacher.recall_mode_eval && !no_plasticity;
+    let stdp_params = stdp();
+
+    if no_plasticity {
+        // Iter-63 v2 fix #2: full 8-rule disable closes the iter-52
+        // invariant gap that iter-52 itself never exercised because
+        // its untrained arm used epochs=0 (no training loop ⇒ no
+        // plasticity events). iter-63 untrained mode runs the full
+        // training loop so any default-on rule (metaplasticity,
+        // heterosynaptic, structural) would mutate weights without
+        // this gate.
+        disable_all_plasticity(&mut brain, 1);
+    } else {
+        let initial_istdp = if cfg.teacher.iter46_baseline {
+            istdp_iter46_baseline()
+        } else {
+            istdp_iter49(&cfg.teacher, 0)
+        };
+        brain.regions[1].network.enable_stdp(stdp_params);
+        brain.regions[1].network.enable_istdp(initial_istdp);
+        brain.regions[1].network.enable_homeostasis(homeostasis());
+        if !cfg.teacher.iter46_baseline {
+            brain.regions[1]
+                .network
+                .enable_intrinsic_plasticity(intrinsic());
+        }
+        if cfg.use_reward {
+            brain.regions[1]
+                .network
+                .enable_reward_learning(reward_params());
+        }
+    }
+
+    let pre_l2 = snapshot_weights(&brain);
+
+    let vocab: Vec<String> = corpus.vocab.iter().cloned().collect();
+    let mut rng = Rng::new(cfg.seed);
+    let mut per_epoch_top3: Vec<f32> = Vec::with_capacity(cfg.epochs);
+
+    for epoch in 0..cfg.epochs {
+        // Per-epoch iSTDP refresh (iter-49 ramp / iter-46 baseline).
+        let istdp_params = if cfg.teacher.iter46_baseline {
+            istdp_iter46_baseline()
+        } else {
+            istdp_iter49(&cfg.teacher, epoch)
+        };
+        if !no_plasticity {
+            brain.regions[1].network.enable_istdp(istdp_params);
+        }
+
+        // -- Training: cue+target presentations for this epoch --
+        let mut schedule: Vec<(RewardPair, bool)> = corpus
+            .pairs
+            .iter()
+            .map(|p| (p.clone(), false))
+            .chain(corpus.noise_pairs.iter().map(|p| (p.clone(), true)))
+            .collect();
+        shuffle(&mut rng, &mut schedule);
+
+        for (pair, is_noise) in &schedule {
+            let cue_sdr = encoder.encode_word(&pair.cue);
+            let tgt_sdr = encoder.encode_word(&pair.target);
+
+            if teacher_active {
+                let canonical = target_r2_map.get(&pair.target).cloned().unwrap_or_default();
+                let dg_sdr = dg_sdr_map.get(&pair.cue).cloned().unwrap_or_default();
+                for _rep in 0..cfg.reps_per_pair.max(1) {
+                    brain.regions[1].network.reset_state();
+                    let _ = run_teacher_trial(
+                        &mut brain,
+                        &cfg.teacher,
+                        cfg.use_reward,
+                        *is_noise,
+                        &cue_sdr.indices,
+                        &canonical,
+                        &r2_e,
+                        stdp_params,
+                        istdp_params,
+                        &dg_sdr,
+                    );
+                    idle(&mut brain, COOLDOWN_MS);
+                }
+            } else {
+                let mut combined: Vec<u32> = cue_sdr
+                    .indices
+                    .iter()
+                    .chain(tgt_sdr.indices.iter())
+                    .copied()
+                    .collect();
+                combined.sort_unstable();
+                combined.dedup();
+                for _ in 0..cfg.reps_per_pair.max(1) {
+                    brain.regions[1].network.reset_state();
+                    drive_for(&mut brain, &cue_sdr.indices, CUE_LEAD_MS);
+                    drive_for(&mut brain, &combined, OVERLAP_MS);
+                    drive_for(&mut brain, &tgt_sdr.indices, TARGET_TAIL_MS);
+                    idle(&mut brain, COOLDOWN_MS);
+                }
+            }
+        }
+
+        // -- Eval: build dictionary, present each cue alone, decode
+        //    top-3 vs target word. iter-46 read-only-eval convention:
+        //    silence STDP / iSTDP for the duration. Iter-62 recall
+        //    mode extends this to the full 8-rule stack so any rule
+        //    that could mutate weights during eval is gated.
+        let saved_modulator = brain.regions[1].network.neuromodulator;
+        if !no_plasticity {
+            if recall_mode_active {
+                disable_all_plasticity(&mut brain, 1);
+            } else {
+                brain.regions[1].network.disable_stdp();
+                brain.regions[1].network.disable_istdp();
+            }
+        }
+        brain.set_neuromodulator(0.0);
+
+        let dict = build_vocab_dictionary(
+            &mut brain,
+            &encoder,
+            &r2_e,
+            &vocab,
+            &dg_sdr_map,
+            cfg.teacher.dg.drive_strength,
+        );
+        let mut top3 = 0usize;
+        let mut pairs_n = 0usize;
+        for pair in &corpus.pairs {
+            let cue_sdr = encoder.encode_word(&pair.cue);
+            if cue_sdr.indices.is_empty() {
+                continue;
+            }
+            brain.regions[1].network.reset_state();
+            let counts = if let Some(dg_sdr) = dg_sdr_map.get(&pair.cue) {
+                drive_with_dg_counts(
+                    &mut brain,
+                    &cue_sdr.indices,
+                    dg_sdr,
+                    DRIVE_NA,
+                    cfg.teacher.dg.drive_strength,
+                    RECALL_MS,
+                    &r2_e,
+                )
+            } else {
+                drive_for_with_counts(&mut brain, &cue_sdr.indices, RECALL_MS, &r2_e)
+            };
+            let kwta = top_k_indices(&counts, KWTA_K);
+            if kwta.is_empty() {
+                pairs_n += 1;
+                continue;
+            }
+            let decoded = dict.decode_top(&kwta, 16);
+            let rank = decoded
+                .iter()
+                .position(|(w, _)| w == &pair.target)
+                .map(|p| p + 1);
+            if let Some(r) = rank {
+                if r <= 3 {
+                    top3 += 1;
+                }
+            }
+            pairs_n += 1;
+        }
+        let top3_accuracy = if pairs_n > 0 {
+            top3 as f32 / pairs_n as f32
+        } else {
+            0.0
+        };
+        per_epoch_top3.push(top3_accuracy);
+
+        // Restore plasticity state for the next epoch's training. If
+        // recall_mode_active was used to disable everything, only STDP /
+        // iSTDP need re-enabling here — homeostasis / intrinsic /
+        // reward / metaplasticity / heterosynaptic / structural were
+        // not enabled by the run_target_overlap_one_seed setup beyond
+        // the original initial enable, and the iter-46 convention is
+        // to leave them as the post-disable_all state. For non-recall-
+        // mode trained runs, the iter-46 pattern (re-enable STDP +
+        // iSTDP) preserves bit-identity to run_reward_benchmark's
+        // eval-restore.
+        if !no_plasticity {
+            brain.regions[1].network.enable_stdp(stdp_params);
+            brain.regions[1].network.enable_istdp(istdp_params);
+            if recall_mode_active {
+                // Recall mode disabled everything; bring the rest
+                // back so the next epoch trains as expected.
+                brain.regions[1].network.enable_homeostasis(homeostasis());
+                if !cfg.teacher.iter46_baseline {
+                    brain.regions[1]
+                        .network
+                        .enable_intrinsic_plasticity(intrinsic());
+                }
+                if cfg.use_reward {
+                    brain.regions[1]
+                        .network
+                        .enable_reward_learning(reward_params());
+                }
+            }
+        }
+        brain.set_neuromodulator(saved_modulator);
+    }
+
+    if no_plasticity {
+        let post_l2 = snapshot_weights(&brain);
+        assert_no_weight_drift(
+            &pre_l2,
+            &post_l2,
+            &format!(
+                "iter-63 untrained arm changed weights (seed={}, vocab={}, ep={}, dg={})",
+                cfg.seed,
+                corpus.vocab.len(),
+                cfg.epochs,
+                cfg.teacher.dg.enabled
+            ),
+        );
+    }
+
+    if per_epoch_top3.is_empty() {
+        0.0
+    } else {
+        per_epoch_top3.iter().sum::<f32>() / per_epoch_top3.len() as f32
+    }
 }
 
 /// One-sided critical-t value at α=0.05 for the small-n cases iter-63
@@ -4729,5 +5091,342 @@ mod tests {
         }
         // End-to-end reachability disjointness (the real iter-54 invariant).
         assert_decorrelated_disjoint(&brain, &encoder, &vocab_vec);
+    }
+
+    // ====================================================================
+    // Iter-63 refactor snapshot tests
+    //
+    // These tests lock the pre-refactor numerics of `run_jaccard_bench`
+    // for three configurations that exercise every brain-build branch:
+    //   1. vanilla — random R1→R2 wiring, no DG
+    //   2. decorrelated — iter-54 disjoint-block R1→R2 wiring, no DG
+    //   3. decorrelated + DG + recall — iter-60+ pattern-separation bridge
+    //      with iter-62 plasticity-off-during-eval
+    //
+    // The `build_benchmark_brain` + `disable_all_plasticity` refactor
+    // must produce **bit-identical** JaccardMetrics for every snapshot —
+    // that is the contract the iter-63 plumbing-fix spec demands.
+    // Expected values are captured by the `jaccard_bench_capture_snapshot`
+    // harness (run once before the refactor, output pasted into the
+    // const block below).
+    // ====================================================================
+
+    fn jaccard_bench_snapshot_cfg(decorrelated: bool, dg: bool, recall_mode: bool) -> RewardConfig {
+        let teacher = TeacherForcingConfig {
+            enabled: true,
+            decorrelated_init: decorrelated,
+            dg: DgConfig {
+                enabled: dg,
+                ..DgConfig::default()
+            },
+            recall_mode_eval: recall_mode,
+            target_clamp_strength: 250.0,
+            ..TeacherForcingConfig::default()
+        };
+        RewardConfig {
+            epochs: 2,
+            use_reward: true,
+            seed: 42,
+            reps_per_pair: 2,
+            teacher,
+        }
+    }
+
+    fn approx_eq_or_panic(label: &str, expected: f32, actual: f32) {
+        // Bit-identity is the contract; `to_bits` so NaN handling
+        // does not silently pass.
+        assert_eq!(
+            expected.to_bits(),
+            actual.to_bits(),
+            "{label}: expected={expected} ({:#x}) actual={actual} ({:#x})",
+            expected.to_bits(),
+            actual.to_bits(),
+        );
+    }
+
+    #[test]
+    // (un-ignored: snapshot constants captured pre-refactor)
+    fn jaccard_bench_snapshot_vanilla() {
+        let cfg = jaccard_bench_snapshot_cfg(false, false, false);
+        let corpus = default_corpus();
+        let sweep = run_jaccard_bench(&corpus, &cfg, &[42]);
+        let u = &sweep.untrained[0].jaccard;
+        approx_eq_or_panic(
+            "vanilla untrained same_cue_mean",
+            __SNAPSHOT_VANILLA_UNTRAINED_SAME,
+            u.same_cue_mean,
+        );
+        approx_eq_or_panic(
+            "vanilla untrained cross_cue_mean",
+            __SNAPSHOT_VANILLA_UNTRAINED_CROSS,
+            u.cross_cue_mean,
+        );
+        let t = &sweep.trained[0].jaccard;
+        approx_eq_or_panic(
+            "vanilla trained same_cue_mean",
+            __SNAPSHOT_VANILLA_TRAINED_SAME,
+            t.same_cue_mean,
+        );
+        approx_eq_or_panic(
+            "vanilla trained cross_cue_mean",
+            __SNAPSHOT_VANILLA_TRAINED_CROSS,
+            t.cross_cue_mean,
+        );
+    }
+
+    #[test]
+    // (un-ignored: snapshot constants captured pre-refactor)
+    fn jaccard_bench_snapshot_decorrelated() {
+        let cfg = jaccard_bench_snapshot_cfg(true, false, false);
+        let corpus = default_corpus();
+        let sweep = run_jaccard_bench(&corpus, &cfg, &[42]);
+        let u = &sweep.untrained[0].jaccard;
+        approx_eq_or_panic(
+            "decorrelated untrained same_cue_mean",
+            __SNAPSHOT_DECORRELATED_UNTRAINED_SAME,
+            u.same_cue_mean,
+        );
+        approx_eq_or_panic(
+            "decorrelated untrained cross_cue_mean",
+            __SNAPSHOT_DECORRELATED_UNTRAINED_CROSS,
+            u.cross_cue_mean,
+        );
+        let t = &sweep.trained[0].jaccard;
+        approx_eq_or_panic(
+            "decorrelated trained same_cue_mean",
+            __SNAPSHOT_DECORRELATED_TRAINED_SAME,
+            t.same_cue_mean,
+        );
+        approx_eq_or_panic(
+            "decorrelated trained cross_cue_mean",
+            __SNAPSHOT_DECORRELATED_TRAINED_CROSS,
+            t.cross_cue_mean,
+        );
+    }
+
+    #[test]
+    // (un-ignored: snapshot constants captured pre-refactor)
+    fn jaccard_bench_snapshot_decorrelated_dg_recall() {
+        let cfg = jaccard_bench_snapshot_cfg(true, true, true);
+        let corpus = default_corpus();
+        let sweep = run_jaccard_bench(&corpus, &cfg, &[42]);
+        let u = &sweep.untrained[0].jaccard;
+        approx_eq_or_panic(
+            "dg+recall untrained same_cue_mean",
+            __SNAPSHOT_DGRECALL_UNTRAINED_SAME,
+            u.same_cue_mean,
+        );
+        approx_eq_or_panic(
+            "dg+recall untrained cross_cue_mean",
+            __SNAPSHOT_DGRECALL_UNTRAINED_CROSS,
+            u.cross_cue_mean,
+        );
+        let t = &sweep.trained[0].jaccard;
+        approx_eq_or_panic(
+            "dg+recall trained same_cue_mean",
+            __SNAPSHOT_DGRECALL_TRAINED_SAME,
+            t.same_cue_mean,
+        );
+        approx_eq_or_panic(
+            "dg+recall trained cross_cue_mean",
+            __SNAPSHOT_DGRECALL_TRAINED_CROSS,
+            t.cross_cue_mean,
+        );
+    }
+
+    // Snapshot constants — captured pre-refactor at seed=42, ep=2,
+    // reps=2, vocab=32, target_clamp_strength=250.0. Bit patterns
+    // are exact; the bit-identity contract for the iter-63 plumbing
+    // refactor demands these values match post-refactor too.
+    const __SNAPSHOT_VANILLA_UNTRAINED_SAME: f32 = 1.0; // bits 0x3f800000
+    const __SNAPSHOT_VANILLA_UNTRAINED_CROSS: f32 = f32::from_bits(0x3d6e_a884); // 0.058266178
+    const __SNAPSHOT_VANILLA_TRAINED_SAME: f32 = 0.890625; // bits 0x3f640000
+    const __SNAPSHOT_VANILLA_TRAINED_CROSS: f32 = f32::from_bits(0x3d62_456a); // 0.05524198
+    const __SNAPSHOT_DECORRELATED_UNTRAINED_SAME: f32 = 1.0;
+    const __SNAPSHOT_DECORRELATED_UNTRAINED_CROSS: f32 = f32::from_bits(0x3eef_46fb); // 0.4673384
+    const __SNAPSHOT_DECORRELATED_TRAINED_SAME: f32 = 1.0;
+    const __SNAPSHOT_DECORRELATED_TRAINED_CROSS: f32 = f32::from_bits(0x3eef_46fb); // 0.4673384
+    const __SNAPSHOT_DGRECALL_UNTRAINED_SAME: f32 = 1.0;
+    const __SNAPSHOT_DGRECALL_UNTRAINED_CROSS: f32 = f32::from_bits(0x3d7a_3839); // 0.061088774
+    const __SNAPSHOT_DGRECALL_TRAINED_SAME: f32 = 1.0;
+    const __SNAPSHOT_DGRECALL_TRAINED_CROSS: f32 = f32::from_bits(0x3d49_7f35); // 0.04919358
+
+    /// One-shot helper to capture the actual values for the snapshot
+    /// constants. Run with
+    /// `cargo test -p eval --release jaccard_bench_capture_snapshot
+    /// -- --nocapture --ignored`, paste the printed values into the
+    /// constants above, then remove `#[ignore]` from the snapshot
+    /// tests.
+    #[test]
+    #[ignore = "manual capture harness, not a regression test"]
+    fn jaccard_bench_capture_snapshot() {
+        let corpus = default_corpus();
+        for (label, decorrelated, dg, recall) in [
+            ("vanilla", false, false, false),
+            ("decorrelated", true, false, false),
+            ("dg_recall", true, true, true),
+        ] {
+            let cfg = jaccard_bench_snapshot_cfg(decorrelated, dg, recall);
+            let sweep = run_jaccard_bench(&corpus, &cfg, &[42]);
+            let u = &sweep.untrained[0].jaccard;
+            let t = &sweep.trained[0].jaccard;
+            eprintln!(
+                "[snapshot {label}] untrained: same=f32::from_bits({:#x})_/* {} */ cross=f32::from_bits({:#x})_/* {} */",
+                u.same_cue_mean.to_bits(),
+                u.same_cue_mean,
+                u.cross_cue_mean.to_bits(),
+                u.cross_cue_mean,
+            );
+            eprintln!(
+                "[snapshot {label}] trained:   same=f32::from_bits({:#x})_/* {} */ cross=f32::from_bits({:#x})_/* {} */",
+                t.same_cue_mean.to_bits(),
+                t.same_cue_mean,
+                t.cross_cue_mean.to_bits(),
+                t.cross_cue_mean,
+            );
+        }
+    }
+
+    // ====================================================================
+    // Iter-63 plumbing-fix: shared helper unit tests.
+    // ====================================================================
+
+    /// `build_benchmark_brain` must be deterministic: identical
+    /// `(cfg, seed)` produces identical brain structure (region
+    /// count, R2-E indices, dg_sdr_map keys, target_r2_map keys).
+    /// Catches any non-determinism introduced by future refactors.
+    #[test]
+    fn build_benchmark_brain_is_deterministic() {
+        let cfg = jaccard_bench_snapshot_cfg(true, true, true);
+        let corpus = default_corpus();
+        let a = build_benchmark_brain(&corpus, &cfg);
+        let b = build_benchmark_brain(&corpus, &cfg);
+        assert_eq!(a.brain.regions.len(), b.brain.regions.len());
+        assert_eq!(a.r2_e, b.r2_e);
+        assert_eq!(a.r2_n_used, b.r2_n_used);
+        assert_eq!(a.decorrelated_block_size, b.decorrelated_block_size);
+        for word in &corpus.vocab {
+            assert_eq!(
+                a.target_r2_map.get(word),
+                b.target_r2_map.get(word),
+                "target_r2_map differs for {word}"
+            );
+            assert_eq!(
+                a.dg_sdr_map.get(word),
+                b.dg_sdr_map.get(word),
+                "dg_sdr_map differs for {word}"
+            );
+        }
+        // Synapse L2 norms must match per region.
+        let la = brain_synapse_l2_norms(&a.brain);
+        let lb = brain_synapse_l2_norms(&b.brain);
+        assert_eq!(la, lb, "synapse L2 norms differ between identical builds");
+    }
+
+    /// `build_benchmark_brain` must honour the iter-54 / iter-60
+    /// flags. Vanilla → 2 regions (R1 + R2), no DG. Decorrelated →
+    /// `Some(block_size)`. DG → 3 regions. Catches the iter-63 v1
+    /// bug where these flags were silently ignored.
+    #[test]
+    fn build_benchmark_brain_honours_dg_and_decorrelated_flags() {
+        let corpus = default_corpus();
+
+        let vanilla =
+            build_benchmark_brain(&corpus, &jaccard_bench_snapshot_cfg(false, false, false));
+        assert_eq!(vanilla.brain.regions.len(), 2);
+        assert!(vanilla.decorrelated_block_size.is_none());
+        assert!(vanilla.dg_sdr_map.is_empty());
+
+        let dec = build_benchmark_brain(&corpus, &jaccard_bench_snapshot_cfg(true, false, false));
+        assert_eq!(dec.brain.regions.len(), 2);
+        assert!(
+            dec.decorrelated_block_size.is_some(),
+            "decorrelated_init=true must yield Some(block_size)"
+        );
+        assert!(dec.dg_sdr_map.is_empty());
+
+        let dg = build_benchmark_brain(&corpus, &jaccard_bench_snapshot_cfg(true, true, true));
+        assert_eq!(
+            dg.brain.regions.len(),
+            3,
+            "dg.enabled=true must add a DG region"
+        );
+        assert_eq!(
+            dg.dg_sdr_map.len(),
+            corpus.vocab.len(),
+            "dg_sdr_map must have one entry per vocab word"
+        );
+    }
+
+    /// `disable_all_plasticity` must clear every plasticity-rule
+    /// `Option<…>` field in the target region's `Network`. Catches
+    /// any future plasticity mechanism added to `snn-core` that the
+    /// disable helper forgets to gate.
+    #[test]
+    fn disable_all_plasticity_clears_every_rule() {
+        let cfg = jaccard_bench_snapshot_cfg(false, false, false);
+        let corpus = default_corpus();
+        let mut bb = build_benchmark_brain(&corpus, &cfg);
+        // Enable everything we have control over, so the disable
+        // call has something to turn off.
+        bb.brain.regions[1].network.enable_stdp(stdp());
+        bb.brain.regions[1]
+            .network
+            .enable_istdp(istdp_iter46_baseline());
+        bb.brain.regions[1]
+            .network
+            .enable_homeostasis(homeostasis());
+        bb.brain.regions[1]
+            .network
+            .enable_intrinsic_plasticity(intrinsic());
+        bb.brain.regions[1]
+            .network
+            .enable_reward_learning(reward_params());
+        let net_before = &bb.brain.regions[1].network;
+        assert!(net_before.stdp.is_some());
+        assert!(net_before.istdp.is_some());
+        assert!(net_before.homeostasis.is_some());
+        assert!(net_before.intrinsic.is_some());
+        assert!(net_before.reward.is_some());
+
+        disable_all_plasticity(&mut bb.brain, 1);
+
+        let net = &bb.brain.regions[1].network;
+        assert!(net.stdp.is_none(), "stdp not disabled");
+        assert!(net.istdp.is_none(), "istdp not disabled");
+        assert!(net.homeostasis.is_none(), "homeostasis not disabled");
+        assert!(net.intrinsic.is_none(), "intrinsic not disabled");
+        assert!(net.reward.is_none(), "reward learning not disabled");
+        assert!(net.metaplasticity.is_none(), "metaplasticity not disabled");
+        assert!(net.heterosynaptic.is_none(), "heterosynaptic not disabled");
+        assert!(
+            net.structural.is_none(),
+            "structural plasticity not disabled"
+        );
+    }
+
+    /// `run_target_overlap_arm` in untrained mode must complete the
+    /// full training-loop schedule (epochs > 0, no_plasticity = true)
+    /// without violating the iter-52 weight-invariant. This is the
+    /// regression test for the bug iter-63 v1 had: silent plasticity
+    /// rules (metaplasticity / heterosynaptic / structural) leaked
+    /// through `run_reward_benchmark`'s 5-rule disable gate.
+    #[test]
+    fn target_overlap_arm_untrained_passes_iter52_invariant() {
+        let mut cfg = jaccard_bench_snapshot_cfg(true, true, true);
+        cfg.epochs = 2;
+        cfg.teacher.no_plasticity = true;
+        cfg.use_reward = false;
+        let corpus = default_corpus();
+        // The function asserts no_weight_drift internally; if any
+        // rule leaks through disable_all_plasticity, this panics.
+        let result = run_target_overlap_arm(&corpus, &cfg, &[42], ArmMode::Untrained);
+        assert_eq!(result.per_seed.len(), 1);
+        assert!(result.mean.is_finite(), "mean must be finite");
+        assert!(
+            result.mean >= 0.0 && result.mean <= 1.0,
+            "mean target_top3_overlap out of range: {}",
+            result.mean
+        );
     }
 }
