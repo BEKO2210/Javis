@@ -102,26 +102,104 @@ training loop under `disable_all_plasticity` — the regression-test
 win for the iter-63 plumbing-fix's `run_teacher_trial` save/restore
 patch. Pre-fix, the same calibration run had panicked.
 
-### Next step (iter-63 main run)
+### Trained main run — Branch (B) FAIL
 
-```sh
-cargo run --release -p eval --example reward_benchmark -- \
-  --target-overlap-bench --mode trained --threshold 0.0621 \
-  --seeds 42,7,13,99 --epochs 32 \
-  --decorrelated-init --teacher-forcing \
-  --target-clamp-strength 500 --teacher-ms 40 \
-  --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval
-```
+Run command exactly as locked in the calibration commit. Wallclock
+~2 h on local hardware (4 seeds × 32 epochs at vocab=64 + DG bridge
+with full plasticity stack, then internal untrained re-run for the
+paired sweep render).
 
-Branching applied automatically per the locked matrix:
+| Seed | untrained | trained | Δ | Δ ≥ 0.0621 |
+| ---: | ---: | ---: | ---: | :---: |
+| 42 | 0.0127 | 0.0127 | +0.0000 | ✗ |
+| 7  | 0.0000 | 0.0195 | +0.0195 | ✗ |
+| 13 | 0.0498 | 0.0039 | **−0.0459** | ✗ |
+| 99 | 0.0156 | 0.0312 | +0.0156 | ✗ |
 
-- **(A)** Δ ≥ 0.0621 on 4/4 seeds AND p < 0.05 → iter-64 = CA3/CA1
-  split on verified DG read-out.
-- **(B)** Δ < 0 on any seed OR Δ > 0 on ≤ 2/4 → iter-64 = mechanism
-  question first (DG→R2 lr, R2 recurrent strength, perforant-path).
-- **(C)** Δ > 0 on ≥ 3/4 AND 0.05 ≤ p < 0.15 → more seeds at the
-  same architecture, no escalation.
-- Edge cases collapse to (B).
+Aggregate: μ_untrained = 0.0195 ± 0.0213, μ_trained = 0.0168 ±
+0.0115, Δ̄ = −0.0027 ± 0.0300, n_pos = 2/4, n_pass = 0/4.
+
+Paired t(3) = −0.179, p < 0.05 ✗, p < 0.15 ✗.
+
+The internal untrained re-run reproduced the calibration commit's
+locked baseline values **bit-for-bit on all 4 seeds** —
+determinism preserved, paired-seed invariant intact.
+
+### Branching matrix applied
+
+- (A) PASS — needs 4/4 ≥ 0.0621 AND p < 0.05: ❌ (n_pass = 0/4).
+- **(B) FAIL** — Δ < 0 on any seed OR n_pos ≤ n/2: ✓ (Δ < 0 on
+  seed 13 plus n_pos = 2/4 — two independent triggers).
+- (C) MIXED — n_pos ≥ ⌈3n/4⌉ AND 0.05 ≤ p < 0.15: ❌
+  (n_pos = 2/4 < 3, p ≥ 0.15).
+
+**Verdict: Branch (B) — locked.** Edge cases collapse to (B) per
+pre-registration. No goalpost-shift; the matrix was committed
+before any trained-arm data was peeked at.
+
+### Honest reading
+
+Plasticity (STDP / iSTDP / homeostasis / intrinsic / reward /
+metaplasticity / heterosynaptic / structural) over 32 epochs at
+the iter-63 configuration produces no measurable cue → target
+learning signal on the iter-44/45 `top3_accuracy` metric. Trained
+mean is statistically indistinguishable from untrained mean on
+the same brain, and trends very slightly negative.
+
+This does NOT mean the brain learns nothing. iter-60/61/62 already
+demonstrated DG separation works (cross-cue floor collapses 16×)
+and recall-mode keeps the engram stable (same-cue = 1.000 on 4/4
+seeds, post-eval L2 bit-identical). What's missing is a measurable
+signal that the post-DG path *maps* cue → target — not just
+*separates* cues.
+
+The metric pipeline is verified: positive control on iter-46 Arm B
+reproduced iter-51's stable estimator at 0.1094 ∈ [0.07, 0.15].
+The metric surfaces learning when learning is happening.
+
+### iter-64 entry (locked by branch B)
+
+Mechanism question first, before any further architecture work:
+
+1. **DG → R2 learning rate.** The DG-mossy-fibre projection may
+   not have enough plasticity headroom under iter-46 STDP a_plus
+   (0.020) at the DG → R2 weight scale used in iter-60+. Sweep
+   `dg_to_r2_weight` and isolate STDP a_plus on DG → R2
+   synapses.
+2. **R2 recurrent strength.** If R2-E recurrent weights are too
+   sparse / weak, the engram doesn't carry between trials. Sweep
+   `R2_P_CONNECT` and the initial recurrent weight band.
+3. **Perforant-path re-introduction.** iter-60 set
+   `direct_r1r2_weight_scale = 0.0` (DG sole cue-routing path).
+   Hippocampus has both perforant + mossy-fibre paths. Sweep
+   `direct_r1r2_weight_scale ∈ {0.0, 0.1, 0.3, 1.0}` — does
+   re-introducing a weak perforant path let cue → target learning
+   surface?
+
+CA3/CA1 split is **deferred** until at least one of these surfaces
+a measurable signal. Adding biological detail on top of an
+unverified read-out is the iter-50/51 mistake the discipline
+exists to prevent.
+
+### Methodological self-audit (iter-63 chain)
+
+- Plumbing bug v1 (silent wiring gap + iter-52-invariant gap)
+  caught by the iter-52 invariant on the calibration run; v2
+  introduces `build_benchmark_brain` + `disable_all_plasticity`
+  shared helpers + `run_teacher_trial` save/restore patch.
+  Verified bit-identical to pre-refactor on `run_jaccard_arm`
+  via three snapshot tests.
+- Pre-measurement metric correction caught by the positive
+  control on its first invocation. Band recalibrated from
+  [0.16, 0.22] (iter-46 ep0 peak) to [0.07, 0.15] (iter-51
+  stable estimator). Both pre-data, no goalpost-shift.
+- v1 trained run was killed mid-flight after a sandbox VM reset
+  exposed a branch-state inconsistency: PR #34 was merged at
+  ffac7c3 (pre plumbing-fix); the v2 plumbing-fix `112a469` was
+  pushed afterwards and never reached main. The trained run was
+  re-started on a local branch with the plumbing-fix and
+  calibration cherry-picked together. The numbers above are on
+  the corrected v2 code path.
 
 ## Unreleased — Iteration 62 (recall-mode: plasticity-off-during-eval)
 

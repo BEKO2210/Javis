@@ -498,12 +498,166 @@ Estimated effort:
   have; the (C) cutoff exists exactly because n=4 has weak
   power.
 
-## Headline (placeholder)
+## Headline
 
-> *to be filled after the main run; one of:*
-> - **Direct cue → target learning verified on DG-enabled
->   brain** (branch A)
-> - **DG separates and recalls but does not learn — mechanism
->   question for iter-64** (branch B)
-> - **Directional learning signal under-powered at n=4 — more
->   seeds before iter-64** (branch C)
+**DG separates and recalls but does not learn — mechanism question
+for iter-64.** Branch (B) per the locked branching matrix.
+
+## Trained main run — verdict
+
+Run command exactly as locked in the *Run command sequence*
+section, with `--mode trained --threshold 0.0621`:
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --target-overlap-bench --mode trained --threshold 0.0621 \
+  --seeds 42,7,13,99 --epochs 32 \
+  --decorrelated-init --teacher-forcing \
+  --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval
+```
+
+Wallclock: ~2 h on local hardware (4 seeds × 32 epochs of full
+plasticity at vocab=64 with DG bridge). The internal untrained
+re-run reproduced the calibration commit's locked baseline values
+**bit-for-bit on all 4 seeds** — determinism preserved, no
+hidden seed drift, paired-seed invariant intact.
+
+### Per-seed paired result
+
+| Seed | untrained | trained | Δ | Δ ≥ 0.0621 |
+| ---: | ---: | ---: | ---: | :---: |
+| 42 | 0.0127 | 0.0127 | +0.0000 | ✗ |
+| 7  | 0.0000 | 0.0195 | +0.0195 | ✗ |
+| 13 | 0.0498 | 0.0039 | **−0.0459** | ✗ |
+| 99 | 0.0156 | 0.0312 | +0.0156 | ✗ |
+
+### Aggregate
+
+- `μ_untrained = 0.0195 ± 0.0213`
+- `μ_trained  = 0.0168 ± 0.0115`
+- `Δ̄ = trained − untrained = −0.0027 ± 0.0300`
+- `n_pos = 2 / 4`, `n_pass = 0 / 4`
+
+Untrained identical to calibration as expected (deterministic
+given seed). Trained mean is *below* untrained mean — the
+arithmetic difference is small (0.003) and not significant, but
+the direction is **away** from the pre-registered hypothesis,
+not toward it.
+
+### Paired t(3)
+
+- `t = −0.179`
+- `t_crit(α = 0.05) = 2.353` ⇒ `p < 0.05` ✗
+- `t_crit(α = 0.15) = 1.250` ⇒ `p < 0.15` ✗
+
+The directional pattern is consistent with chance (Δ negative on
+seed 13 and zero on seed 42 cancel the modest gains on seeds 7
+and 99). With n = 4 the test has limited power, but per Bekos's
+pre-registered (C) cutoff the conditions for "underpowered, more
+seeds" require `n_pos ≥ ⌈3n/4⌉ = 3` AND `t > 1.250` — both fail.
+
+### Branching matrix (locked) applied
+
+| Outcome | Match? | Why |
+| --- | :-: | --- |
+| **(A) PASS** — Δ ≥ threshold on **4/4** seeds AND `p < 0.05` | ❌ | `n_pass = 0/4`; no seed clears 0.0621 |
+| **(B) FAIL** — Δ < 0 on any seed **OR** Δ > 0 on ≤ n/2 seeds | ✓ | Δ < 0 on seed 13 (−0.0459); also `n_pos = 2/4` ≤ n/2 — **two independent triggers** for branch (B) |
+| **(C) MIXED** — `n_pos ≥ ⌈3n/4⌉ AND 0.05 ≤ p < 0.15` | ❌ | `n_pos = 2/4 < 3`; `p ≥ 0.15` |
+
+**Verdict: Branch (B) — locked.** Per the pre-registration: edge
+cases collapse to (B) too. There is no goalpost-shift available;
+the matrix was committed before any trained-arm data was peeked
+at. The numbers are accepted as they are.
+
+### Honest reading
+
+**What the data say.** On the iter-63 configuration (vocab=64 +
+DG bridge + decorrelated R1→R2 + recall-mode-eval + 32 epochs of
+teacher-forcing + clamp 500 + 4 seeds), 32 epochs of full
+plasticity (STDP / iSTDP / homeostasis / intrinsic / reward /
+metaplasticity / heterosynaptic / structural) **do not produce a
+measurable cue → target learning signal** on the iter-44/45
+`top3_accuracy` metric. The trained brain's mean across-epoch
+top-3-decoder hit rate is statistically indistinguishable from
+the same brain measured before any plasticity — and trends, if
+anything, very slightly *negative*.
+
+**What the data do *not* say.**
+
+- The brain is not learning *anything*. iter-60 / iter-61 / iter-
+  62 already demonstrated DG separation works (cross-cue floor
+  collapses 16×) and recall-mode keeps the engram stable
+  (same-cue = 1.000 on 4/4 seeds, post-eval L2 bit-identical).
+  Those phenomena are real; they just don't show up in the
+  decoder-relative `top3_accuracy` metric on this architecture.
+- The metric is broken. The positive control on the iter-46 Arm B
+  baseline reproduced iter-51's stable estimator at 0.1094
+  (within `[0.07, 0.15]`); the metric pipeline is verified to
+  surface learning when learning is happening.
+- The architecture is hopeless. iter-60's −94 % cross-cue floor
+  is the largest single number-move in 14 iterations; the DG
+  bridge is doing its job. What's missing is a measurable signal
+  that the *post-DG* path is mapping cue → target, not just
+  separating cues.
+
+**What the data point to (for iter-64).** Per the locked branching
+matrix, branch (B) sends iter-64 into the **mechanism question**
+before any further architecture work:
+
+1. **DG → R2 learning rate.** The DG-mossy-fibre projection
+   (sparse, k-of-n) into R2 may not have enough plasticity headroom
+   under the iter-46 STDP `a_plus` (0.020) at the DG → R2
+   weight scale used in iter-60+ (`dg_to_r2_weight = 1.0`,
+   `dg_to_r2_fanout = 30`). A sweep of `dg_to_r2_weight` and the
+   `a_plus` on the DG → R2 synapses (currently treated identically
+   to R1 → R2 by the per-region plasticity) would show whether
+   plasticity is structurally able to write the cue → target
+   mapping at all.
+2. **R2 recurrent strength.** The R2-E recurrent network builds
+   the engram. If recurrent weights are too sparse / weak, the
+   recurrent attractor doesn't carry the cue → target association
+   between trials and the per-epoch dictionary fingerprint phase
+   captures something disconnected from training. Sweep
+   `R2_P_CONNECT` and the initial recurrent weight band.
+3. **Perforant-path re-introduction.** iter-60 set
+   `direct_r1r2_weight_scale = 0.0` (DG sole cue-routing path).
+   The hippocampus has *both* the perforant path and the
+   mossy-fibre path; with no direct R1 → R2 input, the trained R2
+   has no consistent "raw cue" handle that plasticity can exploit
+   independently of DG's hashed code. A sweep of
+   `direct_r1r2_weight_scale ∈ {0.0, 0.1, 0.3, 1.0}` would test
+   whether re-introducing a weak perforant path lets cue → target
+   learning surface.
+
+CA3/CA1 split is **deferred** until at least one of these three
+mechanism questions produces a measurable learning signal. Adding
+biological detail on top of an unverified read-out is the
+iter-50/51 mistake the discipline exists to prevent.
+
+### Methodological self-audit
+
+Two issues surfaced *during* this iteration, both caught by the
+pre-registered gates and both cleaned up before locking:
+
+1. **Plumbing bug v1 (silent wiring gap + iter-52-invariant
+   gap).** `run_target_overlap_arm` v1 went through
+   `run_reward_benchmark` which ignores `decorrelated_init` and
+   `dg.enabled`, and the existing 5-rule plasticity gate left
+   metaplasticity / heterosynaptic / structural / BCM unattended.
+   v2 introduces `build_benchmark_brain` and
+   `disable_all_plasticity` shared helpers and a save/restore
+   patch in `run_teacher_trial`. Verified bit-identical to
+   pre-refactor on `run_jaccard_arm` via three snapshot tests.
+2. **Pre-measurement metric correction.** The positive control
+   caught the `prediction_top3_before_teacher` vs `top3_accuracy`
+   mismatch on its first invocation; the band was recalibrated
+   from `[0.16, 0.22]` (iter-46 ep0 peak) to `[0.07, 0.15]`
+   (iter-51 stable estimator). Both corrections were applied
+   before any trained-arm data was peeked at.
+
+The trained main run's results above are on v2 code with the
+correct band. No further corrections are applied post-data —
+the verdict is what the matrix says it is.
+
+
