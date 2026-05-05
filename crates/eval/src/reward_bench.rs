@@ -577,6 +577,12 @@ pub struct TeacherForcingConfig {
     /// connectivity scales as `r2_n² × R2_P_CONNECT`; expect
     /// quadratic compute cost.
     pub r2_n: u32,
+    /// Iter-64 axis B override. `None` = use the compile-time
+    /// `R2_P_CONNECT = 0.05` (iter-46 / iter-63 default). `Some(p)`
+    /// overrides the recurrent E↔E connectivity probability for
+    /// the duration of this run (axis B mechanism diagnosis;
+    /// notes/64-mechanism-diagnosis.md). Range: `(0.0, 1.0]`.
+    pub r2_p_connect_override: Option<f32>,
 }
 
 impl Default for TeacherForcingConfig {
@@ -609,6 +615,7 @@ impl Default for TeacherForcingConfig {
             recall_mode_eval: false,
             decorrelated_init: false,
             r2_n: 0,
+            r2_p_connect_override: None,
             dg: DgConfig {
                 enabled: false,
                 size: 4000,
@@ -652,6 +659,7 @@ impl TeacherForcingConfig {
             recall_mode_eval: false,
             decorrelated_init: false,
             r2_n: 0,
+            r2_p_connect_override: None,
             dg: DgConfig {
                 enabled: false,
                 size: 4000,
@@ -859,10 +867,12 @@ fn build_input_region() -> Region {
 /// Build the R2 (memory) region. `r2_n` is the requested neuron
 /// count — pass [`R2_N`] to reproduce the iter-46…58 baseline,
 /// or any other positive value to scale the recurrent network up
-/// or down. Inhibitory fraction (`inh_frac`) and recurrent
-/// connection probability ([`R2_P_CONNECT`]) stay at the iter-58
-/// defaults; only the cell count moves.
-fn build_memory_region(seed: u64, inh_frac: f32, r2_n: usize) -> Region {
+/// or down. `inh_frac` is the inhibitory fraction; `r2_p_connect`
+/// is the recurrent E↔E connection probability — pass
+/// [`R2_P_CONNECT`] (0.05) for the iter-46/iter-63 default, or
+/// any other positive value in `(0.0, 1.0]` for the iter-64
+/// axis B mechanism diagnosis sweep.
+fn build_memory_region(seed: u64, inh_frac: f32, r2_n: usize, r2_p_connect: f32) -> Region {
     let mut rng = Rng::new(seed);
     let mut region = Region::new("R2", DT);
     let net = &mut region.network;
@@ -885,13 +895,20 @@ fn build_memory_region(seed: u64, inh_frac: f32, r2_n: usize) -> Region {
             if pre == post {
                 continue;
             }
-            if rng.bernoulli(R2_P_CONNECT) {
+            if rng.bernoulli(r2_p_connect) {
                 let w = rng.range_f32(0.5 * g, 1.0 * g);
                 net.connect(pre, post, w);
             }
         }
     }
     region
+}
+
+/// Iter-64 axis B helper: returns the effective R2 recurrent
+/// connection probability — `r2_p_connect_override` if set,
+/// otherwise the compile-time [`R2_P_CONNECT`] (0.05).
+fn effective_r2_p_connect(cfg: &TeacherForcingConfig) -> f32 {
+    cfg.r2_p_connect_override.unwrap_or(R2_P_CONNECT)
 }
 
 fn wire_forward(brain: &mut Brain, seed: u64, inter_weight: f32) {
@@ -1033,7 +1050,7 @@ fn assert_decorrelated_disjoint(brain: &Brain, encoder: &TextEncoder, vocab: &[S
 }
 
 fn fresh_brain(seed: u64) -> Brain {
-    fresh_brain_with(seed, INTER_WEIGHT, R2_INH_FRAC, R2_N)
+    fresh_brain_with(seed, INTER_WEIGHT, R2_INH_FRAC, R2_N, R2_P_CONNECT)
 }
 
 /// Iter-50 variant: build the brain with explicit override values
@@ -1045,10 +1062,25 @@ fn fresh_brain(seed: u64) -> Brain {
 /// Iter-59: `r2_n` is now an explicit parameter so the capacity
 /// sweep can rebuild R2 at any positive size. Pass [`R2_N`] to
 /// reproduce iter-46…58 numerics exactly.
-fn fresh_brain_with(seed: u64, inter_weight: f32, inh_frac: f32, r2_n: usize) -> Brain {
+///
+/// Iter-64: `r2_p_connect` is the recurrent E↔E connectivity
+/// probability — pass [`R2_P_CONNECT`] (0.05) for the iter-46/
+/// iter-63 default, or any value in `(0.0, 1.0]` for axis B.
+fn fresh_brain_with(
+    seed: u64,
+    inter_weight: f32,
+    inh_frac: f32,
+    r2_n: usize,
+    r2_p_connect: f32,
+) -> Brain {
     let mut brain = Brain::new(DT);
     brain.add_region(build_input_region());
-    brain.add_region(build_memory_region(seed.wrapping_add(1), inh_frac, r2_n));
+    brain.add_region(build_memory_region(
+        seed.wrapping_add(1),
+        inh_frac,
+        r2_n,
+        r2_p_connect,
+    ));
     wire_forward(&mut brain, seed.wrapping_add(2), inter_weight);
     brain
 }
@@ -2131,7 +2163,14 @@ pub fn run_determinism_smoke(corpus: &RewardCorpus, cfg: &RewardConfig) {
         (INTER_WEIGHT, R2_INH_FRAC)
     };
     let r2_n_used = effective_r2_n(&cfg.teacher);
-    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used, r2_n_used);
+    let r2_p_connect_used = effective_r2_p_connect(&cfg.teacher);
+    let mut brain = fresh_brain_with(
+        cfg.seed,
+        inter_weight_used,
+        inh_frac_used,
+        r2_n_used,
+        r2_p_connect_used,
+    );
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
     let r2_e = r2_e_set(&brain);
 
@@ -2406,7 +2445,14 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
         (INTER_WEIGHT, R2_INH_FRAC)
     };
     let r2_n_used = effective_r2_n(&cfg.teacher);
-    let mut brain = fresh_brain_with(cfg.seed, inter_weight_used, inh_frac_used, r2_n_used);
+    let r2_p_connect_used = effective_r2_p_connect(&cfg.teacher);
+    let mut brain = fresh_brain_with(
+        cfg.seed,
+        inter_weight_used,
+        inh_frac_used,
+        r2_n_used,
+        r2_p_connect_used,
+    );
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
     let r2_e = r2_e_set(&brain);
 
@@ -3489,6 +3535,7 @@ fn build_benchmark_brain(corpus: &RewardCorpus, cfg: &RewardConfig) -> BrainBuil
         (INTER_WEIGHT, R2_INH_FRAC)
     };
     let r2_n_used = effective_r2_n(&cfg.teacher);
+    let r2_p_connect_used = effective_r2_p_connect(&cfg.teacher);
     let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
     let effective_inter_weight = if cfg.teacher.dg.enabled {
         inter_weight * cfg.teacher.dg.direct_r1r2_weight_scale
@@ -3503,6 +3550,7 @@ fn build_benchmark_brain(corpus: &RewardCorpus, cfg: &RewardConfig) -> BrainBuil
             cfg.seed.wrapping_add(1),
             inh_frac,
             r2_n_used,
+            r2_p_connect_used,
         ));
         let vocab_vec: Vec<String> = corpus.vocab.iter().cloned().collect();
         let _blocks = wire_forward_decorrelated(
@@ -3518,7 +3566,13 @@ fn build_benchmark_brain(corpus: &RewardCorpus, cfg: &RewardConfig) -> BrainBuil
         (b, Some(block_size))
     } else {
         (
-            fresh_brain_with(cfg.seed, effective_inter_weight, inh_frac, r2_n_used),
+            fresh_brain_with(
+                cfg.seed,
+                effective_inter_weight,
+                inh_frac,
+                r2_n_used,
+                r2_p_connect_used,
+            ),
             None,
         )
     };
@@ -4744,6 +4798,509 @@ fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: 
     }
 }
 
+// =====================================================================
+// Iter-64 — mechanism diagnosis: axis sweep infrastructure.
+//
+// Three isolated diagnostic axes per `notes/64-mechanism-diagnosis.md`:
+//   A — DG → R2 drive scale (`dg_to_r2_weight`)
+//   B — R2 recurrent connectivity (`r2_p_connect_override`)
+//   C — direct (perforant) R1 → R2 path (`direct_r1r2_weight_scale`)
+//
+// Each axis is swept over a small list of values, paired by seed,
+// and classified per the locked iter-64 acceptance matrix
+// (Alpha / Beta / Gamma / Delta). The untrained arm at every
+// (config, seed) tuple is deterministic — the cache short-circuits
+// repeat computations when an axis value happens to coincide with
+// the iter-63 baseline configuration. Pre-seeded with the iter-63
+// calibration values for the four locked seeds.
+// =====================================================================
+
+/// Iter-64 axis under test. Each variant binds to exactly one
+/// runtime-overrideable parameter on `TeacherForcingConfig`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepAxis {
+    /// Axis A — DG mossy-fibre weight scale into R2.
+    DgToR2Weight,
+    /// Axis B — R2 recurrent E↔E connectivity probability.
+    R2PConnect,
+    /// Axis C — direct (perforant) R1 → R2 weight scale.
+    DirectR1R2WeightScale,
+}
+
+impl SweepAxis {
+    pub fn label(self) -> &'static str {
+        match self {
+            SweepAxis::DgToR2Weight => "dg_to_r2_weight",
+            SweepAxis::R2PConnect => "r2_p_connect",
+            SweepAxis::DirectR1R2WeightScale => "direct_r1r2_weight_scale",
+        }
+    }
+
+    pub fn cli_arg(self) -> &'static str {
+        match self {
+            SweepAxis::DgToR2Weight => "dg-to-r2-weight",
+            SweepAxis::R2PConnect => "r2-p-connect",
+            SweepAxis::DirectR1R2WeightScale => "direct-r1r2-weight-scale",
+        }
+    }
+
+    /// iter-63 baseline value for this axis. The configuration
+    /// `(dg=1.0, r2_p=0.05, direct=0.0)` reproduces the iter-63
+    /// trained main run; any axis value matching its baseline
+    /// short-circuits to the cached iter-63 calibration value.
+    pub fn iter63_baseline(self) -> f32 {
+        match self {
+            SweepAxis::DgToR2Weight => 1.0,
+            SweepAxis::R2PConnect => R2_P_CONNECT,
+            SweepAxis::DirectR1R2WeightScale => 0.0,
+        }
+    }
+
+    pub fn parse_cli(s: &str) -> Option<Self> {
+        match s {
+            "dg-to-r2-weight" | "dg_to_r2_weight" => Some(SweepAxis::DgToR2Weight),
+            "r2-p-connect" | "r2_p_connect" => Some(SweepAxis::R2PConnect),
+            "direct-r1r2-weight-scale" | "direct_r1r2_weight_scale" => {
+                Some(SweepAxis::DirectR1R2WeightScale)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Iter-64 acceptance classification (locked in
+/// `notes/64-mechanism-diagnosis.md`):
+///
+/// - **(α) Alpha:** `Δ̄ > 0` AND `n_pos ≥ ⌈3n/4⌉` AND `t > 0`
+/// - **(β) Beta:** `|Δ̄| ≤ σ_untrained_iter63` (≈ 0.0213)
+/// - **(γ) Gamma:** `Δ̄ < 0` AND `n_pos ≤ ⌊n/4⌋` AND `t < −1.0`
+/// - **(δ) Delta:** anything else (mixed / inconclusive — needs
+///   more seeds before verdict)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisClassification {
+    Alpha,
+    Beta,
+    Gamma,
+    Delta,
+}
+
+impl AxisClassification {
+    pub fn label(self) -> &'static str {
+        match self {
+            AxisClassification::Alpha => "(α) Alpha — positive trend, deepen in iter-65",
+            AxisClassification::Beta => "(β) Beta — no effect, rule out",
+            AxisClassification::Gamma => "(γ) Gamma — negative trend, rule out (degrading)",
+            AxisClassification::Delta => {
+                "(δ) Delta — mixed / inconclusive, more seeds before verdict"
+            }
+        }
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            AxisClassification::Alpha => "α",
+            AxisClassification::Beta => "β",
+            AxisClassification::Gamma => "γ",
+            AxisClassification::Delta => "δ",
+        }
+    }
+}
+
+/// Two-phase run signal. Smoke phase = 16 epochs, full phase =
+/// 32 epochs. Caller decides epoch count via `cfg.epochs`; this
+/// enum just tags the result for the renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepPhase {
+    Smoke,
+    Full,
+    /// Custom epoch count that doesn't match either canonical phase.
+    Other(usize),
+}
+
+impl SweepPhase {
+    pub fn from_epochs(epochs: usize) -> Self {
+        match epochs {
+            16 => SweepPhase::Smoke,
+            32 => SweepPhase::Full,
+            other => SweepPhase::Other(other),
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            SweepPhase::Smoke => "smoke (16 ep)".to_string(),
+            SweepPhase::Full => "full (32 ep)".to_string(),
+            SweepPhase::Other(n) => format!("other ({n} ep)"),
+        }
+    }
+}
+
+/// Iter-64 σ_untrained from the iter-63 calibration commit
+/// (`a08a117` on `claude/iter63-calibration` → merged via PR #38).
+/// Sample std of the four per-seed untrained values
+/// (0.0127, 0.0000, 0.0498, 0.0156) at the iter-63 baseline
+/// configuration. Used by the (β) classification band and as the
+/// reference noise scale for axis verdict thresholds.
+const SIGMA_UNTRAINED_ITER63: f32 = 0.0213;
+
+/// One value-point in an axis sweep — both arms + paired stats +
+/// classification.
+#[derive(Debug, Clone)]
+pub struct AxisSweepPoint {
+    pub axis: SweepAxis,
+    pub value: f32,
+    pub trained_per_seed: Vec<f32>,
+    pub untrained_per_seed: Vec<f32>,
+    pub deltas: Vec<f32>,
+    pub mean_trained: f32,
+    pub mean_untrained: f32,
+    pub mean_delta: f32,
+    pub sd_delta: f32,
+    pub t_stat: f32,
+    pub df: usize,
+    pub n_pos: usize,
+    /// Count of seeds where Δ ≥ iter-63 locked threshold (0.0621).
+    /// Reference only — iter-64's acceptance does not require this.
+    pub n_pass_iter63: usize,
+    pub classification: AxisClassification,
+}
+
+/// Iter-64 axis sweep result — one [`AxisSweepPoint`] per requested
+/// value, paired-by-seed across the whole sweep.
+#[derive(Debug, Clone)]
+pub struct AxisSweepResult {
+    pub axis: SweepAxis,
+    pub seeds: Vec<u64>,
+    pub epochs: usize,
+    pub phase: SweepPhase,
+    pub points: Vec<AxisSweepPoint>,
+}
+
+/// Iter-64 untrained-arm cache key. Hash is stable across runs
+/// because `f32::to_bits` gives a deterministic 32-bit integer.
+/// All three iter-64-axis-affecting parameters are part of the
+/// key so an untrained value computed at one axis can be looked
+/// up by any other axis sweep that lands on the same configuration.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+struct UntrainedCacheKey {
+    seed: u64,
+    r2_p_connect_bits: u32,
+    dg_to_r2_weight_bits: u32,
+    direct_r1r2_weight_scale_bits: u32,
+}
+
+impl UntrainedCacheKey {
+    fn from_cfg(cfg: &RewardConfig, seed: u64) -> Self {
+        Self {
+            seed,
+            r2_p_connect_bits: effective_r2_p_connect(&cfg.teacher).to_bits(),
+            dg_to_r2_weight_bits: cfg.teacher.dg.to_r2_weight.to_bits(),
+            direct_r1r2_weight_scale_bits: cfg.teacher.dg.direct_r1r2_weight_scale.to_bits(),
+        }
+    }
+}
+
+/// Process-local untrained-arm cache. Seeded with the iter-63
+/// calibration values on first access; all four locked seeds at
+/// the iter-63 baseline configuration are pre-populated so that
+/// any axis sweep landing on the baseline value short-circuits.
+fn untrained_cache() -> &'static std::sync::Mutex<std::collections::HashMap<UntrainedCacheKey, f32>>
+{
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<UntrainedCacheKey, f32>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut map = std::collections::HashMap::new();
+        // iter-63 calibration values (commit a08a117 / PR #38),
+        // measured at vocab=64 + DG bridge + recall-mode-eval +
+        // decorrelated_init at the configuration tuple
+        // (R2_P_CONNECT=0.05, dg_to_r2_weight=1.0,
+        //  direct_r1r2_weight_scale=0.0). Seed/value mapping per
+        // notes/63-cue-target-metric.md "Calibration result".
+        let baseline_r2_p_bits = R2_P_CONNECT.to_bits();
+        let baseline_dg_w_bits: u32 = 1.0_f32.to_bits();
+        let baseline_direct_bits: u32 = 0.0_f32.to_bits();
+        for (seed, value) in [
+            (42_u64, 0.0127_f32),
+            (7_u64, 0.0000_f32),
+            (13_u64, 0.0498_f32),
+            (99_u64, 0.0156_f32),
+        ] {
+            map.insert(
+                UntrainedCacheKey {
+                    seed,
+                    r2_p_connect_bits: baseline_r2_p_bits,
+                    dg_to_r2_weight_bits: baseline_dg_w_bits,
+                    direct_r1r2_weight_scale_bits: baseline_direct_bits,
+                },
+                value,
+            );
+        }
+        std::sync::Mutex::new(map)
+    })
+}
+
+/// Look up the untrained `target_top3_overlap` for one
+/// `(cfg, seed)` tuple — cache hit if the configuration matches
+/// the iter-63 baseline or any previously-computed point;
+/// otherwise the brain is built and the untrained run executed
+/// via [`run_target_overlap_one_seed`] under [`ArmMode::Untrained`].
+///
+/// Result is cached for subsequent lookups in the same process.
+/// The cache is process-local; cross-process persistence is out
+/// of scope for iter-64 (each `cargo run` rebuilds the cache from
+/// the iter-63 baseline pre-seed).
+fn cached_untrained_target_top3(corpus: &RewardCorpus, cfg: &RewardConfig, seed: u64) -> f32 {
+    let key = UntrainedCacheKey::from_cfg(cfg, seed);
+    if let Ok(guard) = untrained_cache().lock() {
+        if let Some(&v) = guard.get(&key) {
+            return v;
+        }
+    }
+    // Cache miss — build cfg as untrained and compute.
+    let mut cfg_un = *cfg;
+    cfg_un.seed = seed;
+    cfg_un.teacher.no_plasticity = true;
+    cfg_un.use_reward = false;
+    cfg_un.epochs = cfg_un.epochs.max(1);
+    let value = run_target_overlap_one_seed(corpus, &cfg_un, ArmMode::Untrained);
+    if let Ok(mut guard) = untrained_cache().lock() {
+        guard.entry(key).or_insert(value);
+    }
+    value
+}
+
+/// Sample standard deviation (n − 1 denominator). Returns 0.0
+/// for `xs.len() <= 1`.
+fn sample_std(xs: &[f32], mean: f32) -> f32 {
+    if xs.len() <= 1 {
+        return 0.0;
+    }
+    let v = xs.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / (xs.len() - 1) as f32;
+    v.sqrt()
+}
+
+/// Iter-64 acceptance classification per the locked matrix. The
+/// `n` parameter is the seed count; the `n_pos / Δ̄ / t` triple
+/// is the per-axis-value paired-stat. Edge cases that fit neither
+/// (α) nor (γ) and fall outside the (β) band collapse to (δ).
+fn classify_axis_point(n: usize, n_pos: usize, mean_delta: f32, t_stat: f32) -> AxisClassification {
+    let three_quarters = n.saturating_mul(3).div_ceil(4);
+    let one_quarter = n / 4;
+    if mean_delta > 0.0 && n_pos >= three_quarters && t_stat > 0.0 {
+        AxisClassification::Alpha
+    } else if mean_delta.abs() <= SIGMA_UNTRAINED_ITER63 {
+        AxisClassification::Beta
+    } else if mean_delta < 0.0 && n_pos <= one_quarter && t_stat < -1.0 {
+        AxisClassification::Gamma
+    } else {
+        AxisClassification::Delta
+    }
+}
+
+/// Apply an axis value to a configuration. Mutates the relevant
+/// `cfg.teacher` field per axis; leaves all other axis-related
+/// parameters untouched (axes are isolated per iter-64 spec).
+fn apply_axis_value(cfg: &mut RewardConfig, axis: SweepAxis, value: f32) {
+    match axis {
+        SweepAxis::DgToR2Weight => {
+            cfg.teacher.dg.to_r2_weight = value;
+        }
+        SweepAxis::R2PConnect => {
+            cfg.teacher.r2_p_connect_override = Some(value);
+        }
+        SweepAxis::DirectR1R2WeightScale => {
+            cfg.teacher.dg.direct_r1r2_weight_scale = value;
+        }
+    }
+}
+
+/// Iter-64 axis sweep — runs the trained arm at every value in
+/// `values` (paired against the cached untrained arm at the same
+/// `(config, seed)` tuple), collects per-value paired stats, and
+/// classifies each value per the locked iter-64 acceptance matrix.
+///
+/// `cfg` should carry the iter-63 baseline configuration except
+/// for the swept axis: `vocab=64`, `--decorrelated-init`,
+/// `--teacher-forcing`, `--target-clamp-strength 500`,
+/// `--teacher-ms 40`, `--corpus-vocab 64`, `--dg-bridge`,
+/// `--plasticity-off-during-eval`, `epochs=16` (smoke) or `32`
+/// (full).
+///
+/// Untrained values are cached by configuration tuple; multiple
+/// axis values that land on the iter-63 baseline configuration
+/// share the iter-63-locked untrained calibration value.
+pub fn run_axis_sweep(
+    corpus: &RewardCorpus,
+    cfg: &RewardConfig,
+    seeds: &[u64],
+    axis: SweepAxis,
+    values: &[f32],
+) -> AxisSweepResult {
+    assert!(cfg.epochs > 0, "iter-64 axis sweep requires --epochs > 0");
+    assert!(
+        !seeds.is_empty(),
+        "iter-64 axis sweep requires at least one seed"
+    );
+    assert!(
+        !values.is_empty(),
+        "iter-64 axis sweep requires at least one --values entry"
+    );
+
+    let mut points: Vec<AxisSweepPoint> = Vec::with_capacity(values.len());
+    for &value in values {
+        let mut cfg_axis = *cfg;
+        apply_axis_value(&mut cfg_axis, axis, value);
+
+        let mut trained_per_seed: Vec<f32> = Vec::with_capacity(seeds.len());
+        let mut untrained_per_seed: Vec<f32> = Vec::with_capacity(seeds.len());
+
+        for &seed in seeds {
+            // Untrained — cache lookup, deterministic.
+            let untrained = cached_untrained_target_top3(corpus, &cfg_axis, seed);
+            untrained_per_seed.push(untrained);
+
+            // Trained — fresh run with full plasticity.
+            let mut cfg_t = cfg_axis;
+            cfg_t.seed = seed;
+            cfg_t.teacher.no_plasticity = false;
+            assert!(cfg_t.epochs > 0, "iter-64 trained arm requires epochs > 0");
+            let trained = run_target_overlap_one_seed(corpus, &cfg_t, ArmMode::Trained);
+            trained_per_seed.push(trained);
+
+            eprintln!(
+                "[iter-64 sweep axis={ax} value={value:.4}] seed={seed} \
+                 untrained={untrained:.4} trained={trained:.4} Δ={:+.4}",
+                trained - untrained,
+                ax = axis.label(),
+            );
+        }
+
+        let deltas: Vec<f32> = trained_per_seed
+            .iter()
+            .zip(untrained_per_seed.iter())
+            .map(|(t, u)| t - u)
+            .collect();
+
+        let n = deltas.len();
+        let n_pos = deltas.iter().filter(|&&d| d > 0.0).count();
+        let n_pass_iter63 = deltas.iter().filter(|&&d| d >= 0.0621).count();
+        let mean_delta = if n == 0 {
+            0.0
+        } else {
+            deltas.iter().sum::<f32>() / n as f32
+        };
+        let sd_delta = sample_std(&deltas, mean_delta);
+        let mean_trained = if n == 0 {
+            0.0
+        } else {
+            trained_per_seed.iter().sum::<f32>() / n as f32
+        };
+        let mean_untrained = if n == 0 {
+            0.0
+        } else {
+            untrained_per_seed.iter().sum::<f32>() / n as f32
+        };
+        let df = n.saturating_sub(1);
+        let t_stat = if sd_delta > 0.0 {
+            mean_delta / (sd_delta / (n as f32).sqrt())
+        } else if mean_delta > 0.0 {
+            f32::INFINITY
+        } else if mean_delta < 0.0 {
+            f32::NEG_INFINITY
+        } else {
+            0.0
+        };
+
+        let classification = classify_axis_point(n, n_pos, mean_delta, t_stat);
+
+        points.push(AxisSweepPoint {
+            axis,
+            value,
+            trained_per_seed,
+            untrained_per_seed,
+            deltas,
+            mean_trained,
+            mean_untrained,
+            mean_delta,
+            sd_delta,
+            t_stat,
+            df,
+            n_pos,
+            n_pass_iter63,
+            classification,
+        });
+    }
+
+    AxisSweepResult {
+        axis,
+        seeds: seeds.to_vec(),
+        epochs: cfg.epochs,
+        phase: SweepPhase::from_epochs(cfg.epochs),
+        points,
+    }
+}
+
+/// Iter-64 axis-sweep markdown renderer.
+pub fn render_axis_sweep(result: &AxisSweepResult) -> String {
+    let mut s = String::new();
+    s.push_str(&format!(
+        "### Iter-64 Axis Sweep — {} ({})\n\n",
+        result.axis.label(),
+        result.phase.label(),
+    ));
+    s.push_str(&format!(
+        "_n_seeds = {}, seeds = {:?}, σ_untrained_iter63 = {:.4}, iter-63 baseline value = {}._\n\n",
+        result.seeds.len(),
+        result.seeds,
+        SIGMA_UNTRAINED_ITER63,
+        result.axis.iter63_baseline(),
+    ));
+    s.push_str(
+        "| value | μ_untrained | μ_trained | Δ̄ | σ_Δ | n_pos | n_pass(0.0621) | t(df) | classification |\n",
+    );
+    s.push_str("| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |\n");
+    for p in &result.points {
+        s.push_str(&format!(
+            "| {:.3} | {:.4} | {:.4} | {:+.4} | {:.4} | {}/{} | {}/{} | {:+.3} (df={}) | {} {} |\n",
+            p.value,
+            p.mean_untrained,
+            p.mean_trained,
+            p.mean_delta,
+            p.sd_delta,
+            p.n_pos,
+            result.seeds.len(),
+            p.n_pass_iter63,
+            result.seeds.len(),
+            p.t_stat,
+            p.df,
+            p.classification.short(),
+            p.classification.label(),
+        ));
+    }
+    s.push('\n');
+    let n_alpha = result
+        .points
+        .iter()
+        .filter(|p| p.classification == AxisClassification::Alpha)
+        .count();
+    let n_gamma = result
+        .points
+        .iter()
+        .filter(|p| p.classification == AxisClassification::Gamma)
+        .count();
+    let n_delta = result
+        .points
+        .iter()
+        .filter(|p| p.classification == AxisClassification::Delta)
+        .count();
+    let n_beta = result.points.len() - n_alpha - n_gamma - n_delta;
+    s.push_str(&format!(
+        "**Per-value verdict tally:** α = {n_alpha}, β = {n_beta}, γ = {n_gamma}, δ = {n_delta}.\n",
+    ));
+    s
+}
+
 /// One-sided critical-t value at α=0.05 for the small-n cases iter-63
 /// and the canonical iter-65 escalations need. Falls back to the
 /// asymptotic z=1.96 for unsupported df. Lookup, not interpolation —
@@ -5074,7 +5631,7 @@ mod tests {
         let encoder = TextEncoder::with_stopwords(ENC_N, ENC_K, std::iter::empty::<&str>());
         let mut brain = Brain::new(DT);
         brain.add_region(build_input_region());
-        brain.add_region(build_memory_region(43, R2_INH_FRAC, R2_N));
+        brain.add_region(build_memory_region(43, R2_INH_FRAC, R2_N, R2_P_CONNECT));
         let blocks = wire_forward_decorrelated(&mut brain, &encoder, &vocab_vec, 123, INTER_WEIGHT);
         assert_eq!(blocks.len(), vocab_vec.len());
         // Block-to-block disjointness (precondition).

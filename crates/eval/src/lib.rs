@@ -14,12 +14,14 @@ pub mod wiki_corpus;
 
 pub use reward_bench::{
     default_corpus as default_reward_corpus, default_corpus_v64 as default_reward_corpus_v64,
-    render_jaccard_floor_diagnosis, render_jaccard_sweep,
-    render_markdown as render_reward_markdown, render_target_overlap_sweep, run_determinism_smoke,
-    run_jaccard_bench, run_jaccard_floor_diagnosis, run_postmortem_diagnostic,
-    run_reward_benchmark, run_target_overlap_arm, ArmMode, DgConfig, Iter49Mode, JaccardArmResult,
+    render_axis_sweep, render_jaccard_floor_diagnosis, render_jaccard_sweep,
+    render_markdown as render_reward_markdown, render_target_overlap_sweep, run_axis_sweep,
+    run_determinism_smoke, run_jaccard_bench, run_jaccard_floor_diagnosis,
+    run_postmortem_diagnostic, run_reward_benchmark, run_target_overlap_arm, ArmMode,
+    AxisClassification, AxisSweepPoint, AxisSweepResult, DgConfig, Iter49Mode, JaccardArmResult,
     JaccardFloorReport, JaccardMetrics, JaccardPairSample, JaccardSweepResult, RewardConfig,
-    RewardCorpus, RewardEpochMetrics, RewardPair, TargetOverlapMetrics, TeacherForcingConfig,
+    RewardCorpus, RewardEpochMetrics, RewardPair, SweepAxis, SweepPhase, TargetOverlapMetrics,
+    TeacherForcingConfig,
 };
 pub use scale_bench::{Iter44Config, ScaleBrain, ScaleQueryResult, ScaleReport, ScaleSummary};
 pub use scale_corpus::{build_scale_corpus, ScaleCorpus};
