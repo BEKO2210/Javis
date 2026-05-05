@@ -60,6 +60,14 @@ unused-allowed-license = "deny"
 # Crate-specific exceptions. Each one is a deliberate decision —
 # leaving the list empty until something legitimately requires it.
 exceptions = []
+# Workspace crates are licensed under LicenseRef-PolyForm-
+# Noncommercial-1.0.0 (research-use only; see ./LICENSE for the
+# full text + non-binding addendum). PolyForm is not on the SPDX
+# allow-list above by design — those are licenses we accept from
+# *transitive* dependencies. The workspace's own crates are all
+# `publish = false` and `private = { ignore = true }` tells
+# cargo-deny to skip license checks for them.
+private = { ignore = true }
 
 # ---------------------------------------------------------------------
 # Bans — duplicate-version policing and explicit crate denials.

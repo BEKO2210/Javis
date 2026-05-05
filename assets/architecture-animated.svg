@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 360" width="900" height="360" role="img" aria-label="Javis architecture: R1 input cortex into DG hashing into R2 memory cortex">
+  <title>Javis architecture (iter-60+)</title>
+  <desc>Animated three-region architecture: R1 (input cortex, 1000 LIF excitatory neurons) projects sparsely into DG (dentate gyrus, 4000-cell hashed sparse-distributed code) and into R2 (memory cortex, 2000 neurons, 70% excitatory + 30% inhibitory, recurrent). DG projects via mossy fibres to R2 with a configurable weight scale. The direct R1 to R2 perforant path scale is also shown — iter-64 axis C identified value=0.3 as the sweet-spot. Spike pulses propagate from R1 through both DG and the direct path into R2 on a 3-second loop.</desc>
+
+  <defs>
+    <linearGradient id="r1-fill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3a86ff"/>
+      <stop offset="100%" stop-color="#1c4baa"/>
+    </linearGradient>
+    <linearGradient id="dg-fill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#62d6ff"/>
+      <stop offset="100%" stop-color="#2a8aa8"/>
+    </linearGradient>
+    <linearGradient id="r2-fill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ff66c4"/>
+      <stop offset="100%" stop-color="#a83274"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="900" height="360" fill="#0d1117"/>
+
+  <!-- Title -->
+  <text x="450" y="32" text-anchor="middle" fill="#e6f0ff" font-family="ui-monospace, SFMono-Regular, monospace" font-size="14" font-weight="600">Javis architecture · iter-60+ DG bridge</text>
+  <text x="450" y="50" text-anchor="middle" fill="#7d8597" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11">R1 (cue) → DG (hash) + perforant path → R2 (memory) · plasticity stack post-training</text>
+
+  <!-- ============================================================
+       R1 — input cortex (left)
+       ============================================================ -->
+  <g transform="translate(120,200)">
+    <ellipse cx="0" cy="0" rx="70" ry="56" fill="url(#r1-fill)" stroke="#7aa2ff" stroke-width="1.8" opacity="0.9"/>
+    <text x="0" y="-72" text-anchor="middle" fill="#7aa2ff" font-family="ui-monospace, SFMono-Regular, monospace" font-size="13" font-weight="700" letter-spacing="2">R1</text>
+    <text x="0" y="-58" text-anchor="middle" fill="#7d8597" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">input cortex</text>
+    <text x="0" y="80" text-anchor="middle" fill="#7d8597" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">1 000 LIF · k=20 SDR</text>
+
+    <!-- Soma cluster -->
+    <g fill="#e6f0ff">
+      <circle cx="-32" cy="-18" r="2.5"/><circle cx="-14" cy="-30" r="2.5"/>
+      <circle cx="8"   cy="-26" r="2.5"/><circle cx="32"  cy="-12" r="2.5"/>
+      <circle cx="-38" cy="6"   r="2.5"/><circle cx="-18" cy="20"  r="2.5"/>
+      <circle cx="6"   cy="26"  r="2.5"/><circle cx="30"  cy="14"  r="2.5"/>
+      <circle cx="-6"  cy="-2"  r="2.5"/><circle cx="20"  cy="-2"  r="2.5"/>
+    </g>
+    <!-- Pulsing soma to indicate firing -->
+    <circle cx="-6" cy="-2" r="2.5" fill="#fff" opacity="0">
+      <animate attributeName="opacity" values="0;1;0" dur="3s" begin="0s" repeatCount="indefinite"/>
+      <animate attributeName="r" values="2.5;5;2.5" dur="3s" begin="0s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+
+  <!-- ============================================================
+       DG — dentate gyrus (middle, top)
+       ============================================================ -->
+  <g transform="translate(450,130)">
+    <ellipse cx="0" cy="0" rx="92" ry="42" fill="url(#dg-fill)" stroke="#62d6ff" stroke-width="1.8" opacity="0.9"/>
+    <text x="0" y="-58" text-anchor="middle" fill="#62d6ff" font-family="ui-monospace, SFMono-Regular, monospace" font-size="13" font-weight="700" letter-spacing="2">DG</text>
+    <text x="0" y="-44" text-anchor="middle" fill="#7d8597" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">dentate · pattern separation</text>
+    <text x="0" y="60" text-anchor="middle" fill="#7d8597" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">4 000 cells · k-of-n sparse hash · k=80</text>
+
+    <!-- Sparse soma grid -->
+    <g fill="#cfeaff">
+      <circle cx="-66" cy="-14" r="1.8"/><circle cx="-50" cy="6"  r="1.8"/>
+      <circle cx="-34" cy="-12" r="1.8"/><circle cx="-22" cy="14" r="1.8"/>
+      <circle cx="-10" cy="-4"  r="1.8"/><circle cx="6"   cy="-16" r="1.8"/>
+      <circle cx="20"  cy="10"  r="1.8"/><circle cx="36"  cy="-8"  r="1.8"/>
+      <circle cx="50"  cy="14"  r="1.8"/><circle cx="68"  cy="-2"  r="1.8"/>
+      <circle cx="-58" cy="18"  r="1.8"/><circle cx="-42" cy="-22" r="1.8"/>
+      <circle cx="2"   cy="20"  r="1.8"/><circle cx="46"  cy="-22" r="1.8"/>
+      <circle cx="62"  cy="20"  r="1.8"/>
+    </g>
+  </g>
+
+  <!-- ============================================================
+       R2 — memory cortex (right)
+       ============================================================ -->
+  <g transform="translate(780,200)">
+    <ellipse cx="0" cy="0" rx="78" ry="64" fill="url(#r2-fill)" stroke="#ffb1de" stroke-width="1.8" opacity="0.9"/>
+    <text x="0" y="-80" text-anchor="middle" fill="#ffb1de" font-family="ui-monospace, SFMono-Regular, monospace" font-size="13" font-weight="700" letter-spacing="2">R2</text>
+    <text x="0" y="-66" text-anchor="middle" fill="#7d8597" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">memory cortex (recurrent)</text>
+    <text x="0" y="88" text-anchor="middle" fill="#7d8597" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">2 000 LIF · 70% E + 30% I · STDP/iSTDP/BCM</text>
+
+    <!-- Excitatory soma -->
+    <g fill="#fff0f8">
+      <circle cx="-40" cy="-22" r="2.5"/><circle cx="-22" cy="-36" r="2.5"/>
+      <circle cx="0"   cy="-32" r="2.5"/><circle cx="22"  cy="-22" r="2.5"/>
+      <circle cx="40"  cy="-10" r="2.5"/><circle cx="-46" cy="0"   r="2.5"/>
+      <circle cx="-26" cy="14"  r="2.5"/><circle cx="-4"  cy="22"  r="2.5"/>
+      <circle cx="20"  cy="20"  r="2.5"/><circle cx="42"  cy="14"  r="2.5"/>
+      <circle cx="-12" cy="-12" r="2.5"/><circle cx="14"  cy="-2"  r="2.5"/>
+      <circle cx="-32" cy="30"  r="2.5"/><circle cx="32"  cy="34"  r="2.5"/>
+    </g>
+    <!-- Inhibitory soma (red triangles) -->
+    <g fill="#ff5050">
+      <polygon points="-30,-2 -26,-10 -22,-2"/>
+      <polygon points="6,-14 10,-22 14,-14"/>
+      <polygon points="-12,8 -8,0 -4,8"/>
+      <polygon points="26,4 30,-4 34,4"/>
+    </g>
+    <!-- Pulsing soma — triggered after the spike arrives -->
+    <circle cx="-4" cy="22" r="2.5" fill="#fff" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;0" keyTimes="0;0.6;0.65;0.85" dur="3s" begin="0s" repeatCount="indefinite"/>
+      <animate attributeName="r" values="2.5;2.5;7;2.5" keyTimes="0;0.6;0.65;0.85" dur="3s" begin="0s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="20" cy="20" r="2.5" fill="#fff" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;0" keyTimes="0;0.65;0.7;0.9" dur="3s" begin="0s" repeatCount="indefinite"/>
+      <animate attributeName="r" values="2.5;2.5;6;2.5" keyTimes="0;0.65;0.7;0.9" dur="3s" begin="0s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+
+  <!-- ============================================================
+       Connections: paths (drawn) + animated pulses
+       ============================================================ -->
+  <g fill="none" stroke-width="1.5">
+    <!-- R1 → DG (perforant-style upward) -->
+    <path id="path-r1-dg-1" d="M 188 178 C 290 130, 360 110, 410 122" stroke="#62d6ff" opacity="0.5"/>
+    <path id="path-r1-dg-2" d="M 188 192 C 290 160, 360 130, 410 132" stroke="#62d6ff" opacity="0.4"/>
+
+    <!-- DG → R2 (mossy-fibre-style sparse projection) -->
+    <path id="path-dg-r2-1" d="M 528 138 C 620 160, 690 180, 716 188" stroke="#ff9bd0" opacity="0.6"/>
+    <path id="path-dg-r2-2" d="M 528 124 C 620 140, 690 170, 716 196" stroke="#ff9bd0" opacity="0.5"/>
+
+    <!-- Direct R1 → R2 perforant path (iter-64 axis C: scale 0..1) -->
+    <path id="path-r1-r2-direct" d="M 188 220 C 350 280, 580 280, 716 220" stroke="#a8b2bd" stroke-dasharray="4,4" opacity="0.5"/>
+  </g>
+
+  <!-- Path label for direct path -->
+  <text x="450" y="305" text-anchor="middle" fill="#a8b2bd" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">direct R1→R2 (perforant) · scale 0.0…1.0 · iter-64 sweet-spot 0.3</text>
+
+  <!-- Path label for DG paths -->
+  <text x="305" y="105" text-anchor="middle" fill="#62d6ff" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">cue → hash</text>
+  <text x="615" y="155" text-anchor="middle" fill="#ff9bd0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">mossy fibre · sparse</text>
+
+  <!-- Spike pulses on DG path -->
+  <g fill="#62d6ff">
+    <circle r="3.6">
+      <animateMotion dur="3s" repeatCount="indefinite" begin="0s">
+        <mpath href="#path-r1-dg-1"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.05;0.45;0.5" dur="3s" repeatCount="indefinite" begin="0s"/>
+    </circle>
+    <circle r="3.0" opacity="0.7">
+      <animateMotion dur="3s" repeatCount="indefinite" begin="0.2s">
+        <mpath href="#path-r1-dg-2"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;0.8;0.8;0" keyTimes="0;0.05;0.45;0.5" dur="3s" repeatCount="indefinite" begin="0.2s"/>
+    </circle>
+  </g>
+
+  <!-- Spike pulses on DG → R2 path -->
+  <g fill="#ff9bd0">
+    <circle r="3.6">
+      <animateMotion dur="3s" repeatCount="indefinite" begin="0.5s">
+        <mpath href="#path-dg-r2-1"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.05;0.45;0.5" dur="3s" repeatCount="indefinite" begin="0.5s"/>
+    </circle>
+    <circle r="3.0" opacity="0.7">
+      <animateMotion dur="3s" repeatCount="indefinite" begin="0.7s">
+        <mpath href="#path-dg-r2-2"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;0.8;0.8;0" keyTimes="0;0.05;0.45;0.5" dur="3s" repeatCount="indefinite" begin="0.7s"/>
+    </circle>
+  </g>
+
+  <!-- Spike pulse on direct path (slower, dimmer — 30% scale per iter-64 sweet-spot) -->
+  <g fill="#a8b2bd">
+    <circle r="3.0" opacity="0.6">
+      <animateMotion dur="3s" repeatCount="indefinite" begin="0.1s">
+        <mpath href="#path-r1-r2-direct"/>
+      </animateMotion>
+      <animate attributeName="opacity" values="0;0.6;0.6;0" keyTimes="0;0.05;0.45;0.5" dur="3s" repeatCount="indefinite" begin="0.1s"/>
+    </circle>
+  </g>
+
+  <!-- Region badges -->
+  <g font-family="ui-monospace, SFMono-Regular, monospace" font-size="10" fill="#0d1117" font-weight="700">
+    <rect x="80" y="280" width="80" height="20" rx="4" fill="#7aa2ff" opacity="0.85"/>
+    <text x="120" y="294" text-anchor="middle">cue SDR</text>
+    <rect x="410" y="80" width="80" height="20" rx="4" fill="#62d6ff" opacity="0.85"/>
+    <text x="450" y="94" text-anchor="middle">k-of-n hash</text>
+    <rect x="740" y="280" width="80" height="20" rx="4" fill="#ffb1de" opacity="0.85"/>
+    <text x="780" y="294" text-anchor="middle">engram</text>
+  </g>
+
+  <!-- Plasticity stack callout -->
+  <g transform="translate(450,335)">
+    <text text-anchor="middle" fill="#62d6ff" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">R2 plasticity: STDP · iSTDP (Vogels) · BCM · homeostasis · intrinsic θ · R-STDP · heterosynaptic · structural · replay</text>
+  </g>
+</svg>

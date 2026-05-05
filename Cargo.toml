@@ -9,7 +9,12 @@ edition = "2021"
 # every push; bumps are deliberate, motivated by a transitive that
 # requires a newer rustc, and called out in CHANGELOG.md.
 rust-version = "1.86"
-license = "MIT"
+# PolyForm Noncommercial 1.0.0 — research, education, and personal
+# study only. See ./LICENSE for the full text and the project-specific
+# research-use addendum. Cargo's SPDX-only field doesn't recognise
+# PolyForm; the LicenseRef-* form is the standard way to reference
+# non-SPDX licenses.
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/beko2210/javis"
 # All workspace crates are internal — explicitly opt out of publishing
 # so cargo-deny won't flag intra-workspace path deps as wildcards. Flip
