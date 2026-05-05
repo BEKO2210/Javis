@@ -172,6 +172,7 @@ fn main() {
         recall_mode_eval,
         decorrelated_init,
         r2_n,
+        r2_p_connect_override: None,
         dg: DgConfig {
             enabled: dg_bridge,
             size: dg_size,
