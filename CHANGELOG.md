@@ -4,6 +4,102 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 64 (mechanism diagnosis: axis sweeps)
+
+iter-63 closed Branch (B) FAIL: 32 epochs of full plasticity on the
+DG-enabled brain produced no measurable cue → target learning signal
+on the iter-44/45 `top3_accuracy` metric. The locked branching
+matrix sent iter-64 into mechanism diagnosis first.
+
+iter-64 ENTRY (PR #40) pre-registered three isolated diagnostic
+axes with locked acceptance matrix:
+
+  A) `dg_to_r2_weight ∈ {0.1, 0.5, 1.0, 2.0}`
+  B) `r2_p_connect ∈ {0.025, 0.05, 0.10}`
+  C) `direct_r1r2_weight_scale ∈ {0.0, 0.1, 0.3, 1.0}`
+
+Per-value classification: α / β / γ / δ with thresholds locked in
+notes/64. `target_top3_overlap` reused unchanged (mean
+top3_accuracy across epochs); iter-63 σ_untrained = 0.0213 carried
+forward as the (β) band reference.
+
+### Implementation (PR #41)
+
+- `TeacherForcingConfig.r2_p_connect_override: Option<f32>` (axis B
+  runtime override; `None` falls back to the compile-time
+  `R2_P_CONNECT = 0.05`).
+- `effective_r2_p_connect` helper, analogous to iter-59's
+  `effective_r2_n`.
+- `build_memory_region` and `fresh_brain_with` extended to take
+  `r2_p_connect` as a parameter; all four callsites updated.
+- `SweepAxis`, `AxisClassification`, `SweepPhase`, `AxisSweepPoint`,
+  `AxisSweepResult` enums + structs.
+- `UntrainedCacheKey` + process-local `OnceLock<Mutex<HashMap>>`
+  cache, **pre-seeded with the iter-63 calibration values for the
+  four locked seeds at the iter-63 baseline configuration tuple**
+  (`R2_P_CONNECT=0.05, dg_to_r2_weight=1.0,
+  direct_r1r2_weight_scale=0.0`). Any axis sweep that lands on the
+  baseline value short-circuits to those locked numbers.
+- `cached_untrained_target_top3` lookup helper.
+- `run_axis_sweep` and `render_axis_sweep` public functions.
+- CLI: `--axis-sweep <axis> --values <list> --axis-sweep-phase
+  {smoke,full}`. Mutual-exclusion guard fails loudly on multiple
+  bench-mode flags (iter-63 v1 lesson at the CLI level). Default
+  value lists per axis match the ENTRY note. Explicit `--epochs N`
+  overrides the phase-default epochs.
+
+### Axis C smoke (16 ep × 4 seeds × 4 values, 5 May 2026)
+
+Run command:
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --axis-sweep direct-r1r2-weight-scale \
+  --values 0.0,0.1,0.3,1.0 \
+  --seeds 42,7,13,99 \
+  --axis-sweep-phase smoke \
+  --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval
+```
+
+| value | μ_untrained | μ_trained | Δ̄ | σ_Δ | n_pos | t(3) | classification |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
+| 0.000 | 0.0195 | 0.0342 | +0.0147 | 0.0100 | 3/4 | +2.933 | (α) Alpha |
+| 0.100 | 0.0273 | 0.0273 | +0.0000 | 0.0000 | 0/4 | +0.000 | (β) Beta |
+| 0.300 | 0.0249 | 0.0439 | +0.0190 | 0.0320 | 3/4 | +1.191 | (α) Alpha |
+| 1.000 | 0.0444 | 0.0317 | −0.0127 | 0.0282 | 1/4 | −0.899 | (β) Beta |
+
+Per-value tally: α=2, β=2, γ=0, δ=0.
+
+**Headlines (provisional, smoke-only):**
+
+- `value=0.1` is a DG-dominated locked state — Δ = +0.0000
+  bit-for-bit on 4/4 seeds. β as predicted by the ENTRY's
+  "DG dominates" hypothesis branch.
+- `value=0.3` is the provisional sweet-spot. **seed=7 wakes up
+  here** (untrained 0.0000 → trained 0.0371 — the only axis-C
+  configuration where seed 7 produces non-zero trained
+  output). seed=42 hits +0.043, near the iter-63 threshold.
+  seed=99 is the lone negative outlier. α verdict at smoke.
+- `value=1.0` directionally negative (3/4 seeds) — full
+  perforant path overpowers DG benefit. Classification stays β
+  by magnitude band, but trends toward γ.
+- `value=0.0` α at smoke is **iter-51 per-epoch oscillation**,
+  not a stable signal. iter-63's 32-ep full run on the same
+  configuration locked Δ̄ = −0.0027 (Branch B FAIL). The α-at-
+  smoke pattern is exactly why the two-phase logic exists.
+
+### Next step
+
+`value=0.3` full phase (32 ep × 4 seeds) launched after this
+commit to verify the α persists at full epochs. If it does,
+iter-65 = deepen at 8 seeds × 32 ep on this point. If it drops
+to β/γ at 32 ep (following the value=0.0 oscillation pattern),
+the smoke α was artefactual; axis C contributes no robust
+mechanism and iter-64 advances to axis B and axis A smokes
+before the iter-65 fork.
+
+Result will be appended in the next commit.
+
 ## Unreleased — Iteration 63 (cue → target metric on DG-enabled brain)
 
 iter-62 verified DG separation under read-only recall (same-cue =

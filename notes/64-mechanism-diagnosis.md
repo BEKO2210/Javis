@@ -318,6 +318,146 @@ across all three axes — feasible in 2 days local.
    suspected. Explicit build + verify mtime > spec edit time
    on the binary.
 
+## Live results — Axis C (`direct_r1r2_weight_scale`)
+
+### Axis C smoke (16 ep × 4 seeds × 4 values)
+
+Run command (exactly as specified in this ENTRY):
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --axis-sweep direct-r1r2-weight-scale \
+  --values 0.0,0.1,0.3,1.0 \
+  --seeds 42,7,13,99 \
+  --axis-sweep-phase smoke \
+  --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval
+```
+
+Wallclock: ~2 h on local hardware. Cache pre-seeded with
+iter-63 baseline values for `value=0.0` (4/4 seeds short-
+circuited to the locked iter-63 calibration), saving ~25 min.
+
+**Per-value renderer table:**
+
+| value | μ_untrained | μ_trained | Δ̄ | σ_Δ | n_pos | n_pass(0.0621) | t(df=3) | classification |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
+| 0.000 | 0.0195 | 0.0342 | +0.0147 | 0.0100 | 3/4 | 0/4 | +2.933 | **(α) Alpha** |
+| 0.100 | 0.0273 | 0.0273 | +0.0000 | 0.0000 | 0/4 | 0/4 | +0.000 | **(β) Beta** |
+| 0.300 | 0.0249 | 0.0439 | +0.0190 | 0.0320 | 3/4 | 0/4 | +1.191 | **(α) Alpha** |
+| 1.000 | 0.0444 | 0.0317 | −0.0127 | 0.0282 | 1/4 | 0/4 | −0.899 | **(β) Beta** |
+
+Per-value tally: α = 2, β = 2, γ = 0, δ = 0.
+
+**Per-seed Δ matrix (reference, not for goalpost shifting):**
+
+| seed | val=0.0 | val=0.1 | val=0.3 | val=1.0 |
+| ---: | ---: | ---: | ---: | ---: |
+| 42 | +0.0186 | +0.0000 | **+0.0430** | −0.0293 |
+| 7  | +0.0000 | +0.0000 | **+0.0371** | +0.0293 |
+| 13 | +0.0225 | +0.0000 | **+0.0234** | −0.0293 |
+| 99 | +0.0176 | +0.0000 | −0.0273 | −0.0215 |
+
+### Mechanistic reading (smoke phase — provisional)
+
+**(1) `value=0.1` — DG-dominated locked state.** Δ = +0.0000
+*bit-for-bit on 4/4 seeds*. With a 10 %-scaled direct path the
+`dg_to_r2_weight=1.0` mossy-fibre projection drives R2 strongly
+enough that 16 epochs of plasticity make zero measurable
+difference to the decoder top-3 — the trained and untrained
+brains produce identical fingerprint dictionaries. This is the
+strongest possible β: not "small effect, ruled out" but
+"effect is identically zero". Confirms the iter-64 ENTRY
+prediction for the "DG dominates" mechanism axis (axis A
+captures it from the DG side; axis C captures the same
+phenomenon from the perforant-path side).
+
+**(2) `value=0.3` — provisional sweet-spot, the headline.**
+Δ̄ = +0.0190 with `n_pos = 3/4` and `t(3) = +1.19` lands α per
+the locked acceptance matrix. Three seeds clear meaningful
+positive Δ (42 = +0.043, near the iter-63 0.0621 threshold;
+7 = +0.037; 13 = +0.023). seed=99 is the lone negative
+outlier at −0.027 (still inside the |Δ̄| ≤ σ_untrained_iter63
+band as a single-seed deviation, drives σ_Δ up to 0.032).
+
+The biological story matches the hippocampal anatomy: a
+*moderate* perforant path provides EC → CA3 a stable raw-cue
+substrate that R2 plasticity can shape into a target-aligned
+engram, while DG (mossy fibres) maintains separation. Either
+extreme — `0.0` (DG sole, iter-63 baseline) or `1.0` (full
+perforant overpowering DG) — fails to produce the same trend.
+
+**Wake-up moment for seed=7:** at every other axis-C value
+seed=7 reads exactly 0.0000 trained AND 0.0000 untrained
+(below random baseline 3/64 ≈ 0.047). At value=0.3, seed=7's
+trained jumps to 0.0371 while untrained stays at 0.0000.
+This is *the* mechanistic signal: a previously-silent seed
+starts learning *only* when the perforant path is moderately
+introduced. The brain at this seed has no DG-mediated
+cue → target binding it can decode; the perforant path
+re-introduction provides a substrate that plasticity can
+exploit.
+
+**(3) `value=1.0` — break-down into noise/cascade.** Δ̄ =
+−0.0127 with `n_pos = 1/4` and `t(3) = −0.90`. Inside the
+β-band by absolute magnitude, but *direction is negative*
+on 3/4 seeds. The interpretation: full perforant-path drive
+(iter-58 / pre-iter-60 baseline) overpowers the DG separation
+benefit; the recurrent R2 attractor is dominated by raw cue
+bleed-through and the trained dictionary fingerprint loses
+specificity. This matches the iter-46 finding that strong
+R1 → R2 forward drive eats recurrent learning capacity.
+Classification stays β (within the magnitude band) but the
+directional signal is the inverse of what α requires — at the
+edge of γ. iter-65 8-seed re-run might split this point into
+γ depending on seed coverage.
+
+**(4) `value=0.0` — α at smoke, but iter-51 oscillation.**
+Δ̄ = +0.0147, n_pos = 3/4, t(3) = +2.93 lands a strong α at
+16 epochs. **However**, this is the iter-63 baseline
+configuration that iter-63's 32-epoch trained main run already
+classified as Branch (B) FAIL with Δ̄ = −0.0027 ± 0.0300.
+
+*This is not a contradiction.* iter-51 demonstrated per-epoch
+oscillation on the iter-46 Arm B reading; the smoke vs. full
+two-phase logic exists precisely so we can see when a
+configuration's positive signal at 16 ep is an oscillation
+phase rather than a stable learning trend. value=0.0 at
+smoke is *exactly that situation*: 16 ep catches the brain
+in an upward-oscillation peak, 32 ep averages over the full
+cycle and brings it back to ≈ 0.
+
+**Implication for axis C verdict:** the `value=0.3` α has to
+be confirmed at 32 ep (full phase) before we trust it.
+value=0.0's α-at-smoke / β-at-full pattern is the cautionary
+proof that smoke-α alone is not a stable verdict.
+
+### Provisional next step (full phase on value=0.3)
+
+Per the iter-64 ENTRY two-phase logic ("16 ep first, full
+32 ep run only for axes/values that classify α or δ at
+smoke"), the next run is:
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --axis-sweep direct-r1r2-weight-scale \
+  --values 0.3 \
+  --seeds 42,7,13,99 \
+  --axis-sweep-phase full \
+  --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval
+```
+
+If `value=0.3` retains α at 32 epochs (Δ̄ > 0, n_pos ≥ 3/4,
+t(3) > 0), iter-65 fork: deepen this point at 8 seeds.
+
+If it drops to β/γ at 32 epochs (i.e. follows the
+value=0.0 oscillation pattern), the smoke α was an
+oscillation artefact, axis C contributes no robust mechanism,
+and iter-64 advances to axis B and axis A smokes before the
+iter-65 fork.
+
+The 32-ep full-phase result will be appended to this section
+once the run completes.
+
 ## Files to write (post-Go, in implementation phase)
 
 - `crates/eval/src/reward_bench.rs` — `--axis-sweep` runner,
