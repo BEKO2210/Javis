@@ -2239,6 +2239,26 @@ fn run_teacher_trial(
     if c1_active {
         brain.set_neuromodulator(cfg.c1.teacher_strength);
     }
+    // Iter-66: when C1 is active, augment the spike-tracking set
+    // with the C1 cell index range so step-7.5 diagnostics can
+    // read C1 spike counts out of `teacher_counts`. The original
+    // `r2_e` slice covers only R2-E cells; C1 cells are at
+    // `[r2_n_used, r2_n_used + cfg.c1.size)` and are *also*
+    // excitatory but not in `r2_e_set`. The R2-side metrics
+    // (`outcome.target_clamp_hits`) check `target_set` indices
+    // (∈ R2 range only) so adding C1 indices to the tracking set
+    // does NOT change R2 numerics — kwta on the returned counts
+    // is not used in run_teacher_trial.
+    let track_set_owned: BTreeSet<usize>;
+    let track_set: &BTreeSet<usize> = if c1_active {
+        let r2_n = effective_r2_n(cfg);
+        let mut s = r2_e.clone();
+        s.extend(r2_n..(r2_n + cfg.c1.size as usize));
+        track_set_owned = s;
+        &track_set_owned
+    } else {
+        r2_e
+    };
     let teacher_counts = if dg_active {
         drive_with_r2_clamp_dg(
             brain,
@@ -2249,7 +2269,7 @@ fn run_teacher_trial(
             dg_strength,
             cfg.target_clamp_strength,
             clamp_ms as f32,
-            r2_e,
+            track_set,
         )
     } else {
         drive_with_r2_clamp(
@@ -2259,7 +2279,7 @@ fn run_teacher_trial(
             DRIVE_NA,
             cfg.target_clamp_strength,
             clamp_ms as f32,
-            r2_e,
+            track_set,
         )
     };
     if c1_active {
