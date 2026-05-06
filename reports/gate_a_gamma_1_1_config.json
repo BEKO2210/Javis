@@ -1,0 +1,93 @@
+{
+  "iteration": "iter-67-γ.1.1",
+  "binary": "target/release/examples/reward_benchmark",
+  "package": "eval",
+  "git_commit_at_lock": "ab9ae16",
+  "git_branch": "claude/iter66-ca1-heteroassoc-readout",
+  "frozen_at": "2026-05-06T18:35:00Z",
+  "cli_args": [
+    "--c1-readout",
+    "--c1-diagnostic",
+    "--c1-eval-aligned-rstdp",
+    "--c1-btsp",
+    "--c1-btsp-target-gated",
+    "--c1-btsp-no-r2-isolation",
+    "--c1-btsp-window-ms",
+    "200",
+    "--c1-btsp-strength",
+    "0.4",
+    "--c1-btsp-teacher-recurrent-e-scale",
+    "1.0",
+    "--c1-btsp-teacher-recurrent-i-scale",
+    "0.3",
+    "--c1-teacher-strength",
+    "1.0",
+    "--epochs",
+    "32",
+    "--teacher-forcing",
+    "--target-clamp-strength",
+    "500",
+    "--teacher-ms",
+    "40",
+    "--corpus-vocab",
+    "64",
+    "--dg-bridge",
+    "--plasticity-off-during-eval",
+    "--decorrelated-init"
+  ],
+  "seed_args_per_run": "--seeds <SEED>",
+  "metric": "c1_target_top3_overlap",
+  "gate_a_criterion": {
+    "primary": "last-8-ep mean c1_target_top3_overlap >= 0.05 over epochs 24..31",
+    "auxiliary": [
+      "no sustained collapse: longest contiguous-zero streak <= 2 epochs",
+      "C1 active: kwta_empty < 16/32 on majority of epochs",
+      "recall-mode stable: top3_r2 oscillates within chance band, no sustained drop below 0.005",
+      "no eval-phase L2 drift (recall_mode_eval = true must be honoured)"
+    ]
+  },
+  "auxiliary_metrics_logged": [
+    "c1_active_frac",
+    "c1_spikes_mean",
+    "clamp_eff",
+    "kwta_empty",
+    "target_in_dict",
+    "spikes_mean",
+    "top3_r2",
+    "top3_c1",
+    "mrr_c1",
+    "raw_overlap",
+    "dict_concepts",
+    "r2c1_l2",
+    "nz_upd",
+    "max_abs_dw",
+    "sum_abs_dw",
+    "tgt_w",
+    "non_w",
+    "w_ratio",
+    "btsp_plateau_events",
+    "btsp_potentiation_events"
+  ],
+  "candidate_run": {
+    "seed": 42,
+    "epochs_completed": 31,
+    "epochs_target": 32,
+    "log_path": "notes/67-step-7-iter67-gamma11-extended-ep0-30.log",
+    "verdict": "PASS_LOWER_BOUND",
+    "gate_a_lower_bound": {
+      "ep24_30_sum": 0.40625,
+      "required_sum_for_pass": 0.400,
+      "worst_case_ep31": 0.0,
+      "worst_case_last8_mean": 0.05078,
+      "passes": true
+    }
+  },
+  "confirmation_seed_set": [0, 1, 2, 3],
+  "lock_rules": [
+    "no hyperparameter tuning across the 4-seed run",
+    "no threshold changes",
+    "no cherry-picking of seeds",
+    "failed seeds must be reported alongside passing seeds",
+    "same evaluator (scripts/evaluate_gate_a.py) for every seed"
+  ]
+}

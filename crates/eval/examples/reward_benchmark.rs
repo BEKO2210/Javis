@@ -131,6 +131,47 @@ fn main() {
     // target. Default off ⇒ iter-66 behaviour bit-identical (every
     // existing reward_bench snapshot test still passes verbatim).
     let c1_eval_aligned_rstdp = flag(&args, "--c1-eval-aligned-rstdp");
+    // Iter-67 BTSP plateau-eligibility on R2-E → C1 (notes/67).
+    // Master switch + three locked numeric knobs.  When --c1-btsp
+    // is off (default), the iter-66.5 R-STDP path is bit-identical.
+    let c1_btsp = flag(&args, "--c1-btsp");
+    let c1_btsp_window_ms: f32 = parse_arg(&args, "--c1-btsp-window-ms", 200.0_f32);
+    let c1_btsp_strength: f32 = parse_arg(&args, "--c1-btsp-strength", 0.4_f32);
+    // Per-post-cell credit-assignment toggle.  Default true (the
+    // mechanism the iter-67 ENTRY pre-registers as the binding
+    // ingredient).  `--c1-btsp-target-gated` is a positive intent
+    // flag (no-op since default is on; documents explicit operator
+    // intent in the locked smoke invocation).  `--c1-btsp-no-
+    // target-gate` is the ablation that disables per-post-cell
+    // locality.  If both are passed, the ablation wins (loud
+    // "no" beats quiet "yes").
+    let _c1_btsp_explicit_gated = flag(&args, "--c1-btsp-target-gated");
+    let c1_btsp_target_gated = !flag(&args, "--c1-btsp-no-target-gate");
+    // Iter-67-γ.1: R2-R2 recurrent E/I scale split during the
+    // teacher Phase 4 clamp window when c1.btsp is on.  Locked
+    // γ.1 defaults: `e = 1.0` (full E recurrent) and `i = 0.3`
+    // (reduced I-suppression).  iter-67-β's uniform-scale
+    // sweep proved no scalar between 0.0 and 0.80 produces both
+    // selectivity AND gain; γ.1 decouples E and I to address
+    // R2's E/I imbalance directly.  The two CLI flags are
+    // independent — operator can sweep each axis separately.
+    let c1_btsp_teacher_recurrent_e_scale: f32 =
+        parse_arg(&args, "--c1-btsp-teacher-recurrent-e-scale", 1.0_f32);
+    let c1_btsp_teacher_recurrent_i_scale: f32 =
+        parse_arg(&args, "--c1-btsp-teacher-recurrent-i-scale", 0.3_f32);
+    // Iter-67-γ.1.1: opt-out switch for the iter-67-α2 R2-isolation
+    // (cue + DG drive cut to 0 during teacher).  Default OFF (=
+    // isolation ON, iter-67-α2 / γ.1 v4 baseline).  Set this flag
+    // to keep cue + DG drive at full strength during teacher so
+    // γ.1's E/I-split has an active R2 substrate to expose.
+    let c1_btsp_no_r2_isolation = flag(&args, "--c1-btsp-no-r2-isolation");
+    // iter-67-β legacy uniform-scale flag — accepted for
+    // backward-compat but applies the same value to BOTH E and
+    // I if explicitly passed.  Loud-no semantics: if both
+    // legacy and split flags are passed, the split wins (E and
+    // I scales above already absorbed the override).
+    let _legacy_c1_btsp_teacher_recurrent_scale: f32 =
+        parse_arg(&args, "--c1-btsp-teacher-recurrent-scale", f32::NAN);
 
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
@@ -218,6 +259,13 @@ fn main() {
             teacher_strength: c1_teacher_strength,
             diagnostic: c1_diagnostic,
             eval_aligned_rstdp: c1_eval_aligned_rstdp,
+            btsp: c1_btsp,
+            btsp_window_ms: c1_btsp_window_ms,
+            btsp_strength: c1_btsp_strength,
+            btsp_target_gated: c1_btsp_target_gated,
+            btsp_teacher_recurrent_e_scale: c1_btsp_teacher_recurrent_e_scale,
+            btsp_teacher_recurrent_i_scale: c1_btsp_teacher_recurrent_i_scale,
+            btsp_no_r2_isolation: c1_btsp_no_r2_isolation,
         },
     };
 

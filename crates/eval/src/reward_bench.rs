@@ -485,6 +485,64 @@ pub struct C1Config {
     /// Off by default ⇒ iter-66 behaviour bit-identical;
     /// CLI flag `--c1-eval-aligned-rstdp`.
     pub eval_aligned_rstdp: bool,
+    /// Iter-67 BTSP plateau-eligibility rule on R2-E → C1.
+    /// When `true`, `enable_btsp` is called on R2's network with
+    /// the C1 cell index range as the participation filter
+    /// (R2-R2 R-STDP / STDP / etc stay untouched). See
+    /// `notes/67-btsp-tagged-eligibility-c1.md` for the locked
+    /// pre-registration. Off by default ⇒ iter-66.5 behaviour
+    /// bit-identical; CLI flag `--c1-btsp`.
+    pub btsp: bool,
+    /// Iter-67: per-synapse eligibility tag decay (ms). Locked
+    /// default 200 ms covers the iter-46 6-phase cue + delay +
+    /// prediction + teacher lead-in interval (~ 80 ms) with
+    /// safety margin. CLI flag `--c1-btsp-window-ms`.
+    pub btsp_window_ms: f32,
+    /// Iter-67: per-tagged-pre-spike weight increment applied at
+    /// the plateau-arm transition (`Δw = strength × tag`).
+    /// Default 0.4 — two pre-spikes during the eligibility window
+    /// saturate the synapse to `w_max = 0.8`. CLI flag
+    /// `--c1-btsp-strength`.
+    pub btsp_strength: f32,
+    /// Iter-67: per-post-cell credit-assignment toggle. Default
+    /// `true` — only the post-cell that crossed plateau receives
+    /// retroactive potentiation on its incoming synapses.
+    /// `false` (ablation) — ANY post-cell's plateau triggers
+    /// potentiation on every tagged synapse network-wide. Use
+    /// the ablation only to verify per-post-cell locality is
+    /// the binding mechanism. CLI flag `--c1-btsp-target-gated`.
+    pub btsp_target_gated: bool,
+    /// Iter-67-γ.1: R2-R2 recurrent E-cell synapse delivery scale
+    /// during the teacher Phase 4 clamp window.  Default `1.0` =
+    /// full strength (iter-67-α v3 / iter-67-β at e=1.0).
+    /// Applied via `Network::set_recurrent_e_i_scales` with
+    /// `pre_max = r2_n_used` so R2-E → C1 synapses (post >=
+    /// r2_n_used) are NOT scaled.  CLI flag
+    /// `--c1-btsp-teacher-recurrent-e-scale`.
+    pub btsp_teacher_recurrent_e_scale: f32,
+    /// Iter-67-γ.1: R2-R2 recurrent I-cell (inhibitory) synapse
+    /// delivery scale during the teacher Phase 4 clamp window.
+    /// Default `0.3` — Bekos's locked γ.1 default per the prompt:
+    /// reduce I-suppression while keeping E recurrent at full
+    /// strength so the strongest cue-engram E-cells dominate
+    /// without the recurrent attractor saturating uniformly.
+    /// `1.0` = uniform with `e_scale = 1.0` (= iter-67-α v3 verbatim).
+    /// `0.0` = inhibition off entirely (risk: runaway E firing).
+    /// Plasticity rules read the un-scaled stored weight, so this
+    /// only attenuates inhibitory current delivery — STDP / R-STDP /
+    /// BTSP / iSTDP all see the architectural weight.  CLI flag
+    /// `--c1-btsp-teacher-recurrent-i-scale`.
+    pub btsp_teacher_recurrent_i_scale: f32,
+    /// Iter-67-γ.1.1: opt-out switch for the iter-67-α2 R2-isolation
+    /// (cue + DG drive cut to 0 during teacher).  Default `false`
+    /// (= iter-67-α2 isolation ON, matches iter-67/γ.1 v4 baseline).
+    /// `true`: keep cue + DG drive at full strength during teacher
+    /// Phase 4 clamp window — R2 fires its natural cue-driven
+    /// response so γ.1's E/I-split has an active substrate to
+    /// expose.  Tests Bekos's actual locked γ.1 hypothesis where
+    /// cue-engram E-cells fire under reduced inhibition.  CLI flag
+    /// `--c1-btsp-no-r2-isolation`.
+    pub btsp_no_r2_isolation: bool,
 }
 
 impl Default for C1Config {
@@ -498,6 +556,13 @@ impl Default for C1Config {
             teacher_strength: 1.0,
             diagnostic: false,
             eval_aligned_rstdp: false,
+            btsp: false,
+            btsp_window_ms: 200.0,
+            btsp_strength: 0.4,
+            btsp_target_gated: true,
+            btsp_teacher_recurrent_e_scale: 1.0,
+            btsp_teacher_recurrent_i_scale: 0.3,
+            btsp_no_r2_isolation: false,
         }
     }
 }
@@ -724,6 +789,13 @@ impl Default for TeacherForcingConfig {
                 teacher_strength: 1.0,
                 diagnostic: false,
                 eval_aligned_rstdp: false,
+                btsp: false,
+                btsp_window_ms: 200.0,
+                btsp_strength: 0.4,
+                btsp_target_gated: true,
+                btsp_teacher_recurrent_e_scale: 1.0,
+                btsp_teacher_recurrent_i_scale: 0.3,
+                btsp_no_r2_isolation: false,
             },
         }
     }
@@ -778,6 +850,13 @@ impl TeacherForcingConfig {
                 teacher_strength: 1.0,
                 diagnostic: false,
                 eval_aligned_rstdp: false,
+                btsp: false,
+                btsp_window_ms: 200.0,
+                btsp_strength: 0.4,
+                btsp_target_gated: true,
+                btsp_teacher_recurrent_e_scale: 1.0,
+                btsp_teacher_recurrent_i_scale: 0.3,
+                btsp_no_r2_isolation: false,
             },
         }
     }
@@ -2269,6 +2348,54 @@ fn run_teacher_trial(
     if c1_active {
         brain.set_neuromodulator(cfg.c1.teacher_strength);
     }
+    // Iter-67-α (post-Step-6 fix per Bekos's homeostasis-catch-22
+    // diagnosis): when BTSP is on, hard-gate homeostasis OFF for
+    // the duration of the Phase 4 clamp window. The 500 nA C1
+    // target clamp drives canonical-target C1 cells to saturation
+    // firing (~14 spikes / 30 ms). Homeostatic synaptic scaling
+    // (`scale_only_down = true, a_target = 2.0`) then measures
+    // that activity as far above target and scales the cells'
+    // incoming R2-E → C1-target weights DOWN — directly cancelling
+    // the BTSP plateau-gated potentiation. iter-67's first smoke
+    // (notes/67-step-6-smoke-seed42-ep32-v2.log) confirmed the
+    // catch-22: w_ratio = 0.42 oscillating, target-mean weight
+    // 41 % of non-target, with weight movement of 0.0014/epoch
+    // (≈ 700 epochs to reach K4's ratio ≥ 1.5). Disabling
+    // homeostasis only during the clamp window — and only when
+    // BTSP is on — preserves iter-46 / iter-65 / iter-66 numerics
+    // bit-identically when c1.btsp = false. Same save/restore
+    // pattern as the existing STDP / iSTDP gating above.
+    let prior_homeostasis_t = brain.regions[1].network.homeostasis;
+    if c1_active && cfg.c1.btsp {
+        brain.regions[1].network.disable_homeostasis();
+    }
+    // Iter-67-γ.1 (E/I-split partial echo-state per Bekos's
+    // locked γ.1 prompt): when BTSP is on, scale R2-R2 recurrent
+    // synapse delivery SEPARATELY for E and I pre-cells.
+    // Defaults `e = 1.0, i = 0.3` keep E recurrent at full
+    // strength while reducing I-suppression — the strongest
+    // cue-engram E-cells dominate without uniform attractor
+    // saturation.  iter-67-β's uniform-scale sweep (notes/67
+    // §"Step 7 — iter-67-β verdict") proved no scalar between
+    // 0.0 and 0.80 produces both selectivity AND gain; γ.1
+    // decouples E and I to address the architectural E/I
+    // imbalance directly.  Combined with the iter-67-α2 R1+DG
+    // drive cut above, this exposes cue-engram E-cells under
+    // reduced inhibition.  R2-E → C1 (post >= r2_n_used) are
+    // NOT scaled (pre_max = r2_n_used isolates the recurrent
+    // block).  Stored synapse weight unchanged; STDP / iSTDP /
+    // R-STDP / BTSP read un-scaled.
+    let prior_recurrent_e_scale = brain.regions[1].network.recurrent_e_scale;
+    let prior_recurrent_i_scale = brain.regions[1].network.recurrent_i_scale;
+    let prior_recurrent_scale_pre_max = brain.regions[1].network.recurrent_scale_pre_max;
+    if c1_active && cfg.c1.btsp {
+        let r2_n = effective_r2_n(cfg);
+        brain.regions[1].network.set_recurrent_e_i_scales(
+            cfg.c1.btsp_teacher_recurrent_e_scale,
+            cfg.c1.btsp_teacher_recurrent_i_scale,
+            r2_n,
+        );
+    }
     // Iter-66: when C1 is active, augment the spike-tracking set
     // with the C1 cell index range so step-7.5 diagnostics can
     // read C1 spike counts out of `teacher_counts`. The original
@@ -2289,14 +2416,50 @@ fn run_teacher_trial(
     } else {
         r2_e
     };
+    // Iter-67-α2 (R2-isolation per Bekos's selectivity-fix prompt):
+    // when BTSP is on, gate the upstream cue drive (R1 → R2 +
+    // DG → R2) to ZERO during the Phase 4 clamp window. The
+    // motivation, post the homeostasis-gating fix
+    // (notes/67-step-6-smoke-seed42-ep32-v3-homeostasis-gated.log
+    // confirmed BTSP saturates indiscriminately when R2 keeps
+    // firing during teacher): without this isolation, R2 fires
+    // its full cue + recurrent + DG response throughout teacher,
+    // BTSP tags ALL active R2-E synapses (engram + noise), and
+    // the plateau-arm event potentiates them all uniformly →
+    // w_ratio ≈ 1.0 (target ≈ non-target). With cue input cut
+    // during teacher, only the residual cue-engram membrane
+    // potentials carry over from cue/delay/prediction/lead-in;
+    // those decay quickly under tau_m = 20 ms, leaving the
+    // C1-target clamp as the dominant post-side driver. BTSP
+    // tags accumulated DURING the cue/delay/prediction substrate
+    // (via the long eligibility_window_ms = 200) capture the
+    // engram cells; tags during teacher add only a small residual
+    // from membrane decay. Plateau-arm potentiates these
+    // engram-biased tagged synapses → target/non-target weight
+    // separation. iter-66/iter-66.5 path bit-identical when
+    // c1.btsp = false (gate is `c1_active && cfg.c1.btsp`).
+    // Iter-67-γ.1.1: opt-out switch.  When `cfg.c1.no_r2_isolation`
+    // is set, keep cue + DG drive at full strength during teacher
+    // (default behaviour pre-iter-67-α2).  Tests Bekos's actual
+    // locked γ.1 hypothesis: cue-engram E-cells fire under
+    // reduced inhibition.  When the flag is off (default),
+    // iter-67-α2's R2-isolation stays ON ⇒ bit-identical to
+    // iter-67-γ.1 / iter-67-α2 baselines.
+    let isolate_r2_for_btsp = c1_active && cfg.c1.btsp && !cfg.c1.btsp_no_r2_isolation;
+    let teacher_r1_strength = if isolate_r2_for_btsp { 0.0 } else { DRIVE_NA };
+    let teacher_dg_strength = if isolate_r2_for_btsp {
+        0.0
+    } else {
+        dg_strength
+    };
     let teacher_counts = if dg_active {
         drive_with_r2_clamp_dg(
             brain,
             cue_sdr,
             dg_sdr,
             &combined_clamp,
-            DRIVE_NA,
-            dg_strength,
+            teacher_r1_strength,
+            teacher_dg_strength,
             cfg.target_clamp_strength,
             clamp_ms as f32,
             track_set,
@@ -2306,7 +2469,7 @@ fn run_teacher_trial(
             brain,
             cue_sdr,
             &combined_clamp,
-            DRIVE_NA,
+            teacher_r1_strength,
             cfg.target_clamp_strength,
             clamp_ms as f32,
             track_set,
@@ -2314,6 +2477,25 @@ fn run_teacher_trial(
     };
     if c1_active {
         brain.set_neuromodulator(prior_modulator);
+    }
+    // Iter-67-α: restore homeostasis state to whatever it was
+    // before the clamp window. When `cfg.c1.btsp = false` this is
+    // a pure no-op (we never disabled it).
+    if c1_active && cfg.c1.btsp {
+        if let Some(h) = prior_homeostasis_t {
+            brain.regions[1].network.enable_homeostasis(h);
+        }
+    }
+    // Iter-67-γ.1: restore E and I recurrent scales to their
+    // prior values.  When `cfg.c1.btsp = false` this is a pure
+    // no-op (we never touched them; the saved values are the
+    // defaults 1.0 / 1.0 / u32::MAX).
+    if c1_active && cfg.c1.btsp {
+        brain.regions[1].network.set_recurrent_e_i_scales(
+            prior_recurrent_e_scale,
+            prior_recurrent_i_scale,
+            prior_recurrent_scale_pre_max as usize,
+        );
     }
     if !cfg.plasticity_during_teacher {
         match prior_stdp_t {
@@ -5097,6 +5279,30 @@ fn run_target_overlap_one_seed(
                 .network
                 .enable_reward_learning(reward_params());
         }
+        // Iter-67 BTSP plateau-eligibility on R2-E → C1.  Restricted
+        // to the C1 cell index range via `post_filter` so R2-R2
+        // synapses (also in this network) are NOT subject to BTSP —
+        // only the new R2-E → C1 sub-pathway gets the plateau-gated
+        // retroactive potentiation rule.  R-STDP stays alive on the
+        // R2-R2 synapses (handled above by enable_reward_learning).
+        // No-op when c1.btsp = false ⇒ iter-66 / iter-66.5 numerics
+        // bit-identical.
+        if cfg.teacher.c1.enabled && cfg.teacher.c1.btsp {
+            if let Some(ref c1_e_set) = c1_e {
+                let bp = snn_core::BtspParams {
+                    eligibility_window_ms: cfg.teacher.c1.btsp_window_ms,
+                    plateau_window_ms: 30.0,
+                    plateau_threshold_spikes: 5.0,
+                    potentiation_strength: cfg.teacher.c1.btsp_strength,
+                    post_plateau_decay_ms: 50.0,
+                    w_min: 0.0,
+                    w_max: 0.8,
+                    target_gated: cfg.teacher.c1.btsp_target_gated,
+                };
+                let post_filter: Vec<usize> = c1_e_set.iter().copied().collect();
+                brain.regions[1].network.enable_btsp(bp, Some(&post_filter));
+            }
+        }
     }
 
     let pre_l2 = snapshot_weights(&brain);
@@ -5164,6 +5370,14 @@ fn run_target_overlap_one_seed(
         let mut diag_train_c1_total_spikes: u64 = 0;
         let mut diag_train_c1_clamp_hits: u64 = 0;
         let mut diag_train_c1_clamp_size: u64 = 0;
+        // Iter-67: snapshot BTSP counters at start of training so the
+        // per-epoch diff captures only training-phase events. The
+        // counters persist across reset_state (intentional — they
+        // accumulate across trials within a single epoch's training);
+        // eval-phase trials don't fire BTSP (recall-mode plasticity
+        // off) so the diff = training-only events.
+        let btsp_pe_at_train_start = brain.regions[1].network.btsp_plateau_events;
+        let btsp_pot_at_train_start = brain.regions[1].network.btsp_potentiation_events;
 
         // -- Training: cue+target presentations for this epoch --
         let mut schedule: Vec<(RewardPair, bool)> = corpus
@@ -5436,13 +5650,79 @@ fn run_target_overlap_one_seed(
                 } else {
                     0.0
                 };
+                // Iter-67: BTSP per-epoch counters as DELTAS vs the
+                // start-of-training snapshot, so the diagnostic shows
+                // per-epoch totals (not cumulative-since-enable).
+                // When c1.btsp = false both deltas stay 0.  The
+                // per-class mean weights are computed below and are
+                // still informative on the iter-66.5 R-STDP path.
+                let btsp_pe = brain.regions[1]
+                    .network
+                    .btsp_plateau_events
+                    .wrapping_sub(btsp_pe_at_train_start);
+                let btsp_pot = brain.regions[1]
+                    .network
+                    .btsp_potentiation_events
+                    .wrapping_sub(btsp_pot_at_train_start);
+                let (r2c1_target_w, r2c1_nontarget_w) = if let Some(start) = c1_synapse_start {
+                    let mut tgt_sum: f64 = 0.0;
+                    let mut tgt_n: u64 = 0;
+                    let mut non_sum: f64 = 0.0;
+                    let mut non_n: u64 = 0;
+                    // Build a per-post-cell membership flag: true
+                    // ⇔ this C1 cell is in *any* word's canonical
+                    // C1 target SDR.  R2-E → C1 synapses then
+                    // sort into target / non-target buckets by
+                    // their post-cell.
+                    let n_neurons = brain.regions[1].network.neurons.len();
+                    let mut is_target_cell = vec![false; n_neurons];
+                    for sdr in target_c1_map.values() {
+                        for &idx in sdr {
+                            let i = idx as usize;
+                            if i < n_neurons {
+                                is_target_cell[i] = true;
+                            }
+                        }
+                    }
+                    let synapses = &brain.regions[1].network.synapses;
+                    for syn in synapses[start..].iter() {
+                        let w = syn.weight as f64;
+                        let post = syn.post;
+                        if is_target_cell.get(post).copied().unwrap_or(false) {
+                            tgt_sum += w;
+                            tgt_n += 1;
+                        } else {
+                            non_sum += w;
+                            non_n += 1;
+                        }
+                    }
+                    let tgt_mean = if tgt_n > 0 {
+                        tgt_sum / tgt_n as f64
+                    } else {
+                        0.0
+                    };
+                    let non_mean = if non_n > 0 {
+                        non_sum / non_n as f64
+                    } else {
+                        0.0
+                    };
+                    (tgt_mean, non_mean)
+                } else {
+                    (0.0, 0.0)
+                };
+                let r2c1_w_ratio = if r2c1_nontarget_w > 1e-9 {
+                    r2c1_target_w / r2c1_nontarget_w
+                } else {
+                    0.0
+                };
                 eprintln!(
                     "[iter-66 diag] seed={} epoch={epoch}/{ep_total} \
                      teacher: trials={tt} c1_active_frac={af:.3} c1_spikes_mean={sm:.2} \
                      clamp_eff={ce:.3} | eval: kwta_empty={ke}/{ep} target_in_dict={td}/{ep} \
                      spikes_mean={es:.2} top3_r2={r2:.4} top3_c1={c1:.4} mrr_c1={mrr:.4} \
                      raw_overlap={ro:.3} dict_concepts={dc} | r2c1: l2={l2:.4} nz_upd={nu} \
-                     max|Δw|={mx:.4} sum|Δw|={sd:.4}",
+                     max|Δw|={mx:.4} sum|Δw|={sd:.4} tgt_w={tw:.4} non_w={nw:.4} \
+                     w_ratio={wr:.3} | btsp: plateau_events={pe} potentiation_events={pot}",
                     cfg.seed,
                     ep_total = cfg.epochs,
                     tt = diag_train_trials,
@@ -5462,6 +5742,11 @@ fn run_target_overlap_one_seed(
                     nu = nonzero_updates,
                     mx = max_abs_delta,
                     sd = sum_abs_delta,
+                    tw = r2c1_target_w,
+                    nw = r2c1_nontarget_w,
+                    wr = r2c1_w_ratio,
+                    pe = btsp_pe,
+                    pot = btsp_pot,
                 );
             }
         }
