@@ -917,3 +917,112 @@ scale gating in the synaptic delivery loop) + ~ 20 LOC in
 eval. Off path bit-identical when c1.btsp = false.
 
 Awaiting Bekos's explicit Go on γ.1.
+
+---
+
+## Step 7.γ.1 — verdict: (C) Weiter silent, but interaction
+bug exposed
+
+**Date:** 2026-05-06.
+**Commit:** `cc64c69` (γ.1 implementation).
+**Smoke log:** `notes/67-step-7-iter67-gamma1-e1.0-i0.3.log`
+(5 epochs, seed=42, `e_scale=1.0, i_scale=0.3`).
+
+### Per-epoch curve (γ.1 vs v4 baseline)
+
+```text
+ep | γ.1 (e=1.0, i=0.3) w_ratio | v4 (uniform=1.0) w_ratio
+ 0 | 1.182                       | 1.186
+ 1 | 1.206                       | 1.209
+ 2 | 1.215                       | 1.219
+ 3 | 1.216                       | 1.221
+ 4 | 1.217                       | 1.222
+```
+
+γ.1 trajectory is **virtually identical to v4**. Same
+asymptote (~1.22), same `plateau_events = 5120` (canonical-
+target only), same `kwta_empty = 32/32`, same `dict = 0`,
+same `top3_c1 = 0`. The reduced-I knob has zero observable
+effect on the outcome.
+
+### Bekos's locked verdict gate outcome
+
+| Gate | Required | Observed | Pass? |
+| --- | --- | --- | :---: |
+| (A) Selectivity improves | top3_c1 > 0 + w_ratio > v3/v4 | top3_c1 = 0, w_ratio = v4 | ✗ |
+| (B) Activity unspezifisch | dict > 0 + top3_c1 noise | dict = 0 | ✗ |
+| **(C) Weiter silent** | kwta_empty 32/32 + dict = 0 | ✓ | **✓** |
+| (D) Instability | R2 collapse, eval drift ≠ 0 | R2 stable, no drift | ✗ |
+
+**Verdict: (C) Weiter silent.** Per Bekos's tree: "γ.1 mit
+1.0/0.3 reicht nicht; scale sweep oder γ.3."
+
+### Diagnostic insight: γ.1 × R2-isolation interaction bug
+
+The locked γ.1 hypothesis from Bekos's prompt:
+
+> Während der Teacher-Phase soll E-Recurrent-Drive stark
+> genug bleiben, aber I-Suppression reduziert werden.
+> Cue-engram-Zellen, die durch das Cue-Substrat voraktiviert
+> sind, sollen als pre-synaptic pattern feuern.
+
+This explicitly assumes the cue-engram E-cells *fire* during
+teacher (under reduced inhibition). The implementation
+inherits iter-67-α2 R2-isolation (cue + DG drive = 0 during
+teacher Phase 4 clamp window), which is hardcoded ON whenever
+`c1.btsp` is set:
+
+```rust
+let isolate_r2_for_btsp = c1_active && cfg.c1.btsp;
+let teacher_r1_strength = if isolate_r2_for_btsp { 0.0 } else { DRIVE_NA };
+let teacher_dg_strength = if isolate_r2_for_btsp { 0.0 } else { dg_strength };
+```
+
+With cue + DG drive cut to 0 during the entire teacher Phase
+4 clamp window, the R2 attractor has no fresh input. The
+cue-substrate-primed E-cells decay to silence under
+membrane time constant `tau_m = 20 ms` over the ~30 ms
+clamp window — even with reduced inhibition (`i = 0.3`),
+there is no active E-current to expose. The E/I split is
+operating on a silent R2.
+
+**The γ.1 mechanism cannot be tested under iter-67-α2's
+R2-isolation.** The two fixes are mutually exclusive.
+
+### Pre-registered next steps (decision tree)
+
+Two paths to test γ.1's actual hypothesis:
+
+#### γ.1.1 — Disable R2-isolation when γ.1 is on
+
+Add `--c1-btsp-no-r2-isolation` (or implicit: when E/I scales
+are non-default, disable α2). With `cue + DG = DRIVE_NA`
+during teacher, the cue-substrate priming continues
+throughout Phase 4, and the E-cells fire under recurrent
+attractor + cue input. The reduced I (0.3) then exposes
+which subset of those firing E-cells is engram-stable.
+
+Implementation: add an opt-out flag (~ 5 LOC in eval). One
+new smoke with the same E=1.0/I=0.3 config but cue+DG
+restored.
+
+This is the canonical γ.1 test per Bekos's prompt.
+
+#### γ.1.2 — i_scale sweep at full R2-isolation
+
+If we keep α2 R2-isolation, sweep `i_scale ∈ {0.0, 0.1, 0.5,
+1.0}` to test whether ANY i-value with cue+DG=0 produces
+non-silent C1. Cheaper but tests a different mechanism
+(post-cue-decay attractor stability under no-input-with-
+reduced-inhibition).
+
+Implementation: 0 LOC, just CLI sweep.
+
+#### Recommendation
+
+**γ.1.1 first** — that's the actual γ.1 hypothesis as Bekos
+locked it. The implementation needs the opt-out flag for
+clean A/B between α2-on (current iter-67 default) and α2-off
+(γ.1.1 entry).
+
+Awaiting Bekos's explicit Go.
