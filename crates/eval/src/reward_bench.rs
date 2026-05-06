@@ -512,6 +512,24 @@ pub struct C1Config {
     /// the ablation only to verify per-post-cell locality is
     /// the binding mechanism. CLI flag `--c1-btsp-target-gated`.
     pub btsp_target_gated: bool,
+    /// Iter-67-β: R2 recurrent synapse delivery scale during the
+    /// teacher Phase 4 clamp window.  `1.0` = full recurrent
+    /// (iter-67-α v3 behaviour: gain ✓, no selectivity).
+    /// `0.0` = recurrent fully off (iter-67-α2 v4 behaviour:
+    /// selectivity ✓, no gain).  Bekos's friend's prompt locks
+    /// the iter-67-β default at `0.15` — partial echo-state where
+    /// only the strongest cue-engram cells stay above firing
+    /// threshold under the reduced recurrent input.  Applied via
+    /// `Network::set_recurrent_scale` with `pre_max = r2_n_used`
+    /// so R2-E → C1 synapses (post >= r2_n_used) are NOT
+    /// scaled.  Plasticity rules read the stored weight, not the
+    /// delivered current, so the scale only attenuates spike
+    /// propagation through recurrent R2-R2 — exactly the energy
+    /// dampener the gain × selectivity tradeoff requires.
+    /// Off path (`c1.btsp = false`): scale is never set,
+    /// stays at the default 1.0.  CLI flag
+    /// `--c1-btsp-teacher-recurrent-scale`.
+    pub btsp_teacher_recurrent_scale: f32,
 }
 
 impl Default for C1Config {
@@ -529,6 +547,7 @@ impl Default for C1Config {
             btsp_window_ms: 200.0,
             btsp_strength: 0.4,
             btsp_target_gated: true,
+            btsp_teacher_recurrent_scale: 0.15,
         }
     }
 }
@@ -759,6 +778,7 @@ impl Default for TeacherForcingConfig {
                 btsp_window_ms: 200.0,
                 btsp_strength: 0.4,
                 btsp_target_gated: true,
+                btsp_teacher_recurrent_scale: 0.15,
             },
         }
     }
@@ -817,6 +837,7 @@ impl TeacherForcingConfig {
                 btsp_window_ms: 200.0,
                 btsp_strength: 0.4,
                 btsp_target_gated: true,
+                btsp_teacher_recurrent_scale: 0.15,
             },
         }
     }
@@ -2329,6 +2350,28 @@ fn run_teacher_trial(
     if c1_active && cfg.c1.btsp {
         brain.regions[1].network.disable_homeostasis();
     }
+    // Iter-67-β (partial echo-state per Bekos's friend's prompt):
+    // when BTSP is on, scale R2-R2 recurrent synapse delivery to
+    // `cfg.c1.btsp_teacher_recurrent_scale` (default 0.15) for
+    // the duration of the Phase 4 clamp window.  Combined with
+    // the iter-67-α2 R1+DG drive cut above, this leaves only
+    // the strongest cue-engram R2-E cells firing during teacher
+    // (their residual membrane + the dampened recurrent feedback
+    // is enough to keep them above threshold; weaker noise cells
+    // fall off).  R2-E → C1 synapses (post >= r2_n_used) are
+    // NOT scaled — they remain at full delivery so the C1 clamp
+    // + tagged R2-E spikes drive BTSP plateau-arming normally.
+    // The stored synapse weight is unchanged; STDP / R-STDP /
+    // BTSP read it un-scaled, so plasticity dynamics are based
+    // on the architectural weight, not the delivered current.
+    let prior_recurrent_scale = brain.regions[1].network.recurrent_scale;
+    let prior_recurrent_scale_pre_max = brain.regions[1].network.recurrent_scale_pre_max;
+    if c1_active && cfg.c1.btsp {
+        let r2_n = effective_r2_n(cfg);
+        brain.regions[1]
+            .network
+            .set_recurrent_scale(cfg.c1.btsp_teacher_recurrent_scale, r2_n);
+    }
     // Iter-66: when C1 is active, augment the spike-tracking set
     // with the C1 cell index range so step-7.5 diagnostics can
     // read C1 spike counts out of `teacher_counts`. The original
@@ -2373,7 +2416,11 @@ fn run_teacher_trial(
     // c1.btsp = false (gate is `c1_active && cfg.c1.btsp`).
     let isolate_r2_for_btsp = c1_active && cfg.c1.btsp;
     let teacher_r1_strength = if isolate_r2_for_btsp { 0.0 } else { DRIVE_NA };
-    let teacher_dg_strength = if isolate_r2_for_btsp { 0.0 } else { dg_strength };
+    let teacher_dg_strength = if isolate_r2_for_btsp {
+        0.0
+    } else {
+        dg_strength
+    };
     let teacher_counts = if dg_active {
         drive_with_r2_clamp_dg(
             brain,
@@ -2407,6 +2454,15 @@ fn run_teacher_trial(
         if let Some(h) = prior_homeostasis_t {
             brain.regions[1].network.enable_homeostasis(h);
         }
+    }
+    // Iter-67-β: restore recurrent scale to its prior value.
+    // When `cfg.c1.btsp = false` this is a pure no-op (we never
+    // touched it; the saved values are the defaults 1.0 / u32::MAX).
+    if c1_active && cfg.c1.btsp {
+        brain.regions[1].network.set_recurrent_scale(
+            prior_recurrent_scale,
+            prior_recurrent_scale_pre_max as usize,
+        );
     }
     if !cfg.plasticity_during_teacher {
         match prior_stdp_t {
@@ -5567,13 +5623,11 @@ fn run_target_overlap_one_seed(
                 // When c1.btsp = false both deltas stay 0.  The
                 // per-class mean weights are computed below and are
                 // still informative on the iter-66.5 R-STDP path.
-                let btsp_pe = brain
-                    .regions[1]
+                let btsp_pe = brain.regions[1]
                     .network
                     .btsp_plateau_events
                     .wrapping_sub(btsp_pe_at_train_start);
-                let btsp_pot = brain
-                    .regions[1]
+                let btsp_pot = brain.regions[1]
                     .network
                     .btsp_potentiation_events
                     .wrapping_sub(btsp_pot_at_train_start);

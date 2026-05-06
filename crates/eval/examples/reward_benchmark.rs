@@ -147,6 +147,15 @@ fn main() {
     // "no" beats quiet "yes").
     let _c1_btsp_explicit_gated = flag(&args, "--c1-btsp-target-gated");
     let c1_btsp_target_gated = !flag(&args, "--c1-btsp-no-target-gate");
+    // Iter-67-β: R2-R2 recurrent synapse delivery scale during the
+    // teacher Phase 4 clamp window when c1.btsp is on.  Default
+    // 0.15 per Bekos's friend's prompt — the partial-echo-state
+    // sweet spot between v3's full-recurrent (gain ✓, no
+    // selectivity) and v4's full-isolation (selectivity ✓, no
+    // gain).  The `--c1-btsp-teacher-recurrent-scale` CLI flag
+    // overrides for the sweep at 0.05 / 0.30 / 0.50 if needed.
+    let c1_btsp_teacher_recurrent_scale: f32 =
+        parse_arg(&args, "--c1-btsp-teacher-recurrent-scale", 0.15_f32);
 
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
@@ -238,6 +247,7 @@ fn main() {
             btsp_window_ms: c1_btsp_window_ms,
             btsp_strength: c1_btsp_strength,
             btsp_target_gated: c1_btsp_target_gated,
+            btsp_teacher_recurrent_scale: c1_btsp_teacher_recurrent_scale,
         },
     };
 
