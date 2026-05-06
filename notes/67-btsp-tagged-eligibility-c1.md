@@ -1026,3 +1026,89 @@ clean A/B between α2-on (current iter-67 default) and α2-off
 (γ.1.1 entry).
 
 Awaiting Bekos's explicit Go.
+
+---
+
+## Step 7.γ.1.1 — verdict: (B) C1 active but nonselective —
+first non-zero aggregate
+
+**Date:** 2026-05-06.
+**Commit:** `a9bbdd2` (γ.1.1 implementation).
+**Smoke log:** `notes/67-step-7-iter67-gamma11-noiso-e1.0-i0.3.log`
+(5 epochs, seed=42, `--c1-btsp-no-r2-isolation`, `e=1.0, i=0.3`).
+
+### Per-epoch curve
+
+```text
+ep | top3_c1 | tin_dict | mrr_c1 | raw_overlap | w_ratio | tgt_w | non_w
+ 0 | 0.0312  |    7/32  | 0.0432 | 0.016       | 0.993   | 0.790 | 0.796
+ 1 | 0.0312  |   10/32  | 0.0446 | 0.016       | 1.001   | 0.798 | 0.797
+ 2 | 0.0312  |    6/32  | 0.0285 | 0.022       | 1.001   | 0.798 | 0.797
+ 3 | 0.0625  |    7/32  | 0.0659 | 0.019       | 1.001   | 0.798 | 0.797
+ 4 | 0.0625  |    5/32  | 0.0549 | 0.023       | 1.001   | 0.799 | 0.798
+```
+
+**Aggregate (mean over 5 epochs):**
+- `c1_target_top3_overlap = 0.0437` (FIRST NON-ZERO in iter-67!)
+- `target_top3_overlap (R2) = 0.0312`
+
+### Bekos's locked verdict gate outcome
+
+| Gate | Required | Observed | Pass? |
+| --- | --- | --- | :---: |
+| (A) Selectivity improves | top3_c1 > 0 + w_ratio clearly > v3 (1.0) | top3_c1 = 0.04 ✓; w_ratio = 1.001 (not "clearly" > 1.0) | partial / borderline |
+| **(B) C1 active but nonselective** | dict > 0, top3_c1 noise, w_ratio ≈ 1 | dict = 64 ✓, top3_c1 = 0.04, w_ratio = 1.001 | ✓ |
+| (C) Still silent | kwta_empty 32/32 | 0/32 | ✗ |
+| (D) Instability | R2 collapse, eval drift ≠ 0 | R2 stable, no drift | ✗ |
+
+**Verdict: (B) C1 active but nonselective.** Reduced inhibition
+(i=0.3) restored gain (kwta_empty=0/32, dict=64) and produced
+the FIRST non-zero `c1_target_top3_overlap` aggregate in
+iter-67 (0.0437). But w_ratio asymptotes at 1.001 — target
+weights barely exceed non-target. Not yet (A)'s "clearly
+better than v3/v4 baseline".
+
+### Trajectory observation
+
+`top3_c1` doubled across epochs (0.0312 → 0.0625 by ep 3-4).
+`target_in_dict` oscillates 5-10. `mrr_c1` shows weak rise.
+The signal is real but weak, and the 5-epoch budget is too
+short to confirm whether selectivity is gradually emerging
+over training.
+
+### Pre-registered next steps (decision tree)
+
+#### γ.1.1-extended: 32-ep single-seed smoke at the same config
+
+Cheapest test of "does selectivity emerge over more
+training". 0 LOC, just a longer run. If `top3_c1` last-8-ep
+mean reaches ≥ 0.05 AND first-8-ep mean < 0.02, that clears
+iter-66.5's locked Branch (B) ROBUST gate AND positions
+γ.1.1 for the (A) verdict here. If asymptote stays around
+0.05 over 32 ep without rising further, then iter-67 needs
+a structural mechanism change (target gating /
+non-target depression).
+
+Recommendation: **run the 32-ep smoke first** before any
+mechanism redesign. It's the cheapest informative
+experiment.
+
+#### γ.1.1-i-sweep: i_scale ∈ {0.0, 0.1, 0.5}
+
+If 32-ep doesn't break through 0.05, sweep `i_scale` lower
+to find the regime where E-engram dominates more strongly.
+0 LOC.
+
+#### γ.4: target gating / non-target depression (NEW mechanism)
+
+If parameter sweeps don't suffice, design a new BTSP variant
+where non-target C1 cells firing during teacher → DEPRESS
+their incoming R2-E synapses. Requires snn-core changes
+(per-post-cell sign-of-update mask).
+
+### Status
+
+**iter-67 has produced its first non-zero c1_target_top3_overlap.**
+The signal is weak (mean = 0.044 over 5 epochs) but real.
+Awaiting Bekos's explicit Go on the 32-ep extension or
+alternative.
