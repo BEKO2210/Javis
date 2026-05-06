@@ -414,14 +414,185 @@ oscillation around chance with mean ≈ first-8 collapses to
 Do NOT start full compute (multi-seed) until the smoke
 verdict is in this file.
 
-## Headline (placeholder)
+## Headline
 
-> *to be filled after the seed-42 32-ep smoke; one of:*
-> - **(A) Clear BTSP success — propose multi-seed
->   confirmation.**
-> - **(B) Weak rise — iter-67-α parameter sweep.**
-> - **(C) Flat zero — iter-67-β C1 threshold/drive scaling
->   diagnostic.**
-> - **(D) Activity without target — iter-67-γ readout
->   diagnostic.**
-> - **(E) Instability — rollback and investigate.**
+> **(B') Weak — selectivity-without-activity.** Three rounds of
+> iter-67 fixes (v2 = BTSP-only, v3 = +homeostasis-gated,
+> v4 = +R2-isolated) each break a different failure mode but no
+> single fix delivers BOTH per-pathway selectivity (K4 ≥ 1.5)
+> AND postsynaptic gain sufficient to fire C1 from cue input
+> alone at recall (kwta_empty < 16/32). Pivot to **iter-67-β**
+> partial-echo-state per Bekos's friend's prompt: combine v3's
+> recurrent gain with v4's R2-isolation by leaving R2 recurrent
+> connectivity at a fraction of full strength during the teacher
+> clamp window.
+
+## Step 6 — Smoke results (3 versions, seed=42 × 32 ep each)
+
+**Date:** 2026-05-06.
+**Smoke logs (committed):**
+- `notes/67-step-6-smoke-seed42-ep32-v2-baseline-btsp.log` — BTSP
+  on, no homeostasis-gating, no R2-isolation.
+- `notes/67-step-6-smoke-seed42-ep32-v3-homeostasis-gated.log` —
+  + iter-67-α homeostasis-gated during teacher Phase 4.
+- `notes/67-step-6-smoke-seed42-ep32-v4-r2-isolated.log` —
+  + iter-67-α2 R1+DG drive cut during teacher Phase 4 (R2
+  isolation).
+
+### v2 — BTSP alone (baseline implementation)
+
+```text
+ep | top3_c1 | tgt_w  | non_w  | w_ratio | spikes_mean(eval) | dict_concepts
+ 0 | 0.0000  | 0.0630 | 0.1529 | 0.412   | 0.00              | 0
+ 1 | 0.0000  | 0.0630 | 0.1529 | 0.412   | 0.00              | 0
+ 2 | 0.0000  | 0.0626 | 0.1529 | 0.409   | 0.00              | 0
+ 3 | 0.0000  | 0.0631 | 0.1529 | 0.412   | 0.00              | 0
+ 4 | 0.0000  | 0.0634 | 0.1529 | 0.414   | 0.00              | 0
+ 5 | 0.0000  | 0.0641 | 0.1529 | 0.419   | 0.00              | 0
+ 6 | 0.0000  | 0.0639 | 0.1529 | 0.418   | 0.00              | 0
+ 7 | 0.0000  | 0.0635 | 0.1529 | 0.415   | 0.00              | 0
+```
+
+w_ratio asymptotic at ~0.42 (target weights at 41% of non-target,
+the OPPOSITE direction of K4's required ≥ 1.5). C1 silent at
+eval. Δw_ratio per epoch ≈ 0.0014 → projected ~ 700 epochs
+to reach K4. **Diagnosis: homeostasis catch-22** — the 500 nA
+C1-target clamp drives canonical-target C1 cells to saturation
+firing → homeostasis (`scale_only_down=true, a_target=2.0`)
+scales their incoming R2-E weights DOWN faster than BTSP can
+build them up.
+
+### v3 — + iter-67-α (homeostasis-gated during teacher)
+
+```text
+ep | top3_c1 | tgt_w  | non_w  | w_ratio | spikes_mean(eval) | dict_concepts
+ 0 | 0.0000  | 0.7849 | 0.7878 | 0.996   | 6351              | 64
+ 1 | 0.0625  | 0.7927 | 0.7938 | 0.999   | 6396              | 64
+ 2 | 0.0000  | 0.7941 | 0.7952 | 0.999   | 6249              | 64
+ 3 | 0.0000  | 0.7935 | 0.7947 | 0.999   | 6282              | 64
+```
+
+**Massive gain breakthrough:** `kwta_empty` dropped from 32/32
+to 0/32 at epoch 0; `dict_concepts` from 0 to 64; `spikes_mean`
+from 0 to ~6300; `tgt_w` from 0.063 to 0.79 saturation;
+`top3_c1` non-zero for the first time in iter-66 / iter-66.5 /
+iter-67 (0.0625 at epoch 1). **But selectivity collapsed**:
+w_ratio = 0.999 (target ≈ non-target), because R2 keeps firing
+its full cue + recurrent + DG response throughout teacher,
+BTSP tags ALL active R2-E synapses (engram + noise), and the
+plateau-arm event potentiates them all uniformly. top3_c1
+oscillates at noise level (0.0625 → 0 → 0).
+
+### v4 — + iter-67-α2 (R2 cue + DG drive cut to 0 during teacher)
+
+```text
+ep | top3_c1 | tgt_w  | non_w  | w_ratio | spikes_mean(eval) | dict_concepts
+ 0 | 0.0000  | 0.2480 | 0.2090 | 1.186   | 0.00              | 0
+ 1 | 0.0000  | 0.2528 | 0.2090 | 1.209   | 0.00              | 0
+ 2 | 0.0000  | 0.2548 | 0.2090 | 1.219   | 0.00              | 0
+ 3 | 0.0000  | 0.2552 | 0.2090 | 1.221   | 0.00              | 1
+ 4 | 0.0000  | 0.2555 | 0.2090 | 1.222   | 0.00              | 0
+```
+
+**Selectivity emerges**: w_ratio rises 0.42 (v2) → 1.0 (v3) →
+**1.22 (v4)**, target weights now > non-target. Δw_ratio per
+epoch is 16× faster than v2. **But gain collapses again**:
+absolute weights tiny (tgt_w = 0.25); `kwta_empty` back to 32/32;
+`dict_concepts` near 0. Why: cutting cue + DG drive during
+teacher means R2 fires only via residual membrane decay → BTSP
+tag accumulation drops drastically (potentiation_events =
+11k vs v3's 18M) → only a thin layer of synapses gets
+strengthened → eval cue can't fire C1. w_ratio asymptotes near
+1.22 (Δ ≈ 0.001 by epoch 4), well below K4 = 1.5.
+
+### Three-version summary table
+
+| Version | w_ratio | tgt_w | non_w | top3_c1 | kwta_empty | Diagnosis |
+|---|---|---|---|---|---|---|
+| v2 BTSP only | 0.42 | 0.063 | 0.153 | 0 | 32/32 | homeostasis cancels BTSP |
+| v3 +homeostasis-gated | 1.00 | 0.79 | 0.79 | 0 (0.06 noise) | 0/32 | gain ✓ but no selectivity |
+| v4 +R2-isolated | 1.22 | 0.25 | 0.21 | 0 | 32/32 | selectivity ✓ but no gain |
+
+The fixes form a U-shape on the gain × selectivity plane.
+Neither single fix delivers both.
+
+### Bekos's locked acceptance gate (A/B/C/D/E) — outcome
+
+Per the iter-67 ENTRY's locked criteria for v4 (the run that
+delivered the highest selectivity):
+- (A) Clear BTSP success: requires `top3_c1 ≥ 0.05` last-8-ep
+  AND `< 0.02` first-8-ep AND `kwta_empty < n_pairs/2` majority
+  of cues. **All three FAIL: top3_c1 stays at 0.0 every epoch,
+  kwta_empty = 32/32 every epoch.**
+- (B) Weak rise: `last-8 > 0` AND `last-8 > first-8` AND
+  `last-8 < 0.05`. last-8 = first-8 = 0 → **NOT (B).**
+- (C) Flat zero: `last-8 ≤ 0.005`. **TRUE (formally (C))** —
+  but the K4 weight-ratio diagnostic shows v4 is partially
+  succeeding on selectivity (w_ratio 1.22 vs K4's 1.5).
+- (D) Activity without target: requires C1 to fire in eval
+  (`kwta_empty < n_pairs/2`) AND `top3_c1 ≈ 0`. **NOT (D)** —
+  v4 has no eval-phase C1 activity at all.
+- (E) Instability: requires R2 readout collapse OR cross-cue
+  separation drop OR L2 drift ≠ 0. **NOT (E)** — top3_r2
+  oscillates at iter-65 baseline (0.0312 / 0.0); recall-mode
+  L2 drift not measured here but the path is unchanged.
+
+**Formally (C)**, but mechanistically the failure is informative:
+the *combination* of v3's gain and v4's selectivity is what's
+needed, not either alone. The locked (C) action is "iter-67-β
+C1 threshold / drive scaling" — but the data points to a more
+specific β: **partial echo-state during teacher** (Bekos's
+friend's prompt: 2-3 ms @ 15 % recurrent strength) that
+preserves selectivity from v4 while restoring some of v3's
+BTSP tag accumulation.
+
+## Step 7 — iter-67-β proposal: partial echo-state
+
+Pre-registered direction (not yet implemented; awaiting Bekos
+explicit Go):
+
+> Instead of cutting R1 + DG drive to 0 during the entire
+> Phase 4 clamp window (v4), cut them only for the first
+> ~80 % of the clamp window AND leave R2 recurrent
+> connectivity at a fraction of full strength throughout. The
+> first ~80 % gives BTSP eligibility tags time to accumulate
+> only from the cue-substrate-driven pre-spikes (engram-
+> selective). The recurrent fraction sustains some R2-E
+> firing across the teacher window so BTSP tags accumulate
+> beyond the residual-decay regime, but the absence of fresh
+> cue input keeps the firing engram-biased rather than
+> noise-uniform.
+
+Two design parameters to lock:
+1. `c1.btsp_teacher_cue_fraction: f32` — fraction of Phase 4
+   clamp_ms during which cue + DG drive are cut to 0. Default
+   1.0 (= v4 verbatim); 0.0 = v3 verbatim. β-locked default
+   would be ~ 0.8 (cut for first 80 %, restore for last 20 %).
+2. `c1.btsp_teacher_recurrent_scale: f32` — multiplier on R2
+   recurrent synapse weights during Phase 4 clamp_ms. Default
+   1.0 (= v3 verbatim); 0.0 = full v4 isolation. β-locked
+   default ~ 0.15 per the friend's prompt.
+
+Implementation cost: ~ 30 LOC in `run_teacher_trial` for
+the cue / DG fade; ~ 50 LOC in snn-core for a
+`Network::scale_recurrent_weights(scale: f32)` API plus
+restore (or, more simply, a per-step recurrent-strength
+multiplier on `Network`'s spike delivery).
+
+The locked iter-67 ENTRY's gate matrix carries over verbatim
+to iter-67-β; no relaxation. Bekos's friend's specific
+predictions (`w_ratio > 1.0` by epoch 1 + `tgt_w > 0.15` by
+epoch 1 + `top3_c1 > 0` by epoch 1) become the iter-67-β
+single-seed gate.
+
+## Iter-67 status: PAUSED at step 6 verdict (formally (C),
+mechanistically gain × selectivity tradeoff)
+
+The implementation (steps 1–5 + α + α2) on this branch is
+correct: BTSP unit tests pass; the rule fires when expected;
+homeostasis-gating fix produced a clean gain breakthrough;
+R2-isolation produced a clean selectivity emergence. **The
+two fixes are individually correct but their combination at
+the locked teacher schedule does not produce both effects
+simultaneously.** iter-67-β (partial echo-state) is the
+pre-registered next step contingent on Bekos's explicit Go.
