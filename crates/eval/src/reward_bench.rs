@@ -462,6 +462,16 @@ pub struct C1Config {
     /// teacher phase. iter-66 ENTRY default 1.0 (CLI knob
     /// `--c1-teacher-strength`).
     pub teacher_strength: f32,
+    /// Iter-66 step 7.5: emit per-epoch diagnostic logs that
+    /// discriminate (A) insufficient training / (B) silent C1 /
+    /// (C) non-discriminative fingerprints. Logs include:
+    /// pre/post R2→C1 weight L2 norm, per-epoch C1 spike count
+    /// during the teacher and eval phases, the fraction of
+    /// trials with nonzero C1 activity, mean rank / MRR of the
+    /// canonical target word in the C1 readout, and the raw
+    /// overlap of the eval kWTA with the canonical-target C1
+    /// SDR. Off by default (CLI flag `--c1-diagnostic`).
+    pub diagnostic: bool,
 }
 
 impl Default for C1Config {
@@ -473,6 +483,7 @@ impl Default for C1Config {
             from_r2_fanout: 30,
             init_w_max: 0.5,
             teacher_strength: 1.0,
+            diagnostic: false,
         }
     }
 }
@@ -697,6 +708,7 @@ impl Default for TeacherForcingConfig {
                 from_r2_fanout: 30,
                 init_w_max: 0.5,
                 teacher_strength: 1.0,
+                diagnostic: false,
             },
         }
     }
@@ -749,6 +761,7 @@ impl TeacherForcingConfig {
                 from_r2_fanout: 30,
                 init_w_max: 0.5,
                 teacher_strength: 1.0,
+                diagnostic: false,
             },
         }
     }
@@ -2278,6 +2291,31 @@ fn run_teacher_trial(
     outcome.target_clamp_hits = clamp_hit as u32;
     outcome.target_clamp_size = target_r2_sdr.len() as u32;
 
+    // Iter-66 step 7.5 diagnostic: capture C1 spike statistics
+    // during the teacher clamp window. The C1 cell index range
+    // is `[r2_n_used, r2_n_used + cfg.c1.size)` (when c1.enabled).
+    // Cheap when c1 is off — early-return without iteration.
+    if c1_active {
+        let r2_n_used = effective_r2_n(cfg);
+        let c1_start = r2_n_used;
+        let c1_end = r2_n_used + cfg.c1.size as usize;
+        let c1_total: u32 = teacher_counts
+            .get(c1_start..c1_end)
+            .map(|s| s.iter().sum())
+            .unwrap_or(0);
+        outcome.c1_teacher_spikes = c1_total;
+        let c1_target_set: BTreeSet<u32> = c1_target_sdr.iter().copied().collect();
+        let c1_clamp_hit = c1_target_set
+            .iter()
+            .filter(|&&i| {
+                let idx = i as usize;
+                idx < teacher_counts.len() && teacher_counts[idx] > 0
+            })
+            .count();
+        outcome.c1_target_clamp_hits = c1_clamp_hit as u32;
+        outcome.c1_target_clamp_size = c1_target_sdr.len() as u32;
+    }
+
     // ---- Phase 5: reward. Score the *prediction* against the
     //      canonical target — teacher activation does NOT count.
     let target_in_topk = pred_topk.iter().any(|i| target_set.contains(i));
@@ -2339,6 +2377,20 @@ struct TrialOutcome {
     /// Lets the epoch loop compute the selectivity index without
     /// re-running R2 step.
     pred_target_hits: u32,
+    /// Iter-66 step 7.5 diagnostic: total C1 spike count across
+    /// the teacher (Phase 4) clamp window. Zero when c1.enabled
+    /// is false. Used by the per-epoch diagnostic accumulator
+    /// to discriminate "silent C1" from "C1 active but not
+    /// discriminative".
+    c1_teacher_spikes: u32,
+    /// Iter-66 step 7.5 diagnostic: count of canonical-target C1
+    /// cells that fired at least once during the teacher clamp.
+    /// Discriminates "C1 target SDR clamp ineffective" from "C1
+    /// fires but R-STDP not gated to canonical cells".
+    c1_target_clamp_hits: u32,
+    /// Iter-66 step 7.5 diagnostic: clamp window size in cells
+    /// (denominator for `c1_target_clamp_hits / size` ratio).
+    c1_target_clamp_size: u32,
 }
 
 // ----------------------------------------------------------------------
@@ -3756,6 +3808,12 @@ struct BrainBuild {
     /// network (shifted by `c1_start`). Empty map when
     /// `c1.enabled = false`.
     target_c1_map: std::collections::HashMap<String, Vec<u32>>,
+    /// Iter-66 step 7.5 diagnostic: index of the first R2-E → C1
+    /// synapse in R2's `network.synapses` vec. Synapses
+    /// `[c1_synapse_start..]` are the new R2-E → C1 edges; the
+    /// pre-suffix synapses are the original R2-R2 connectivity.
+    /// `None` when `c1.enabled = false`.
+    c1_synapse_start: Option<usize>,
 }
 
 /// Single source of truth for benchmark-brain construction. Replaces
@@ -3833,7 +3891,11 @@ fn build_benchmark_brain(corpus: &RewardCorpus, cfg: &RewardConfig) -> BrainBuil
     // `0xC1A1_5EE9_..` is distinct from DG's `0xD9..` so two
     // distinct architectures at the same `cfg.seed` get distinct
     // wiring RNG streams.
-    let (c1_e, target_c1_map) = if cfg.teacher.c1.enabled {
+    let (c1_e, target_c1_map, c1_synapse_start) = if cfg.teacher.c1.enabled {
+        // Iter-66 step 7.5 diagnostic: capture the boundary index
+        // *before* appending C1, so the post-suffix synapse range
+        // is identifiable as "R2-E → C1 only".
+        let r2_r2_synapse_count = brain.regions[1].network.synapses.len();
         let (c1_start, c1_end) = append_c1_to_r2(
             &mut brain,
             &cfg.teacher.c1,
@@ -3859,9 +3921,9 @@ fn build_benchmark_brain(corpus: &RewardCorpus, cfg: &RewardConfig) -> BrainBuil
                 )
             })
             .collect();
-        (Some(c1_set((c1_start, c1_end))), map)
+        (Some(c1_set((c1_start, c1_end))), map, Some(r2_r2_synapse_count))
     } else {
-        (None, std::collections::HashMap::new())
+        (None, std::collections::HashMap::new(), None)
     };
 
     let target_r2_map: std::collections::HashMap<String, Vec<u32>> = {
@@ -3910,6 +3972,7 @@ fn build_benchmark_brain(corpus: &RewardCorpus, cfg: &RewardConfig) -> BrainBuil
         decorrelated_block_size,
         c1_e,
         target_c1_map,
+        c1_synapse_start,
     }
 }
 
@@ -3990,6 +4053,7 @@ fn run_jaccard_arm(
         decorrelated_block_size,
         c1_e: _,
         target_c1_map: _,
+        c1_synapse_start: _,
     } = build_benchmark_brain(corpus, cfg);
 
     if let Some(block_size) = decorrelated_block_size {
@@ -4240,6 +4304,7 @@ pub fn run_jaccard_floor_diagnosis(
             decorrelated_block_size,
             c1_e: _,
             target_c1_map: _,
+            c1_synapse_start: _,
         } = build_benchmark_brain(corpus, &cfg_seeded);
 
         if let Some(block_size) = decorrelated_block_size {
@@ -4903,6 +4968,7 @@ fn run_target_overlap_one_seed(
         decorrelated_block_size,
         c1_e,
         target_c1_map,
+        c1_synapse_start,
     } = build_benchmark_brain(corpus, cfg);
 
     if let Some(block_size) = decorrelated_block_size {
@@ -4983,6 +5049,42 @@ fn run_target_overlap_one_seed(
 
     let pre_l2 = snapshot_weights(&brain);
 
+    // Iter-66 step 7.5 diagnostic: pre-train snapshot of the
+    // R2-E → C1 plastic suffix. Captures raw weight magnitudes so
+    // post-train deltas can be computed (mean / max change,
+    // nonzero-update count). Cheap when c1.diagnostic = false —
+    // single boolean check.
+    let c1_diag = cfg.teacher.c1.enabled && cfg.teacher.c1.diagnostic;
+    let r2c1_pre_weights: Vec<f32> = if let (true, Some(start)) = (c1_diag, c1_synapse_start) {
+        brain.regions[1].network.synapses[start..]
+            .iter()
+            .map(|s| s.weight)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if c1_diag {
+        let l2_pre: f64 = r2c1_pre_weights
+            .iter()
+            .map(|&w| (w as f64) * (w as f64))
+            .sum::<f64>()
+            .sqrt();
+        let mean_pre: f64 = if r2c1_pre_weights.is_empty() {
+            0.0
+        } else {
+            r2c1_pre_weights.iter().map(|&w| w as f64).sum::<f64>()
+                / r2c1_pre_weights.len() as f64
+        };
+        eprintln!(
+            "[iter-66 diag] seed={} pre-train: r2_r2_synapses={} r2c1_synapses={} \
+             r2c1_l2={l2_pre:.4} r2c1_mean_w={mean_pre:.4} r2c1_init_w_max={iwm:.2}",
+            cfg.seed,
+            c1_synapse_start.unwrap_or(0),
+            r2c1_pre_weights.len(),
+            iwm = cfg.teacher.c1.init_w_max,
+        );
+    }
+
     let vocab: Vec<String> = corpus.vocab.iter().cloned().collect();
     let mut rng = Rng::new(cfg.seed);
     let mut per_epoch_top3: Vec<f32> = Vec::with_capacity(cfg.epochs);
@@ -5002,6 +5104,15 @@ fn run_target_overlap_one_seed(
         if !no_plasticity {
             brain.regions[1].network.enable_istdp(istdp_params);
         }
+
+        // Iter-66 step 7.5 diagnostic: per-epoch C1 spike accumulators
+        // populated from `TrialOutcome`'s c1_*  fields. Cheap when
+        // c1.diagnostic = false (just unused locals).
+        let mut diag_train_trials: u32 = 0;
+        let mut diag_train_c1_active: u32 = 0;
+        let mut diag_train_c1_total_spikes: u64 = 0;
+        let mut diag_train_c1_clamp_hits: u64 = 0;
+        let mut diag_train_c1_clamp_size: u64 = 0;
 
         // -- Training: cue+target presentations for this epoch --
         let mut schedule: Vec<(RewardPair, bool)> = corpus
@@ -5028,7 +5139,7 @@ fn run_target_overlap_one_seed(
                     .unwrap_or_default();
                 for _rep in 0..cfg.reps_per_pair.max(1) {
                     brain.regions[1].network.reset_state();
-                    let _ = run_teacher_trial(
+                    let outcome = run_teacher_trial(
                         &mut brain,
                         &cfg.teacher,
                         cfg.use_reward,
@@ -5041,6 +5152,15 @@ fn run_target_overlap_one_seed(
                         &dg_sdr,
                         &c1_sdr,
                     );
+                    if c1_diag {
+                        diag_train_trials += 1;
+                        diag_train_c1_total_spikes += outcome.c1_teacher_spikes as u64;
+                        if outcome.c1_teacher_spikes > 0 {
+                            diag_train_c1_active += 1;
+                        }
+                        diag_train_c1_clamp_hits += outcome.c1_target_clamp_hits as u64;
+                        diag_train_c1_clamp_size += outcome.c1_target_clamp_size as u64;
+                    }
                     idle(&mut brain, COOLDOWN_MS);
                 }
             } else {
@@ -5148,6 +5268,14 @@ fn run_target_overlap_one_seed(
             );
             let mut c1_top3 = 0usize;
             let mut c1_pairs_n = 0usize;
+            // Iter-66 step 7.5 diagnostic accumulators.
+            let mut diag_eval_spikes_total: u64 = 0;
+            let mut diag_eval_kwta_empty: u32 = 0;
+            let mut diag_eval_target_in_dict: u32 = 0;
+            let mut diag_eval_mrr_sum: f64 = 0.0;
+            let mut diag_eval_raw_overlap_sum: u64 = 0;
+            let mut diag_eval_raw_overlap_denom: u64 = 0;
+            let dict_n_concepts = c1_dict.len();
             for pair in &corpus.pairs {
                 let cue_sdr = encoder.encode_word(&pair.cue);
                 if cue_sdr.indices.is_empty() {
@@ -5167,8 +5295,27 @@ fn run_target_overlap_one_seed(
                 } else {
                     drive_for_with_counts(&mut brain, &cue_sdr.indices, RECALL_MS, c1_e_set)
                 };
+                if c1_diag {
+                    let total: u64 = c1_counts.iter().map(|&c| c as u64).sum();
+                    diag_eval_spikes_total += total;
+                    if let Some(canonical_c1) = target_c1_map.get(&pair.target) {
+                        let kw_top: BTreeSet<u32> = top_k_indices(
+                            &c1_counts,
+                            cfg.teacher.c1.sparsity_k as usize,
+                        )
+                        .into_iter()
+                        .collect();
+                        let canon_set: BTreeSet<u32> = canonical_c1.iter().copied().collect();
+                        let inter = kw_top.intersection(&canon_set).count() as u64;
+                        diag_eval_raw_overlap_sum += inter;
+                        diag_eval_raw_overlap_denom += canon_set.len() as u64;
+                    }
+                }
                 let c1_kwta = top_k_indices(&c1_counts, cfg.teacher.c1.sparsity_k as usize);
                 if c1_kwta.is_empty() {
+                    if c1_diag {
+                        diag_eval_kwta_empty += 1;
+                    }
                     c1_pairs_n += 1;
                     continue;
                 }
@@ -5177,6 +5324,14 @@ fn run_target_overlap_one_seed(
                     .iter()
                     .position(|(w, _)| w == &pair.target)
                     .map(|p| p + 1);
+                if c1_diag {
+                    if c1_rank.is_some() {
+                        diag_eval_target_in_dict += 1;
+                    }
+                    if let Some(r) = c1_rank {
+                        diag_eval_mrr_sum += 1.0 / r as f64;
+                    }
+                }
                 if let Some(r) = c1_rank {
                     if r <= 3 {
                         c1_top3 += 1;
@@ -5190,6 +5345,79 @@ fn run_target_overlap_one_seed(
                 0.0
             };
             per_epoch_top3_c1.push(c1_acc);
+
+            if c1_diag {
+                // Per-epoch R2→C1 weight stats. Slice the synapses
+                // suffix and compare to the pre-train snapshot.
+                let l2_now: f64 = if let Some(start) = c1_synapse_start {
+                    brain.regions[1].network.synapses[start..]
+                        .iter()
+                        .map(|s| (s.weight as f64) * (s.weight as f64))
+                        .sum::<f64>()
+                        .sqrt()
+                } else {
+                    0.0
+                };
+                let mut nonzero_updates: u64 = 0;
+                let mut max_abs_delta: f32 = 0.0;
+                let mut sum_abs_delta: f64 = 0.0;
+                if let Some(start) = c1_synapse_start {
+                    let now_slice = &brain.regions[1].network.synapses[start..];
+                    for (i, syn) in now_slice.iter().enumerate() {
+                        let pre = r2c1_pre_weights.get(i).copied().unwrap_or(0.0);
+                        let d = syn.weight - pre;
+                        let absd = d.abs();
+                        if absd > 1e-7 {
+                            nonzero_updates += 1;
+                        }
+                        if absd > max_abs_delta {
+                            max_abs_delta = absd;
+                        }
+                        sum_abs_delta += absd as f64;
+                    }
+                }
+                let n_train = diag_train_trials.max(1) as f64;
+                let train_clamp_eff = if diag_train_c1_clamp_size > 0 {
+                    diag_train_c1_clamp_hits as f64 / diag_train_c1_clamp_size as f64
+                } else {
+                    0.0
+                };
+                let eval_n = corpus.pairs.len().max(1) as f64;
+                let eval_mean_spikes = diag_eval_spikes_total as f64 / eval_n;
+                let mrr = diag_eval_mrr_sum / eval_n;
+                let raw_overlap_ratio = if diag_eval_raw_overlap_denom > 0 {
+                    diag_eval_raw_overlap_sum as f64 / diag_eval_raw_overlap_denom as f64
+                } else {
+                    0.0
+                };
+                eprintln!(
+                    "[iter-66 diag] seed={} epoch={epoch}/{ep_total} \
+                     teacher: trials={tt} c1_active_frac={af:.3} c1_spikes_mean={sm:.2} \
+                     clamp_eff={ce:.3} | eval: kwta_empty={ke}/{ep} target_in_dict={td}/{ep} \
+                     spikes_mean={es:.2} top3_r2={r2:.4} top3_c1={c1:.4} mrr_c1={mrr:.4} \
+                     raw_overlap={ro:.3} dict_concepts={dc} | r2c1: l2={l2:.4} nz_upd={nu} \
+                     max|Δw|={mx:.4} sum|Δw|={sd:.4}",
+                    cfg.seed,
+                    ep_total = cfg.epochs,
+                    tt = diag_train_trials,
+                    af = (diag_train_c1_active as f64) / n_train,
+                    sm = (diag_train_c1_total_spikes as f64) / n_train,
+                    ce = train_clamp_eff,
+                    ke = diag_eval_kwta_empty,
+                    ep = corpus.pairs.len(),
+                    td = diag_eval_target_in_dict,
+                    es = eval_mean_spikes,
+                    r2 = top3_accuracy,
+                    c1 = c1_acc,
+                    mrr = mrr,
+                    ro = raw_overlap_ratio,
+                    dc = dict_n_concepts,
+                    l2 = l2_now,
+                    nu = nonzero_updates,
+                    mx = max_abs_delta,
+                    sd = sum_abs_delta,
+                );
+            }
         }
 
         // Restore plasticity state for the next epoch's training. If

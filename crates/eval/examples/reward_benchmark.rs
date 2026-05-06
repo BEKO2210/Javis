@@ -117,6 +117,12 @@ fn main() {
     let c1_sparsity_k: u32 = parse_arg(&args, "--c1-sparsity-k", 20_u32);
     let c1_from_r2_fanout: u32 = parse_arg(&args, "--c1-from-r2-fanout", 30_u32);
     let c1_init_w_max: f32 = parse_arg(&args, "--c1-init-w-max", 0.5_f32);
+    // Iter-66 step 7.5: per-epoch diagnostic logs for the C1 path
+    // (R2→C1 weight L2 / Δw stats, teacher-phase C1 spike count,
+    // eval-phase C1 spike count, target rank / MRR, raw kWTA ∩
+    // canonical-target overlap). Off by default; mandatory for the
+    // step 7.5 verdict before the 8-seed step 8 main run.
+    let c1_diagnostic = flag(&args, "--c1-diagnostic");
 
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
@@ -202,6 +208,7 @@ fn main() {
             from_r2_fanout: c1_from_r2_fanout,
             init_w_max: c1_init_w_max,
             teacher_strength: c1_teacher_strength,
+            diagnostic: c1_diagnostic,
         },
     };
 
