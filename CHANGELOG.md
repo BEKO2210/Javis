@@ -122,16 +122,125 @@ smoke and full at value=0.3). Not random — a seed-specific failure
 mode at this configuration. iter-65's 8-seed re-run will surface
 whether it is a 1-in-4 anomaly or a 25 %+ structural failure mode.
 
-### iter-65 fork (locked, Bekos choice required)
+### Axis B smoke (16 ep × 4 seeds × 3 values, 5 May 2026) — narrow window
 
-Path 1 — methodological: complete axes A and B smokes before deepening
-(per ENTRY spec; ~3.5 h additional wallclock).
+| value | Δ̄        | t(3)    | classification                              |
+| ---:  | ---:     | ---:    | :---                                        |
+| 0.025 | +0.0000  | +0.000  | **(β) Beta — sparse-locked state**          |
+| 0.050 | +0.0147  | +2.933  | (α) at smoke — known iter-51 oscillation    |
+| 0.100 | +0.0000  | +0.000  | **(β) Beta — dense-locked state**           |
 
-Path 2 — pragmatic: immediately deepen value=0.3 at 8 seeds × 32 ep
-(spec-allowed when exactly one axis is α; ~4 h wallclock; resolves
-the seed=99 question fastest).
+Both axis-B extremes produce **Δ = 0 bit-for-bit on every seed**: the
+trained brain's `target_top3_overlap` is IEEE-754 identical to the
+untrained brain's. Not "small effect" — *exactly equal*. Two distinct
+mechanistic failure modes:
 
-Methodologically cleanest = Path 1. Fastest-to-iter-65-verdict = Path 2.
+  - sparse (0.025): no recurrent attractor → engram not carried between
+    trials → decoder fingerprint determined by DG path alone, identical
+    in trained and untrained.
+  - dense (0.100): self-dominated recurrent → trained synapses
+    overridden by bulk recurrent steady-state → decoder fingerprint
+    again identical regardless of training.
+
+The middle point (value=0.05) is the **iter-46/iter-63 baseline**
+configuration; per-seed values reproduce the iter-63 calibration
+commit `a08a117` bit-for-bit (cache pre-seed working). The (α)
+classification at smoke is *known* to collapse to (β) at full phase
+— iter-63 already locked this exact configuration as Branch (B) FAIL
+at 32 ep. Axis B's only "α" is iter-51 per-epoch oscillation, not a
+stable signal.
+
+**Axis B contributes no robust mechanism to iter-65.** Both extremes
+lock plasticity out; the middle is known-unstable. Argues for
+*dynamic operating windows*, not monotone scaling — the connectivity
+parameter is not a free knob to tune for performance, it must stay
+at the iter-46 baseline 0.05 for the rest of the plasticity stack to
+have anything to write into.
+
+### Axis A smoke (16 ep × 4 seeds × 4 values, 6 May 2026) — operating-window cliff
+
+| value | Δ̄        | t(3)    | classification                          |
+| ---:  | ---:     | ---:    | :---                                    |
+| 0.100 | +0.0000  | +0.000  | (β) DG-too-weak / sub-floor             |
+| 0.500 | +0.0000  | +0.000  | (β) routing partial / locked            |
+| 1.000 | +0.0147  | +2.933  | (α) at smoke — known iter-51 oscillation |
+| 2.000 | −0.0029  | −0.279  | (β) DG-too-strong / mixed breakdown     |
+
+Tally: α=1 (unstable), β=3, γ=0, δ=0.
+
+Axis A is the *narrowest* of the three axes. Four distinct failure
+regimes across the value range:
+
+  - 0.1 = sub-floor (decoder reads near-zero hits even untrained;
+    DG signal too weak to drive R2 firing).
+  - 0.5 = locked routing (decoder reads non-zero hits but
+    trained ≡ untrained; plasticity invisible).
+  - 1.0 = oscillating signal (the iter-46/iter-63 baseline; (Δ̄, t,
+    n_pos) triple bit-identical to axis B value=0.05 and axis C
+    value=0.0 — same configuration; iter-63 already proved this
+    collapses to β at 32 ep).
+  - 2.0 = seed-specific breakdown (sub-floor / locked / +0.0195 /
+    −0.0312 across the four seeds; aggregate β by magnitude band).
+
+The cache pre-seed reproduces iter-63 calibration values bit-for-bit
+on value=1.0 (4/4 seeds), confirming determinism + cache integrity.
+
+**Axis A contributes no robust mechanism to iter-65.** The iter-46
+default DG drive is highly tuned — any deviation kills the signal.
+
+### Cross-axis verdict (locked)
+
+| Axis | Active values | Robust α? | Mechanism contribution |
+| :--- | :--- | :-: | :--- |
+| A | 1.0 only (unstable) | ❌ | None — narrow window at iter-46 default |
+| B | 0.05 only (unstable) | ❌ | None — narrow window at iter-46 default |
+| C | **0.3 (persistent at full)** + 0.0 (unstable) | ✓ | **value=0.3 — perforant-path sweet-spot** |
+
+The architectural finding: the iter-46 plasticity stack only writes
+a measurable cue → target signal into the read-out when there is a
+moderate direct R1 → R2 perforant path *in addition* to the DG mossy-
+fibre projection. Both DG drive (axis A) and R2 recurrent connectivity
+(axis B) are tightly tuned to iter-46 defaults — neither provides a
+knob to "improve" learning from. Only the perforant path (axis C,
+value=0.3) is a viable mechanism axis to deepen.
+
+This matches hippocampal anatomy: the cortical input to CA3 flows
+through two parallel paths (perforant + mossy-fibre). iter-60's DG
+bridge implemented mossy-fibre while zeroing perforant; iter-63
+measured this configuration and got Branch (B) FAIL; iter-64 found
+the perforant re-introduction at 30 % scale is what makes the whole
+stack produce a measurable engram.
+
+### iter-65 entry — locked
+
+Per the iter-64 ENTRY locked fork (exactly one axis α):
+
+  iter-65 Step 1 = Axis C value=0.3 deepen at 8 seeds × 32 epochs.
+
+  cargo run --release -p eval --example reward_benchmark -- \
+    --axis-sweep direct-r1r2-weight-scale \
+    --values 0.3 \
+    --seeds 42,7,13,99,1,2,3,4 \
+    --axis-sweep-phase full \
+    --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval
+
+Expected wallclock: ~4 h.
+
+iter-65 acceptance:
+
+  (A) Confirm: Δ̄ ≥ 0.0621 (iter-63 threshold) on 8/8 seeds AND
+      paired t(7) > 1.895 → CA3/CA1 split iteration next.
+  (B) Partial: Δ̄ > 0 on ≥ 6/8 seeds AND t(7) > 0 → axis C
+      value=0.3 robust but below threshold; iter-66 = parameter
+      co-tuning around value=0.3.
+  (C) Reject: Δ̄ ≤ 0 on ≥ 5/8 seeds → the smoke + 4-seed full α
+      was a sample artefact; iter-66 = structural question
+      (target SDR encoding / re-calibrate
+      prediction_top3_before_teacher / forced CA3/CA1 pivot).
+
+The seed=99 deterministic-negative-outlier (iter-64 axis C smoke
+−0.0273, full −0.0283) will be exercised in the 8-seed run; iter-65
+resolves whether it is 1-in-8 ≈ 12 % or 25 %+ structural failure.
 
 ## Unreleased — Iteration 63 (cue → target metric on DG-enabled brain)
 

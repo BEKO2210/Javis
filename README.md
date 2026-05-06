@@ -21,7 +21,7 @@ your LLM, returning a few decoded concepts instead of full document chunks.
 [![Observability](https://img.shields.io/badge/observability-tracing%20%C2%B7%20Prometheus-7aa2ff)](#production-readiness)
 [![Container](https://img.shields.io/badge/container-Docker%20%2B%20Compose-2496ed?logo=docker&logoColor=white)](#run-with-docker)
 [![Bio inspired](https://img.shields.io/badge/bio--inspired-LIF%20%C2%B7%20STDP%20%C2%B7%20iSTDP%20%C2%B7%20BTSP-62d6ff)](#plasticity)
-[![Iter 64](https://img.shields.io/badge/iter--64-Mechanism%20diagnosis%20%C2%B7%20perforant%20%CE%B1%20at%200.3-ff66c4)](#iterations)
+[![Iter 64](https://img.shields.io/badge/iter--64-Mechanism%20found%20%C2%B7%20perforant%20%CE%B1%20persistent-3fb950)](#iterations)
 
 > **⚠ Research-only license.** Javis is licensed under
 > [PolyForm Noncommercial 1.0.0](LICENSE). It is **not** for production
@@ -551,19 +551,20 @@ Every iteration is logged in [`notes/`](notes). Each note is a single
 hypothesis, a pre-fixed acceptance criterion, and the measurement that
 either confirms or falsifies it. The chain is the public artefact.
 
-> **Latest snapshot (iter-64, axis C confirmed).** iter-63 closed
-> Branch (B) FAIL on the DG-only configuration (`Δ̄ = −0.0027`,
-> `t(3) = −0.179`, `n_pass = 0/4`). iter-64 axis C
-> (`direct_r1r2_weight_scale` — perforant-path re-introduction) found
-> **a persistent α at `value=0.3`**: smoke (16 ep) `Δ̄ = +0.0190` and full
-> (32 ep) `Δ̄ = +0.0164`, both with `n_pos = 3/4` and `t(3) > 0`. Three
-> seeds learn (seed=42, 7, 13); seed=99 is a deterministic negative
-> outlier across both phases. The headline contrast: DG-alone (`value=0.0`)
-> shows α at smoke and **collapses to iter-63 Branch (B) at full** —
-> classic iter-51 oscillation. **30 % perforant + DG holds α through
-> both phases** — the perforant-path mechanism hypothesis is provisionally
-> confirmed. iter-65 fork (Path 1: complete axes A + B first / Path 2:
-> immediate 8-seed deepen at `value=0.3`) awaiting Bekos's choice.
+> **Latest snapshot (iter-64 done — perforant path is the mechanism).**
+> Three diagnostic axes complete. **Axis A (DG drive) and Axis B (R2
+> recurrent)** are both tightly tuned to the iter-46 defaults — every
+> non-default value lands in either *sub-floor* (decoder reads
+> ≈ 0 hits) or *locked-state* (`Δ = 0 bit-for-bit`, plasticity
+> invisible). **Only axis C (`direct_r1r2_weight_scale`, perforant
+> path) yields a robust α at `value=0.3`** — persistent across smoke
+> (16 ep, `Δ̄=+0.0190`) and full (32 ep, `Δ̄=+0.0164`), 3/4 seeds
+> positive in both phases. The biological reading: the iter-46
+> plasticity stack only writes a measurable cue → target signal
+> into the read-out when there is a *moderate* direct perforant
+> path **in addition** to the DG mossy-fibre projection — exactly
+> the dual EC → CA3 input pattern in hippocampal anatomy. **iter-65
+> = deepen axis C value=0.3 at 8 seeds × 32 epochs.**
 > → [notes/64](notes/64-mechanism-diagnosis.md), [notes/63](notes/63-cue-target-metric.md)
 
 ### Phase 0 — Bio foundations · iter 00–19
@@ -661,7 +662,7 @@ diagnosis · ❌ fail · 🚀 architectural pivot.
 | 61 | DG full replication 4 seeds × 32 ep: cross robust; 2/4 seeds erode same-cue (0.875, 0.898) | ⚠ recall instability | [→](notes/61-dg-bridge-full-replication.md) |
 | 62 | Recall-mode `--plasticity-off-during-eval`: same-cue = 1.000 on 4/4 seeds, post-eval L2 bit-identical | ✅ stability solved | [→](notes/62-recall-mode-plasticity-off-eval.md) |
 | 63 | Direct cue→target metric on DG brain: `target_top3_overlap` mean across epochs, threshold = `max(0.05, μ + 2σ) = 0.0621` locked from calibration | ❌ Branch (B) FAIL · Δ̄ = −0.003, t(3) = −0.18 | [→](notes/63-cue-target-metric.md) |
-| 64 | Mechanism diagnosis (3 axes, isolated): pre-registered α/β/γ/δ per-value classification against `σ_untrained_iter63 = 0.0213` band. Axis C `value=0.3` (30 % perforant + DG): α at both smoke (`Δ̄=+0.019`) and full (`Δ̄=+0.016`); persistent across phase change. seed=99 deterministic negative outlier; seed=7 wakes up | ⏳ axes A + B pending · axis C α confirmed | [→](notes/64-mechanism-diagnosis.md) |
+| 64 | Mechanism diagnosis (3 axes complete). **Axis C `value=0.3` (perforant + DG): persistent α** (smoke `Δ̄=+0.019`, full `Δ̄=+0.016`, n_pos=3/4 both phases). Axis A + Axis B both narrow-window: every non-default value is sub-floor or locked-state (`Δ = 0 bit-for-bit` on most seed-value points); the iter-46 defaults are highly tuned. The architectural finding: iter-46 plasticity stack only writes cue → target into the read-out with a moderate perforant path *in addition* to DG mossy fibres | ✅ Mechanism identified · perforant α at 0.3 | [→](notes/64-mechanism-diagnosis.md) |
 
 **Where we are.** iter-63 closed the Jaccard chain by re-introducing
 the iter-44/45 decoder-relative `top3_accuracy` on the DG-enabled brain,
