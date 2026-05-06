@@ -21,7 +21,7 @@ your LLM, returning a few decoded concepts instead of full document chunks.
 [![Observability](https://img.shields.io/badge/observability-tracing%20%C2%B7%20Prometheus-7aa2ff)](#production-readiness)
 [![Container](https://img.shields.io/badge/container-Docker%20%2B%20Compose-2496ed?logo=docker&logoColor=white)](#run-with-docker)
 [![Bio inspired](https://img.shields.io/badge/bio--inspired-LIF%20%C2%B7%20STDP%20%C2%B7%20iSTDP%20%C2%B7%20BTSP-62d6ff)](#plasticity)
-[![Iter 64](https://img.shields.io/badge/iter--64-Mechanism%20found%20%C2%B7%20perforant%20%CE%B1%20persistent-3fb950)](#iterations)
+[![Iter 66](https://img.shields.io/badge/iter--66-CA3%2FCA1%20split%20%C2%B7%20literature%20pivot-ff66c4)](#iterations)
 
 > **⚠ Research-only license.** Javis is licensed under
 > [PolyForm Noncommercial 1.0.0](LICENSE). It is **not** for production
@@ -551,21 +551,23 @@ Every iteration is logged in [`notes/`](notes). Each note is a single
 hypothesis, a pre-fixed acceptance criterion, and the measurement that
 either confirms or falsifies it. The chain is the public artefact.
 
-> **Latest snapshot (iter-64 done — perforant path is the mechanism).**
-> Three diagnostic axes complete. **Axis A (DG drive) and Axis B (R2
-> recurrent)** are both tightly tuned to the iter-46 defaults — every
-> non-default value lands in either *sub-floor* (decoder reads
-> ≈ 0 hits) or *locked-state* (`Δ = 0 bit-for-bit`, plasticity
-> invisible). **Only axis C (`direct_r1r2_weight_scale`, perforant
-> path) yields a robust α at `value=0.3`** — persistent across smoke
-> (16 ep, `Δ̄=+0.0190`) and full (32 ep, `Δ̄=+0.0164`), 3/4 seeds
-> positive in both phases. The biological reading: the iter-46
-> plasticity stack only writes a measurable cue → target signal
-> into the read-out when there is a *moderate* direct perforant
-> path **in addition** to the DG mossy-fibre projection — exactly
-> the dual EC → CA3 input pattern in hippocampal anatomy. **iter-65
-> = deepen axis C value=0.3 at 8 seeds × 32 epochs.**
-> → [notes/64](notes/64-mechanism-diagnosis.md), [notes/63](notes/63-cue-target-metric.md)
+> **Latest snapshot (iter-65 falsified · iter-66 pivot to CA3/CA1).**
+> The iter-64 axis-C value=0.3 perforant-path α was a sample-frequency
+> artefact: iter-65 8-seed robustness check produced `Δ̄=+0.0068`,
+> `t(7)=+0.779`, **`n_pos=4/8` (chance level)** → Branch (C) Reject per
+> the locked acceptance matrix. **The current Javis architecture does not
+> produce robust cue → target binding.** A 28-source deep-research scan
+> (`notes/66`) — Marr (1971), Treves & Rolls (1994), O'Reilly &
+> McClelland (1994), Norman & O'Reilly (2003), Schapiro et al. (2017),
+> Cassenaer & Laurent (2007/2012), Bellec et al. (2020), Bittner et al.
+> (2017), and others — converges on one recommendation:
+> **iter-66 = CA3/CA1 split**. Add a new CA1-equivalent C1 layer with
+> target-presence-gated three-factor R-STDP on R2 → C1, primary metric
+> `c1_target_top3_overlap` (decoder reads C1, not R2). Reasoning:
+> Marr's original hippocampal model has *two* learned matrices (EC→CA3,
+> CA3→CA1); Javis has only the CA3 analogue. The literature explicitly
+> rules out one-structure-does-binding via STDP on a recurrent attractor.
+> → [notes/66](notes/66-deep-research-cue-target-binding.md), [notes/65](notes/65-perforant-path-robustness.md), [notes/64](notes/64-mechanism-diagnosis.md), [notes/63](notes/63-cue-target-metric.md)
 
 ### Phase 0 — Bio foundations · iter 00–19
 
@@ -631,7 +633,7 @@ either confirms or falsifies it. The chain is the public artefact.
 
 </details>
 
-### Phase 2 — Associative learning research · iter 44–64
+### Phase 2 — Associative learning research · iter 44–66
 
 The pair-association track. Each row = one hypothesis, pre-fixed
 acceptance, measurable outcome. Verdict: ✅ pass · ⚠ partial /
@@ -662,7 +664,9 @@ diagnosis · ❌ fail · 🚀 architectural pivot.
 | 61 | DG full replication 4 seeds × 32 ep: cross robust; 2/4 seeds erode same-cue (0.875, 0.898) | ⚠ recall instability | [→](notes/61-dg-bridge-full-replication.md) |
 | 62 | Recall-mode `--plasticity-off-during-eval`: same-cue = 1.000 on 4/4 seeds, post-eval L2 bit-identical | ✅ stability solved | [→](notes/62-recall-mode-plasticity-off-eval.md) |
 | 63 | Direct cue→target metric on DG brain: `target_top3_overlap` mean across epochs, threshold = `max(0.05, μ + 2σ) = 0.0621` locked from calibration | ❌ Branch (B) FAIL · Δ̄ = −0.003, t(3) = −0.18 | [→](notes/63-cue-target-metric.md) |
-| 64 | Mechanism diagnosis (3 axes complete). **Axis C `value=0.3` (perforant + DG): persistent α** (smoke `Δ̄=+0.019`, full `Δ̄=+0.016`, n_pos=3/4 both phases). Axis A + Axis B both narrow-window: every non-default value is sub-floor or locked-state (`Δ = 0 bit-for-bit` on most seed-value points); the iter-46 defaults are highly tuned. The architectural finding: iter-46 plasticity stack only writes cue → target into the read-out with a moderate perforant path *in addition* to DG mossy fibres | ✅ Mechanism identified · perforant α at 0.3 | [→](notes/64-mechanism-diagnosis.md) |
+| 64 | Mechanism diagnosis (3 axes complete). **Axis C `value=0.3` (perforant + DG): α at 4 seeds** (smoke `Δ̄=+0.019`, full `Δ̄=+0.016`, n_pos=3/4 both phases). Axis A + Axis B both narrow-window: every non-default value is sub-floor or locked-state (`Δ = 0 bit-for-bit` on most seed-value points); the iter-46 defaults are highly tuned | ⚠ Mechanism candidate (axis C) for iter-65 | [→](notes/64-mechanism-diagnosis.md) |
+| 65 | Perforant path robustness check. Axis C value=0.3 at 8 seeds × 32 ep: `Δ̄ = +0.0068`, `t(7) = +0.779`, **`n_pos = 4/8` (chance level)** → **Branch (C) Reject**. The 4-seed α was a sample-frequency artefact of a true ~50 % success-rate distribution. Original 4 seeds reproduced bit-identical to iter-64; new seeds 1, 3, 4 split mostly-negative; seed=99 deterministic outlier persists | ❌ 4-seed α was sample artefact | [→](notes/65-perforant-path-robustness.md) |
+| 66 | **Deep-research literature pivot.** 28 peer-reviewed sources (Marr, Treves & Rolls, O'Reilly & McClelland, Norman & O'Reilly, Schapiro, Cassenaer & Laurent, Bellec, Izhikevich, Frémaux & Gerstner, Bittner, Magee & Grienberger, Krotov & Hopfield, Ramsauer, Willshaw, Kanerva, …) converge on: current architecture lacks a CA1-equivalent heteroassociative readout. **Recommendation: CA3/CA1 split (Mechanism M1)** — new C1 layer with target-presence-gated three-factor R-STDP on R2 → C1, primary metric `c1_target_top3_overlap` | 🚀 Architecture pivot recommended | [→](notes/66-deep-research-cue-target-binding.md) |
 
 **Where we are.** iter-63 closed the Jaccard chain by re-introducing
 the iter-44/45 decoder-relative `top3_accuracy` on the DG-enabled brain,
