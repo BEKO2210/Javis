@@ -1,0 +1,58 @@
+=== init_w_max = 1.0 ===
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `target/release/examples/reward_benchmark --c1-readout --c1-diagnostic --c1-teacher-strength 1.0 --c1-init-w-max 1.0 --seeds 42 --epochs 4 --teacher-forcing --target-clamp-strength 500 --teacher-ms 40 --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval --decorrelated-init`
+[iter-66] c1_readout mode=trained seeds=[42] epochs=4 vocab=64 dg=true c1.size=1000 c1.sparsity_k=20 c1.from_r2_fanout=30 c1.teacher_strength=1.00 clamp=500 teacher_ms=40 recall_mode_eval=true
+[iter-63 trained] seed=42 decorrelated init: vocab=64 R2_N=2000 R2-E=1400 block_size=21 (disjoint invariant ✓)
+[iter-63 trained] seed=42 DG bridge: dg_size=4000 dg_k=80 dg_to_r2_fanout=30 dg_to_r2_weight=1.00 direct_r1r2_scale=0.00
+[iter-66 trained] seed=42 C1 readout: c1_size=1000 sparsity_k=20 from_r2_fanout=30 init_w_max=1.00 teacher_strength=1.00 (R2-E→C1 plastic, M_target gated)
+[iter-66 diag] seed=42 pre-train: r2_r2_synapses=199492 r2c1_synapses=42000 r2c1_l2=118.1242 r2c1_mean_w=0.4993 r2c1_init_w_max=1.00
+[iter-66 diag] seed=42 epoch=0/4 teacher: trials=256 c1_active_frac=1.000 c1_spikes_mean=576.12 clamp_eff=1.000 | eval: kwta_empty=32/32 target_in_dict=0/32 spikes_mean=0.00 top3_r2=0.0312 top3_c1=0.0000 mrr_c1=0.0000 raw_overlap=0.000 dict_concepts=0 | r2c1: l2=43.6451 nz_upd=42000 max|Δw|=1.0000 sum|Δw|=19285.3329
+[iter-66 diag] seed=42 epoch=1/4 teacher: trials=256 c1_active_frac=1.000 c1_spikes_mean=354.30 clamp_eff=1.000 | eval: kwta_empty=32/32 target_in_dict=0/32 spikes_mean=0.00 top3_r2=0.0312 top3_c1=0.0000 mrr_c1=0.0000 raw_overlap=0.000 dict_concepts=0 | r2c1: l2=44.7372 nz_upd=42000 max|Δw|=1.0000 sum|Δw|=19284.2663
+[iter-66 diag] seed=42 epoch=2/4 teacher: trials=256 c1_active_frac=1.000 c1_spikes_mean=361.73 clamp_eff=1.000 | eval: kwta_empty=32/32 target_in_dict=0/32 spikes_mean=0.00 top3_r2=0.0312 top3_c1=0.0000 mrr_c1=0.0000 raw_overlap=0.000 dict_concepts=0 | r2c1: l2=43.7175 nz_upd=42000 max|Δw|=1.0000 sum|Δw|=19258.9590
+[iter-66 diag] seed=42 epoch=3/4 teacher: trials=256 c1_active_frac=1.000 c1_spikes_mean=361.31 clamp_eff=1.000 | eval: kwta_empty=32/32 target_in_dict=0/32 spikes_mean=0.00 top3_r2=0.0312 top3_c1=0.0000 mrr_c1=0.0000 raw_overlap=0.000 dict_concepts=0 | r2c1: l2=44.2226 nz_upd=42000 max|Δw|=1.0000 sum|Δw|=19290.0444
+[iter-63 trained] seed=42 target_top3_overlap=0.0312 c1_target_top3_overlap=0.0000 (mean top3_accuracy over 4 epochs, vocab=64, dg=true, c1=true, decorrelated=true, recall_mode=true)
+### Iter-66 — C1 readout (trained arm)
+
+_n_seeds = 1, vocab = 64, ep = 4, DG = true, recall-mode = true, c1.size = 1000, c1.teacher_strength = 1.00_
+
+| Seed | target_top3_overlap (R2) | c1_target_top3_overlap (C1) | C1 − R2 |
+| ---: | ---: | ---: | ---: |
+| 42 | 0.0312 | 0.0000 | -0.0312 |
+
+**Aggregate:** R2 μ = 0.0312 ± 0.0000, C1 μ = 0.0000 ± 0.0000 (n = 1).
+
+Verdict matrix (locked in notes/66-ca1-heteroassoc-readout.md) is applied at the step-8 main run (8 seeds × 32 epochs). Smoke runs report pipeline integrity only.
+=== done init_w_max = 1.0 ===
+=== init_w_max = 2.0 ===
+    Finished `release` profile [optimized] target(s) in 0.06s
+     Running `target/release/examples/reward_benchmark --c1-readout --c1-diagnostic --c1-teacher-strength 1.0 --c1-init-w-max 2.0 --seeds 42 --epochs 4 --teacher-forcing --target-clamp-strength 500 --teacher-ms 40 --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval --decorrelated-init`
+[iter-66] c1_readout mode=trained seeds=[42] epochs=4 vocab=64 dg=true c1.size=1000 c1.sparsity_k=20 c1.from_r2_fanout=30 c1.teacher_strength=1.00 clamp=500 teacher_ms=40 recall_mode_eval=true
+[iter-63 trained] seed=42 decorrelated init: vocab=64 R2_N=2000 R2-E=1400 block_size=21 (disjoint invariant ✓)
+[iter-63 trained] seed=42 DG bridge: dg_size=4000 dg_k=80 dg_to_r2_fanout=30 dg_to_r2_weight=1.00 direct_r1r2_scale=0.00
+[iter-66 trained] seed=42 C1 readout: c1_size=1000 sparsity_k=20 from_r2_fanout=30 init_w_max=2.00 teacher_strength=1.00 (R2-E→C1 plastic, M_target gated)
+[iter-66 diag] seed=42 pre-train: r2_r2_synapses=199492 r2c1_synapses=42000 r2c1_l2=236.2484 r2c1_mean_w=0.9985 r2c1_init_w_max=2.00
+[iter-66 diag] seed=42 epoch=0/4 teacher: trials=256 c1_active_frac=1.000 c1_spikes_mean=576.23 clamp_eff=1.000 | eval: kwta_empty=32/32 target_in_dict=0/32 spikes_mean=0.00 top3_r2=0.0312 top3_c1=0.0000 mrr_c1=0.0000 raw_overlap=0.000 dict_concepts=0 | r2c1: l2=43.5172 nz_upd=42000 max|Δw|=1.9999 sum|Δw|=39276.0105
+[iter-66 diag] seed=42 epoch=1/4 teacher: trials=256 c1_active_frac=1.000 c1_spikes_mean=354.27 clamp_eff=1.000 | eval: kwta_empty=32/32 target_in_dict=0/32 spikes_mean=0.00 top3_r2=0.0312 top3_c1=0.0000 mrr_c1=0.0000 raw_overlap=0.000 dict_concepts=0 | r2c1: l2=44.7143 nz_upd=42000 max|Δw|=1.9999 sum|Δw|=39235.4849
+[iter-66 diag] seed=42 epoch=2/4 teacher: trials=256 c1_active_frac=1.000 c1_spikes_mean=362.58 clamp_eff=1.000 | eval: kwta_empty=32/32 target_in_dict=0/32 spikes_mean=0.00 top3_r2=0.0312 top3_c1=0.0000 mrr_c1=0.0000 raw_overlap=0.000 dict_concepts=0 | r2c1: l2=43.9724 nz_upd=42000 max|Δw|=1.9999 sum|Δw|=39246.5080
+[iter-66 diag] seed=42 epoch=3/4 teacher: trials=256 c1_active_frac=1.000 c1_spikes_mean=364.31 clamp_eff=1.000 | eval: kwta_empty=32/32 target_in_dict=0/32 spikes_mean=0.00 top3_r2=0.0312 top3_c1=0.0000 mrr_c1=0.0000 raw_overlap=0.000 dict_concepts=0 | r2c1: l2=44.5252 nz_upd=42000 max|Δw|=1.9999 sum|Δw|=39232.4020
+[iter-63 trained] seed=42 target_top3_overlap=0.0312 c1_target_top3_overlap=0.0000 (mean top3_accuracy over 4 epochs, vocab=64, dg=true, c1=true, decorrelated=true, recall_mode=true)
+### Iter-66 — C1 readout (trained arm)
+
+_n_seeds = 1, vocab = 64, ep = 4, DG = true, recall-mode = true, c1.size = 1000, c1.teacher_strength = 1.00_
+
+| Seed | target_top3_overlap (R2) | c1_target_top3_overlap (C1) | C1 − R2 |
+| ---: | ---: | ---: | ---: |
+| 42 | 0.0312 | 0.0000 | -0.0312 |
+
+**Aggregate:** R2 μ = 0.0312 ± 0.0000, C1 μ = 0.0000 ± 0.0000 (n = 1).
+
+Verdict matrix (locked in notes/66-ca1-heteroassoc-readout.md) is applied at the step-8 main run (8 seeds × 32 epochs). Smoke runs report pipeline integrity only.
+=== done init_w_max = 2.0 ===
+=== init_w_max = 4.0 ===
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `target/release/examples/reward_benchmark --c1-readout --c1-diagnostic --c1-teacher-strength 1.0 --c1-init-w-max 4.0 --seeds 42 --epochs 4 --teacher-forcing --target-clamp-strength 500 --teacher-ms 40 --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval --decorrelated-init`
+[iter-66] c1_readout mode=trained seeds=[42] epochs=4 vocab=64 dg=true c1.size=1000 c1.sparsity_k=20 c1.from_r2_fanout=30 c1.teacher_strength=1.00 clamp=500 teacher_ms=40 recall_mode_eval=true
+[iter-63 trained] seed=42 decorrelated init: vocab=64 R2_N=2000 R2-E=1400 block_size=21 (disjoint invariant ✓)
+[iter-63 trained] seed=42 DG bridge: dg_size=4000 dg_k=80 dg_to_r2_fanout=30 dg_to_r2_weight=1.00 direct_r1r2_scale=0.00
+[iter-66 trained] seed=42 C1 readout: c1_size=1000 sparsity_k=20 from_r2_fanout=30 init_w_max=4.00 teacher_strength=1.00 (R2-E→C1 plastic, M_target gated)
+[iter-66 diag] seed=42 pre-train: r2_r2_synapses=199492 r2c1_synapses=42000 r2c1_l2=472.4969 r2c1_mean_w=1.9970 r2c1_init_w_max=4.00

@@ -234,13 +234,186 @@ cargo run --release -p eval --example reward_benchmark -- \
 - Not a re-litigation of iter-64's verdict. Axis A and B
   are out as candidates; iter-65 does not re-test them.
 
-## Headline (placeholder)
+## Verdict — (C) Reject
 
-> *to be filled after the run; one of:*
-> - **(A) Confirm — perforant + DG mechanism is robust at
->   8 seeds; iter-66 = downstream architecture.**
-> - **(B) Partial — direction stable but signal below
->   threshold; iter-66 = parameter co-tuning.**
-> - **(C) Reject — 4-seed α was sample artefact; iter-66 =
->   structural question (target encoding / metric pivot /
->   CA3/CA1 last-resort).**
+The 4-seed (3/4 = 75 %) positive result from iter-64 axis C
+value=0.3 was a sample-frequency artefact of a true ~50 %
+success-rate distribution. With 8 seeds the per-axis pattern
+collapses to chance level on the locked acceptance matrix.
+
+### Per-seed table (8 seeds × 32 epochs at value=0.3)
+
+| seed | untrained | trained | Δ | direction | note |
+| ---: | ---: | ---: | ---: | :-: | :--- |
+| 42 | 0.0205 | 0.0420 | +0.0215 | + | iter-64 reproduced bit-identical |
+| 7  | 0.0000 | 0.0215 | +0.0215 | + | iter-64 reproduced bit-identical |
+| 13 | 0.0332 | 0.0840 | +0.0508 | + | iter-64 reproduced bit-identical |
+| 99 | 0.0430 | 0.0146 | **−0.0283** | − | deterministic outlier (iter-64 bit-identical) |
+| **1** | 0.0391 | 0.0371 | **−0.0020** | − | NEW seed: marginal-negative |
+| **2** | 0.0068 | 0.0176 | +0.0107 | + | NEW seed: positive |
+| **3** | 0.0625 | 0.0586 | **−0.0039** | − | NEW seed: marginal-negative |
+| **4** | 0.0566 | 0.0410 | **−0.0156** | − | NEW seed: clearly negative |
+
+### Renderer aggregate
+
+```text
+| value | μ_untrained | μ_trained | Δ̄        | σ_Δ    | n_pos | n_pass(0.0621) | t(df=7) | classification |
+|   0.3 | 0.0327      | 0.0396    | +0.0068  | 0.0248 | 4/8   | 0/8            | +0.779  | β              |
+```
+
+**Aggregate stats** (per the iter-65 ENTRY measurement plan):
+
+- `Δ̄ = +0.0068`
+- `σ_Δ = 0.0248`
+- `SE = σ_Δ / √8 = 0.00877`
+- `n_pos = 4/8` (chance)
+- `n_above_threshold(0.0621) = 0/8`
+- `t(7) = +0.779`
+- two-sided 95 % CI on Δ̄: `±0.0207` — straddles zero
+
+### Locked acceptance matrix applied
+
+| Outcome | Per-seed pattern | Aggregate | Match? |
+| --- | --- | --- | :-: |
+| **(A) Confirm** | Δ ≥ 0.0621 on 8/8 AND t(7) > 1.895 | n/a | ❌ (n_above_threshold = 0/8) |
+| **(B) Partial** | Δ̄ > 0 AND **n_pos ≥ 6/8** AND t(7) > 0 | direction matters | ❌ (n_pos = 4/8 < 6/8) |
+| **(C) Reject** | Δ̄ ≤ 0 OR **n_pos ≤ 4/8** | n/a | ✓ (n_pos = 4/8 ≤ 4/8) |
+
+**Verdict: Branch (C) Reject — locked.** Pre-registration
+discipline preserved: the iter-65 ENTRY committed n_pos ≥ 6/8
+as the (B) Partial floor and n_pos ≤ 4/8 as the (C) Reject
+trigger. n_pos = 4/8 satisfies (C) by the *boundary* rule.
+There is no goalpost-shift available — the matrix was
+committed before any iter-65 trained-arm data was peeked at.
+
+### Honest reading
+
+Three findings stand out, all consistent with the
+iter-66-deep-research literature interpretation
+(`notes/66-deep-research-cue-target-binding.md`):
+
+1. **Determinism is not the problem.** Seeds 42, 7, 13, 99
+   reproduced their iter-64 axis C value=0.3 full-phase Δ
+   values bit-for-bit (cache pre-seed + RNG-determinism).
+   The architecture is doing what the architecture does;
+   what changes between iter-64 and iter-65 is *which* 4
+   seeds are in the sample, and the answer is sample-
+   frequency-dependent.
+
+2. **The 4 new seeds split 1:3.** seed=2 is the only new
+   positive (+0.0107). Seeds 1, 3, 4 are all in the
+   marginal-negative-to-clearly-negative range. Combined
+   with the deterministic seed=99 outlier, the 8-seed pool
+   sits at exactly 4 positive / 4 negative — chance-level on
+   a binary direction test.
+
+3. **σ_Δ = 0.0248 ≈ σ_untrained_iter63 = 0.0213.** The
+   trained-vs-untrained spread is at the same magnitude as
+   the untrained-arm seed-to-seed variance. The
+   plasticity-driven Δ̄ (= +0.0068) is approximately one-third
+   of one σ_untrained — well inside the noise floor that
+   iter-63's calibration locked.
+
+### What this verdict means structurally
+
+Iter-65 falsifies the hypothesis that *the current Javis
+architecture* (R1/DG/R2 with the iter-46 plasticity stack
+plus the axis C value=0.3 perforant-path re-introduction)
+can write a robust cue → target signal that the iter-44/45
+decoder can read. It does NOT falsify "the Javis architecture
+can never solve binding"; it does NOT falsify "the
+plasticity stack is broken"; it does NOT falsify "DG
+separation works" (that remains iter-60-locked) or "recall
+mode works" (iter-62-locked).
+
+What it falsifies is the architectural assumption that the
+heteroassociative cue → target binding is a property of R2
+(or the R2 + perforant configuration) under STDP-stack
+training. Per the deep-research literature scan in
+`notes/66-deep-research-cue-target-binding.md`, this is
+exactly the architectural mistake O'Reilly & McClelland
+(1994) explicitly warned against — making one structure
+carry both autoassociative completion *and* heteroassociative
+binding. The iter-65 falsification is the empirical
+signature of that mistake on Javis's specific configuration.
+
+## iter-66 entry — locked by (C) Reject
+
+Per the iter-65 ENTRY locked fork:
+
+> (C) Reject → iter-66 = structural question — re-open the
+> target SDR encoding, the prediction_top3_before_teacher
+> metric, or the CA3/CA1 pivot as a last resort.
+
+The deep-research literature scan (28 peer-reviewed sources,
+`notes/66-deep-research-cue-target-binding.md`) collapses
+the (C) fork's three sub-options to a single recommendation:
+
+> **iter-66 = CA3/CA1 split.** New CA1-equivalent layer
+> (Mechanism M1) with target-presence-gated three-factor
+> R-STDP on a R2 → C1 projection. Primary metric:
+> `c1_target_top3_overlap` (mean across epochs of top3
+> decoder accuracy on C1 fingerprints, not R2). Same 8 seeds
+> for cross-iter comparability.
+
+The deep research's "Hard Recommendation" section makes this
+the unique "Do this next" item, with explicit literature
+support from Marr (1971), Treves & Rolls (1994), O'Reilly &
+McClelland (1994), Norman & O'Reilly (2003), and Schapiro
+et al. (2017).
+
+The seed=99 outlier question is *not* answered by iter-65
+(it remains deterministically negative across both iter-64
+4-seed and iter-65 8-seed runs at the same configuration).
+It will be re-asked under iter-66's new C1 readout: if M1's
+binding mechanism resolves the cue → target mapping
+robustly, the seed=99 specific failure mode at value=0.3 is
+either resolved (because the binding no longer depends on
+the perforant-injection-into-CA3 confound) or surfaced as a
+seed-specific R2 attractor pathology that iter-67+ would
+need to address.
+
+iter-66 ENTRY pre-registration to follow in
+`notes/66-cu-target-binding-implementation.md` (separate
+file from the deep-research scan).
+
+## Supplementary measurement plan — pending
+
+The iter-65 ENTRY locked three additional measurements on
+the same 8 seeds at value=0.3:
+
+- same-cue mean (recall stability)
+- cross-cue separation (sanity check)
+- eval-drift L2 (recall-mode invariant assert)
+
+Run command:
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --jaccard-bench \
+  --seeds 42,7,13,99,1,2,3,4 \
+  --epochs 32 \
+  --teacher-forcing \
+  --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval \
+  --direct-r1r2-weight-scale 0.3
+```
+
+Currently running in background; partial data so far at
+seeds 42, 7:
+
+| seed | arm | same-cue | cross-cue | eval-drift L2 |
+| ---: | :--- | ---: | ---: | :-: |
+| 42 | untrained | 1.000 ± 0.000 | 0.030 ± 0.087 | n/a (no plasticity) |
+| 42 | trained (recall-mode) | 1.000 ± 0.000 | 0.025 ± 0.079 | bit-identical ✓ |
+| 7  | untrained | 1.000 ± 0.000 | 0.029 ± 0.089 | n/a |
+
+These confirm what iter-60 / iter-62 already established:
+DG separation + recall-mode stability are intact. The
+supplementary table will be appended to this note as a
+follow-up commit when the run completes.
+
+The supplementary measurements do *not* change the (C)
+Reject verdict on the primary `target_top3_overlap` metric;
+they are sanity-checks on the architecture's other
+properties.

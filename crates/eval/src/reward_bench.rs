@@ -425,6 +425,83 @@ impl Default for DgConfig {
     }
 }
 
+// ----------------------------------------------------------------
+// Iter-66 — CA1-equivalent C1 readout config (Mechanism M1).
+// See `notes/66-ca1-heteroassoc-readout.md` for the locked
+// pre-registration. C1 cells live as an *appended* index range
+// inside the R2 region's `Network` (indices
+// `[r2_n_used, r2_n_used + size)`); this keeps the existing
+// R-STDP plumbing applicable to R2-E → C1 synapses without
+// adding plastic inter-region edges to snn-core. The "C1 region"
+// terminology in the iter-66 ENTRY refers to this logical sub-
+// region; physically there is one extended R2 `Network`. The
+// `r2_e` set is captured *before* C1 cells are appended, so all
+// existing R2-side metrics keep their iter-46/63 numerics
+// bit-identically when `c1_readout = false`.
+// ----------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy)]
+pub struct C1Config {
+    /// `true` enables the C1 readout layer (appends `size` LIF
+    /// excitatory neurons to the R2 region's `Network` and wires
+    /// R2-E → C1 with sparse fan-out plastic synapses).
+    pub enabled: bool,
+    /// Number of C1 cells. iter-66 ENTRY locked at 1000.
+    pub size: u32,
+    /// kWTA window for C1 fingerprints (matches R1/target SDR k).
+    /// iter-66 ENTRY locked at 20.
+    pub sparsity_k: u32,
+    /// Per-R2-E source cell, how many C1 targets to wire.
+    /// iter-66 ENTRY locked at 30.
+    pub from_r2_fanout: u32,
+    /// R2-E → C1 initial weight is sampled uniformly from
+    /// `(0, init_w_max)`. iter-66 ENTRY locked at 0.5
+    /// (= `w_max / 2` with `w_max = 1.0`).
+    pub init_w_max: f32,
+    /// Strength of the M_target neuromodulator pulse during the
+    /// teacher phase. iter-66 ENTRY default 1.0 (CLI knob
+    /// `--c1-teacher-strength`).
+    pub teacher_strength: f32,
+    /// Iter-66 step 7.5: emit per-epoch diagnostic logs that
+    /// discriminate (A) insufficient training / (B) silent C1 /
+    /// (C) non-discriminative fingerprints. Logs include:
+    /// pre/post R2→C1 weight L2 norm, per-epoch C1 spike count
+    /// during the teacher and eval phases, the fraction of
+    /// trials with nonzero C1 activity, mean rank / MRR of the
+    /// canonical target word in the C1 readout, and the raw
+    /// overlap of the eval kWTA with the canonical-target C1
+    /// SDR. Off by default (CLI flag `--c1-diagnostic`).
+    pub diagnostic: bool,
+    /// Iter-66.5 Path-1 fix (`notes/66.5-eval-aligned-c1-rstdp.md`).
+    /// When `true`, the teacher Phase 4 omits the canonical R2
+    /// target SDR from the clamp (R2 fires its natural
+    /// cue-driven response instead). The C1 target SDR clamp
+    /// and the M_target = `c1.teacher_strength` modulator pulse
+    /// stay active. R-STDP on R2-E → C1 then aligns
+    /// (eval-time R2 cue pattern) → (canonical C1 target),
+    /// instead of iter-66's
+    /// (canonical R2 target SDR) → (canonical C1 target SDR)
+    /// which iter-66 step-7.5 falsified at recall time.
+    /// Off by default ⇒ iter-66 behaviour bit-identical;
+    /// CLI flag `--c1-eval-aligned-rstdp`.
+    pub eval_aligned_rstdp: bool,
+}
+
+impl Default for C1Config {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            size: 1000,
+            sparsity_k: 20,
+            from_r2_fanout: 30,
+            init_w_max: 0.5,
+            teacher_strength: 1.0,
+            diagnostic: false,
+            eval_aligned_rstdp: false,
+        }
+    }
+}
+
 /// 5. **reward** (`reward_after_teacher`): the modulator is set
 ///    based on the *prediction* (not teacher). Teacher cells alone
 ///    must never count as a recall success.
@@ -583,6 +660,19 @@ pub struct TeacherForcingConfig {
     /// the duration of this run (axis B mechanism diagnosis;
     /// notes/64-mechanism-diagnosis.md). Range: `(0.0, 1.0]`.
     pub r2_p_connect_override: Option<f32>,
+    /// Iter-66: CA1-equivalent C1 readout (Mechanism M1). When
+    /// [`C1Config::enabled`] is `true`, brain construction appends
+    /// `c1.size` excitatory LIF cells to the R2 region's network
+    /// and wires R2-E → C1 with sparse plastic synapses. The
+    /// existing R-STDP rule on the R2 region applies to these
+    /// new edges automatically; gating is via `M_target` set
+    /// (= `c1.teacher_strength`) during the teacher phase and
+    /// reset to 0 during eval. The `target_top3_overlap` metric
+    /// is reported as before (R2 readout) and a new
+    /// `c1_target_top3_overlap` is reported alongside (C1
+    /// readout). See `notes/66-ca1-heteroassoc-readout.md` for
+    /// the locked pre-registration.
+    pub c1: C1Config,
 }
 
 impl Default for TeacherForcingConfig {
@@ -624,6 +714,16 @@ impl Default for TeacherForcingConfig {
                 to_r2_weight: 1.0,
                 direct_r1r2_weight_scale: 0.0,
                 drive_strength: DRIVE_NA,
+            },
+            c1: C1Config {
+                enabled: false,
+                size: 1000,
+                sparsity_k: 20,
+                from_r2_fanout: 30,
+                init_w_max: 0.5,
+                teacher_strength: 1.0,
+                diagnostic: false,
+                eval_aligned_rstdp: false,
             },
         }
     }
@@ -668,6 +768,16 @@ impl TeacherForcingConfig {
                 to_r2_weight: 1.0,
                 direct_r1r2_weight_scale: 0.0,
                 drive_strength: DRIVE_NA,
+            },
+            c1: C1Config {
+                enabled: false,
+                size: 1000,
+                sparsity_k: 20,
+                from_r2_fanout: 30,
+                init_w_max: 0.5,
+                teacher_strength: 1.0,
+                diagnostic: false,
+                eval_aligned_rstdp: false,
             },
         }
     }
@@ -1126,6 +1236,109 @@ fn wire_dg_to_r2(brain: &mut Brain, cfg: &DgConfig, seed: u64) {
             brain.connect(2, src, 1, dst, cfg.to_r2_weight, INTER_DELAY_MS);
         }
     }
+}
+
+/// Iter-66: extend the R2 region's `Network` with C1 cells and
+/// wire R2-E → C1 plastic synapses (Mechanism M1, CA1-equivalent
+/// readout layer). Returns the C1 cell index range
+/// `[c1_start, c1_end)` inside R2's network so the caller can
+/// build a `c1_set` and pass it to the readout dictionary.
+///
+/// Index layout after this call:
+///   `0 .. r2_n_used`              → original R2 cells (E + I)
+///   `r2_n_used .. r2_n_used + N`  → new C1 cells (all excitatory)
+///
+/// The R2-E → C1 edges are *intra-network* synapses on R2's
+/// `Network`, so they are subject to the existing R-STDP rule
+/// gated by the global neuromodulator (set to
+/// `c1.teacher_strength` during the teacher phase via
+/// `Brain::set_neuromodulator` in the trial schedule, and
+/// implicitly 0 during eval). This is the minimum-scope way to
+/// expose the readout projection to a target-presence-gated
+/// three-factor learning rule without adding plastic inter-region
+/// edges to snn-core.
+///
+/// `r2_e` is the original R2-E set captured *before* this
+/// function is called; it is NOT recomputed because we want to
+/// avoid C1 cells (also excitatory) appearing as R2-E in the
+/// readout. Each R2-E source cell projects to
+/// `cfg.from_r2_fanout` random C1 cells with weight uniform on
+/// `(0, cfg.init_w_max)`.
+fn append_c1_to_r2(
+    brain: &mut Brain,
+    cfg: &C1Config,
+    r2_e: &BTreeSet<usize>,
+    r2_n_used: usize,
+    seed: u64,
+) -> (usize, usize) {
+    let net = &mut brain.regions[1].network;
+    let c1_start = net.neurons.len();
+    debug_assert_eq!(
+        c1_start, r2_n_used,
+        "iter-66: C1 must be appended directly after the original R2 cells",
+    );
+    for _ in 0..cfg.size {
+        net.add_neuron(LifNeuron::excitatory(LifParams::default()));
+    }
+    let c1_end = net.neurons.len();
+
+    // Brain bookkeeping: outgoing buckets must grow with the new
+    // post-cells so future synapses can reference them as src.
+    brain.outgoing[1].resize_with(c1_end, Vec::new);
+
+    // R2-E → C1 plastic synapses, fan-out per source.
+    let mut rng = Rng::new(seed);
+    let c1_count = (c1_end - c1_start).max(1);
+    let net = &mut brain.regions[1].network;
+    let r2_e_vec: Vec<usize> = r2_e.iter().copied().collect();
+    for &src in &r2_e_vec {
+        for _ in 0..cfg.from_r2_fanout {
+            let dst = c1_start + (rng.next_u64() as usize) % c1_count;
+            let w = rng.range_f32(0.0, cfg.init_w_max.max(f32::EPSILON));
+            net.connect(src, dst, w);
+        }
+    }
+    (c1_start, c1_end)
+}
+
+/// Iter-66: helper — return the C1 cell index set as a
+/// `BTreeSet<usize>` matching the shape of `r2_e_set` so existing
+/// `drive_for_with_counts` / `build_vocab_dictionary` /
+/// `evaluate_with_dict` paths accept it without modification.
+fn c1_set(c1_range: (usize, usize)) -> BTreeSet<usize> {
+    (c1_range.0..c1_range.1).collect()
+}
+
+/// Iter-66: deterministic k-of-n hashed C1 target SDR for a target
+/// word. Same hash structure as `dg_sdr_for_cue` /
+/// `canonical_target_r2_sdr`; the SDR is a pure function of
+/// `(salt, word, c1_size, k)` so every brain at the same seed
+/// learns to bind the same R2-E cue spikes to the same C1 cell
+/// pattern. Indices returned are *absolute* into R2's network
+/// (i.e. shifted by `c1_start`) so the existing R2 clamp path
+/// can drive them without index-space translation.
+fn canonical_target_c1_sdr(
+    word: &str,
+    c1_start: usize,
+    c1_size: usize,
+    k: usize,
+    salt: u64,
+) -> Vec<u32> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut chosen: BTreeSet<u32> = BTreeSet::new();
+    let mut counter: u64 = 0;
+    while chosen.len() < k && counter < (k as u64) * 32 {
+        let mut hasher = DefaultHasher::new();
+        salt.hash(&mut hasher);
+        word.hash(&mut hasher);
+        counter.hash(&mut hasher);
+        let h = hasher.finish();
+        let idx = c1_start + ((h as usize) % c1_size);
+        chosen.insert(idx as u32);
+        counter = counter.wrapping_add(1);
+    }
+    chosen.into_iter().collect()
 }
 
 /// Iter-60: deterministic k-of-n hashed DG SDR for a cue word.
@@ -1839,6 +2052,19 @@ fn percentile_u32(sorted_samples: &[u32], pct: f32) -> u32 {
 /// target SDR directly into R2 so STDP picks up clean
 /// pre→post coincidences between cue-driven cells and the
 /// teacher-clamped target cells.
+///
+/// Iter-66 (M1): the new `c1_target_sdr` parameter — absolute
+/// indices into R2's network in `[r2_n_used, r2_n_used + c1.size)`
+/// — is empty when `cfg.c1.enabled = false`, preserving iter-46/65
+/// numerics bit-identically. When non-empty, C1 cells in this SDR
+/// are clamped during the Phase 4 teacher window with the same
+/// current as `cfg.target_clamp_strength`, *and* the global
+/// neuromodulator is set to `cfg.c1.teacher_strength` for the
+/// duration of the clamp window so the existing R-STDP rule on
+/// R2's network treats the supervised teacher epoch as the
+/// `M_target = +1` gating window. The modulator is reset to 0
+/// immediately after the clamp window so Phase 5's reward
+/// delivery starts from a clean slate.
 #[allow(clippy::too_many_arguments)]
 fn run_teacher_trial(
     brain: &mut Brain,
@@ -1851,6 +2077,7 @@ fn run_teacher_trial(
     rest_stdp: StdpParams,
     rest_istdp: IStdpParams,
     dg_sdr: &[u32],
+    c1_target_sdr: &[u32],
 ) -> TrialOutcome {
     let mut outcome = TrialOutcome::default();
     let dg_active = !dg_sdr.is_empty() && cfg.dg.enabled;
@@ -2004,29 +2231,90 @@ fn run_teacher_trial(
     } else {
         drive_with_r2_clamp(brain, cue_sdr, &[], DRIVE_NA, 0.0, lead_in_ms as f32, r2_e)
     };
+    // Iter-66: combine R2-target clamp indices with the C1-target
+    // clamp indices. Both live inside R2's network at non-overlapping
+    // ranges, so the existing R2-clamp helpers can drive both with
+    // a single external-current vector. When `c1_target_sdr` is
+    // empty (iter-46/65 path), `combined_clamp` borrows
+    // `target_r2_sdr` as-is — no allocation, bit-identical to the
+    // pre-iter-66 control flow.
+    //
+    // Iter-66.5 Path-1 fix (`notes/66.5-eval-aligned-c1-rstdp.md`):
+    // when `cfg.c1.eval_aligned_rstdp` is set AND C1 is active
+    // for this trial, the canonical R2 target SDR is dropped from
+    // the clamp so R2 fires its natural cue-driven response. The
+    // C1 target SDR clamp stays. R-STDP then aligns
+    // (eval-time R2 cue pattern) → (canonical C1 target) instead
+    // of iter-66's (canonical R2 target) → (canonical C1 target).
+    // When the flag is off (default), this branch is skipped and
+    // the iter-66 / iter-65 / iter-46 numerics are bit-identical.
+    let drop_r2_clamp_for_c1 =
+        cfg.c1.enabled && cfg.c1.eval_aligned_rstdp && !c1_target_sdr.is_empty();
+    let combined_clamp: std::borrow::Cow<'_, [u32]> = if drop_r2_clamp_for_c1 {
+        std::borrow::Cow::Borrowed(c1_target_sdr)
+    } else if c1_target_sdr.is_empty() {
+        std::borrow::Cow::Borrowed(target_r2_sdr)
+    } else {
+        let mut v = Vec::with_capacity(target_r2_sdr.len() + c1_target_sdr.len());
+        v.extend_from_slice(target_r2_sdr);
+        v.extend_from_slice(c1_target_sdr);
+        std::borrow::Cow::Owned(v)
+    };
+    // Iter-66: target-presence-gated three-factor R-STDP. Save the
+    // current modulator, set it to `cfg.c1.teacher_strength` for
+    // the duration of the Phase 4 clamp window, then restore. When
+    // `c1.enabled = false` this is a no-op.
+    let prior_modulator = brain.regions[1].network.neuromodulator;
+    let c1_active = cfg.c1.enabled && !c1_target_sdr.is_empty();
+    if c1_active {
+        brain.set_neuromodulator(cfg.c1.teacher_strength);
+    }
+    // Iter-66: when C1 is active, augment the spike-tracking set
+    // with the C1 cell index range so step-7.5 diagnostics can
+    // read C1 spike counts out of `teacher_counts`. The original
+    // `r2_e` slice covers only R2-E cells; C1 cells are at
+    // `[r2_n_used, r2_n_used + cfg.c1.size)` and are *also*
+    // excitatory but not in `r2_e_set`. The R2-side metrics
+    // (`outcome.target_clamp_hits`) check `target_set` indices
+    // (∈ R2 range only) so adding C1 indices to the tracking set
+    // does NOT change R2 numerics — kwta on the returned counts
+    // is not used in run_teacher_trial.
+    let track_set_owned: BTreeSet<usize>;
+    let track_set: &BTreeSet<usize> = if c1_active {
+        let r2_n = effective_r2_n(cfg);
+        let mut s = r2_e.clone();
+        s.extend(r2_n..(r2_n + cfg.c1.size as usize));
+        track_set_owned = s;
+        &track_set_owned
+    } else {
+        r2_e
+    };
     let teacher_counts = if dg_active {
         drive_with_r2_clamp_dg(
             brain,
             cue_sdr,
             dg_sdr,
-            target_r2_sdr,
+            &combined_clamp,
             DRIVE_NA,
             dg_strength,
             cfg.target_clamp_strength,
             clamp_ms as f32,
-            r2_e,
+            track_set,
         )
     } else {
         drive_with_r2_clamp(
             brain,
             cue_sdr,
-            target_r2_sdr,
+            &combined_clamp,
             DRIVE_NA,
             cfg.target_clamp_strength,
             clamp_ms as f32,
-            r2_e,
+            track_set,
         )
     };
+    if c1_active {
+        brain.set_neuromodulator(prior_modulator);
+    }
     if !cfg.plasticity_during_teacher {
         match prior_stdp_t {
             Some(p) => brain.regions[1].network.enable_stdp(p),
@@ -2052,6 +2340,31 @@ fn run_teacher_trial(
         .count();
     outcome.target_clamp_hits = clamp_hit as u32;
     outcome.target_clamp_size = target_r2_sdr.len() as u32;
+
+    // Iter-66 step 7.5 diagnostic: capture C1 spike statistics
+    // during the teacher clamp window. The C1 cell index range
+    // is `[r2_n_used, r2_n_used + cfg.c1.size)` (when c1.enabled).
+    // Cheap when c1 is off — early-return without iteration.
+    if c1_active {
+        let r2_n_used = effective_r2_n(cfg);
+        let c1_start = r2_n_used;
+        let c1_end = r2_n_used + cfg.c1.size as usize;
+        let c1_total: u32 = teacher_counts
+            .get(c1_start..c1_end)
+            .map(|s| s.iter().sum())
+            .unwrap_or(0);
+        outcome.c1_teacher_spikes = c1_total;
+        let c1_target_set: BTreeSet<u32> = c1_target_sdr.iter().copied().collect();
+        let c1_clamp_hit = c1_target_set
+            .iter()
+            .filter(|&&i| {
+                let idx = i as usize;
+                idx < teacher_counts.len() && teacher_counts[idx] > 0
+            })
+            .count();
+        outcome.c1_target_clamp_hits = c1_clamp_hit as u32;
+        outcome.c1_target_clamp_size = c1_target_sdr.len() as u32;
+    }
 
     // ---- Phase 5: reward. Score the *prediction* against the
     //      canonical target — teacher activation does NOT count.
@@ -2114,6 +2427,20 @@ struct TrialOutcome {
     /// Lets the epoch loop compute the selectivity index without
     /// re-running R2 step.
     pred_target_hits: u32,
+    /// Iter-66 step 7.5 diagnostic: total C1 spike count across
+    /// the teacher (Phase 4) clamp window. Zero when c1.enabled
+    /// is false. Used by the per-epoch diagnostic accumulator
+    /// to discriminate "silent C1" from "C1 active but not
+    /// discriminative".
+    c1_teacher_spikes: u32,
+    /// Iter-66 step 7.5 diagnostic: count of canonical-target C1
+    /// cells that fired at least once during the teacher clamp.
+    /// Discriminates "C1 target SDR clamp ineffective" from "C1
+    /// fires but R-STDP not gated to canonical cells".
+    c1_target_clamp_hits: u32,
+    /// Iter-66 step 7.5 diagnostic: clamp window size in cells
+    /// (denominator for `c1_target_clamp_hits / size` ratio).
+    c1_target_clamp_size: u32,
 }
 
 // ----------------------------------------------------------------------
@@ -2322,6 +2649,7 @@ pub fn run_postmortem_diagnostic(
                     &r2_e,
                     stdp_params,
                     istdp_params,
+                    &[],
                     &[],
                 );
                 idle(&mut brain, COOLDOWN_MS);
@@ -2625,6 +2953,7 @@ pub fn run_reward_benchmark(corpus: &RewardCorpus, cfg: &RewardConfig) -> Vec<Re
                         &r2_e,
                         stdp_params,
                         istdp_params,
+                        &[],
                         &[],
                     );
                     if cfg.use_reward {
@@ -3174,6 +3503,7 @@ fn train_brain_inplace(
                         stdp_params,
                         istdp_params,
                         &dg_sdr,
+                        &[],
                     );
                     idle(brain, COOLDOWN_MS);
                 }
@@ -3515,6 +3845,25 @@ struct BrainBuild {
     /// `Some(block_size)` when `decorrelated_init` was used; `None`
     /// otherwise. `block_size = r2_e.len() / vocab.len()`.
     decorrelated_block_size: Option<usize>,
+    /// Iter-66: `Some(set)` when `cfg.teacher.c1.enabled` is true,
+    /// containing the appended C1 cell indices inside R2's
+    /// network (range `[r2_n_used, r2_n_used + cfg.c1.size)`).
+    /// `None` when the C1 readout is disabled — preserves the
+    /// iter-46/63 numerics bit-identically for every callsite that
+    /// ignores `c1_e`.
+    c1_e: Option<BTreeSet<usize>>,
+    /// Iter-66: per-target canonical C1 SDR used by the teacher
+    /// schedule to clamp C1 cells in the canonical-target pattern
+    /// during the encoding phase. Indices are absolute into R2's
+    /// network (shifted by `c1_start`). Empty map when
+    /// `c1.enabled = false`.
+    target_c1_map: std::collections::HashMap<String, Vec<u32>>,
+    /// Iter-66 step 7.5 diagnostic: index of the first R2-E → C1
+    /// synapse in R2's `network.synapses` vec. Synapses
+    /// `[c1_synapse_start..]` are the new R2-E → C1 edges; the
+    /// pre-suffix synapses are the original R2-R2 connectivity.
+    /// `None` when `c1.enabled = false`.
+    c1_synapse_start: Option<usize>,
 }
 
 /// Single source of truth for benchmark-brain construction. Replaces
@@ -3582,7 +3931,54 @@ fn build_benchmark_brain(corpus: &RewardCorpus, cfg: &RewardConfig) -> BrainBuil
         wire_dg_to_r2(&mut brain, &cfg.teacher.dg, cfg.seed.wrapping_add(0xD9));
     }
 
+    // R2-E set — captured *before* the iter-66 C1 cells are
+    // appended so C1 (also excitatory) does not leak into R2-E.
     let r2_e = r2_e_set(&brain);
+
+    // Iter-66 (M1): append C1 cells + R2-E → C1 plastic synapses.
+    // No-op when `c1.enabled = false` ⇒ bit-identical to iter-65
+    // for every existing call site. The seed salt
+    // `0xC1A1_5EE9_..` is distinct from DG's `0xD9..` so two
+    // distinct architectures at the same `cfg.seed` get distinct
+    // wiring RNG streams.
+    let (c1_e, target_c1_map, c1_synapse_start) = if cfg.teacher.c1.enabled {
+        // Iter-66 step 7.5 diagnostic: capture the boundary index
+        // *before* appending C1, so the post-suffix synapse range
+        // is identifiable as "R2-E → C1 only".
+        let r2_r2_synapse_count = brain.regions[1].network.synapses.len();
+        let (c1_start, c1_end) = append_c1_to_r2(
+            &mut brain,
+            &cfg.teacher.c1,
+            &r2_e,
+            r2_n_used,
+            cfg.seed.wrapping_add(0xC1A1_5EE9),
+        );
+        let c1_size = c1_end - c1_start;
+        let salt_c1 = cfg.seed ^ 0xC1A1_BABE_F00D_CA1Eu64;
+        let map: std::collections::HashMap<String, Vec<u32>> = corpus
+            .vocab
+            .iter()
+            .map(|w| {
+                (
+                    w.clone(),
+                    canonical_target_c1_sdr(
+                        w,
+                        c1_start,
+                        c1_size,
+                        cfg.teacher.c1.sparsity_k as usize,
+                        salt_c1,
+                    ),
+                )
+            })
+            .collect();
+        (
+            Some(c1_set((c1_start, c1_end))),
+            map,
+            Some(r2_r2_synapse_count),
+        )
+    } else {
+        (None, std::collections::HashMap::new(), None)
+    };
 
     let target_r2_map: std::collections::HashMap<String, Vec<u32>> = {
         let pool = r2_e_pool(&r2_e);
@@ -3628,6 +4024,9 @@ fn build_benchmark_brain(corpus: &RewardCorpus, cfg: &RewardConfig) -> BrainBuil
         dg_sdr_map,
         r2_n_used,
         decorrelated_block_size,
+        c1_e,
+        target_c1_map,
+        c1_synapse_start,
     }
 }
 
@@ -3706,6 +4105,9 @@ fn run_jaccard_arm(
         dg_sdr_map,
         r2_n_used,
         decorrelated_block_size,
+        c1_e: _,
+        target_c1_map: _,
+        c1_synapse_start: _,
     } = build_benchmark_brain(corpus, cfg);
 
     if let Some(block_size) = decorrelated_block_size {
@@ -3954,6 +4356,9 @@ pub fn run_jaccard_floor_diagnosis(
             dg_sdr_map,
             r2_n_used,
             decorrelated_block_size,
+            c1_e: _,
+            target_c1_map: _,
+            c1_synapse_start: _,
         } = build_benchmark_brain(corpus, &cfg_seeded);
 
         if let Some(block_size) = decorrelated_block_size {
@@ -4422,10 +4827,21 @@ pub struct TargetOverlapMetrics {
     pub per_seed: Vec<f32>,
     pub mean: f32,
     pub std: f32,
+    /// Iter-66: per-seed C1 readout (`c1_target_top3_overlap`).
+    /// Empty when `cfg.teacher.c1.enabled = false`. When non-empty,
+    /// the vector is parallel to `per_seed` (`per_seed[i]` = R2
+    /// metric, `c1_per_seed[i]` = C1 metric, both at `seeds[i]`).
+    pub c1_per_seed: Vec<f32>,
+    /// Iter-66: mean of `c1_per_seed`. `0.0` when the C1 readout
+    /// is disabled.
+    pub c1_mean: f32,
+    /// Iter-66: sample-std of `c1_per_seed`. `0.0` when the C1
+    /// readout is disabled or only one seed was used.
+    pub c1_std: f32,
 }
 
 impl TargetOverlapMetrics {
-    fn new(mode: ArmMode, seeds: Vec<u64>, per_seed: Vec<f32>) -> Self {
+    fn new(mode: ArmMode, seeds: Vec<u64>, per_seed: Vec<f32>, c1_per_seed: Vec<f32>) -> Self {
         let n = per_seed.len();
         let mean = if n == 0 {
             0.0
@@ -4438,14 +4854,46 @@ impl TargetOverlapMetrics {
         } else {
             0.0
         };
+        let c1_n = c1_per_seed.len();
+        let c1_mean = if c1_n == 0 {
+            0.0
+        } else {
+            c1_per_seed.iter().sum::<f32>() / c1_n as f32
+        };
+        let c1_std = if c1_n > 1 {
+            let var = c1_per_seed
+                .iter()
+                .map(|v| (v - c1_mean).powi(2))
+                .sum::<f32>()
+                / (c1_n - 1) as f32;
+            var.sqrt()
+        } else {
+            0.0
+        };
         Self {
             mode,
             seeds,
             per_seed,
             mean,
             std,
+            c1_per_seed,
+            c1_mean,
+            c1_std,
         }
     }
+}
+
+/// Iter-66: per-seed return value of `run_target_overlap_one_seed`.
+/// `r2` is the legacy R2-readout `target_top3_overlap` (mean over
+/// epochs). `c1` is the C1-readout `c1_target_top3_overlap` and is
+/// `Some` only when the brain was built with `cfg.teacher.c1.enabled
+/// = true`. The outer `TargetOverlapMetrics` aggregates these
+/// across seeds so the iter-66 verdict block can present R2 and C1
+/// arms side-by-side.
+#[derive(Debug, Clone, Copy)]
+pub struct OverlapSeedResult {
+    pub r2: f32,
+    pub c1: Option<f32>,
 }
 
 /// Iter-63 single-arm runner — v2, post plumbing-fix refactor.
@@ -4503,6 +4951,7 @@ pub fn run_target_overlap_arm(
     );
 
     let mut per_seed: Vec<f32> = Vec::with_capacity(seeds.len());
+    let mut c1_per_seed: Vec<f32> = Vec::with_capacity(seeds.len());
     for &seed in seeds {
         let mut cfg_seeded = *cfg;
         cfg_seeded.seed = seed;
@@ -4517,27 +4966,50 @@ pub fn run_target_overlap_arm(
             );
         }
 
-        let value = run_target_overlap_one_seed(corpus, &cfg_seeded, mode);
-        eprintln!(
-            "[iter-63 {arm}] seed={seed} target_top3_overlap={value:.4} \
-             (mean top3_accuracy over {n_ep} epochs, vocab={vocab}, dg={dg}, \
-             decorrelated={dec}, recall_mode={rec})",
-            arm = mode.label(),
-            n_ep = cfg_seeded.epochs,
-            vocab = corpus.vocab.len(),
-            dg = cfg_seeded.teacher.dg.enabled,
-            dec = cfg_seeded.teacher.decorrelated_init,
-            rec = cfg_seeded.teacher.recall_mode_eval,
-        );
-        per_seed.push(value);
+        let result = run_target_overlap_one_seed(corpus, &cfg_seeded, mode);
+        if let Some(c1) = result.c1 {
+            eprintln!(
+                "[iter-63 {arm}] seed={seed} target_top3_overlap={value:.4} \
+                 c1_target_top3_overlap={c1:.4} \
+                 (mean top3_accuracy over {n_ep} epochs, vocab={vocab}, dg={dg}, \
+                 c1={c1on}, decorrelated={dec}, recall_mode={rec})",
+                arm = mode.label(),
+                value = result.r2,
+                n_ep = cfg_seeded.epochs,
+                vocab = corpus.vocab.len(),
+                dg = cfg_seeded.teacher.dg.enabled,
+                c1on = cfg_seeded.teacher.c1.enabled,
+                dec = cfg_seeded.teacher.decorrelated_init,
+                rec = cfg_seeded.teacher.recall_mode_eval,
+            );
+            c1_per_seed.push(c1);
+        } else {
+            eprintln!(
+                "[iter-63 {arm}] seed={seed} target_top3_overlap={value:.4} \
+                 (mean top3_accuracy over {n_ep} epochs, vocab={vocab}, dg={dg}, \
+                 decorrelated={dec}, recall_mode={rec})",
+                arm = mode.label(),
+                value = result.r2,
+                n_ep = cfg_seeded.epochs,
+                vocab = corpus.vocab.len(),
+                dg = cfg_seeded.teacher.dg.enabled,
+                dec = cfg_seeded.teacher.decorrelated_init,
+                rec = cfg_seeded.teacher.recall_mode_eval,
+            );
+        }
+        per_seed.push(result.r2);
     }
-    TargetOverlapMetrics::new(mode, seeds.to_vec(), per_seed)
+    TargetOverlapMetrics::new(mode, seeds.to_vec(), per_seed, c1_per_seed)
 }
 
 /// Runs the iter-63 schedule for a single seed and returns the
 /// mean of per-epoch `top3_accuracy`. Internal helper — the public
 /// `run_target_overlap_arm` is the one tests / CLI exercises.
-fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: ArmMode) -> f32 {
+fn run_target_overlap_one_seed(
+    corpus: &RewardCorpus,
+    cfg: &RewardConfig,
+    mode: ArmMode,
+) -> OverlapSeedResult {
     let BrainBuild {
         mut brain,
         encoder,
@@ -4546,6 +5018,9 @@ fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: 
         dg_sdr_map,
         r2_n_used,
         decorrelated_block_size,
+        c1_e,
+        target_c1_map,
+        c1_synapse_start,
     } = build_benchmark_brain(corpus, cfg);
 
     if let Some(block_size) = decorrelated_block_size {
@@ -4568,6 +5043,18 @@ fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: 
             cfg.teacher.dg.to_r2_fanout,
             cfg.teacher.dg.to_r2_weight,
             cfg.teacher.dg.direct_r1r2_weight_scale,
+            arm = mode.label(),
+        );
+    }
+    if let Some(ref c1_e_set) = c1_e {
+        eprintln!(
+            "[iter-66 {arm}] seed={} C1 readout: c1_size={} sparsity_k={} from_r2_fanout={} init_w_max={:.2} teacher_strength={:.2} (R2-E→C1 plastic, M_target gated)",
+            cfg.seed,
+            c1_e_set.len(),
+            cfg.teacher.c1.sparsity_k,
+            cfg.teacher.c1.from_r2_fanout,
+            cfg.teacher.c1.init_w_max,
+            cfg.teacher.c1.teacher_strength,
             arm = mode.label(),
         );
     }
@@ -4600,7 +5087,12 @@ fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: 
                 .network
                 .enable_intrinsic_plasticity(intrinsic());
         }
-        if cfg.use_reward {
+        if cfg.use_reward || cfg.teacher.c1.enabled {
+            // Iter-66: C1 readout requires R-STDP enabled so the
+            // teacher-phase M_target modulator can drive plastic
+            // updates on the new R2-E → C1 synapses. Defensive:
+            // iter-46 / iter-65 paths set `use_reward = true` via
+            // `with_teacher`, but explicit OR keeps the invariant.
             brain.regions[1]
                 .network
                 .enable_reward_learning(reward_params());
@@ -4609,9 +5101,49 @@ fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: 
 
     let pre_l2 = snapshot_weights(&brain);
 
+    // Iter-66 step 7.5 diagnostic: pre-train snapshot of the
+    // R2-E → C1 plastic suffix. Captures raw weight magnitudes so
+    // post-train deltas can be computed (mean / max change,
+    // nonzero-update count). Cheap when c1.diagnostic = false —
+    // single boolean check.
+    let c1_diag = cfg.teacher.c1.enabled && cfg.teacher.c1.diagnostic;
+    let r2c1_pre_weights: Vec<f32> = if let (true, Some(start)) = (c1_diag, c1_synapse_start) {
+        brain.regions[1].network.synapses[start..]
+            .iter()
+            .map(|s| s.weight)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if c1_diag {
+        let l2_pre: f64 = r2c1_pre_weights
+            .iter()
+            .map(|&w| (w as f64) * (w as f64))
+            .sum::<f64>()
+            .sqrt();
+        let mean_pre: f64 = if r2c1_pre_weights.is_empty() {
+            0.0
+        } else {
+            r2c1_pre_weights.iter().map(|&w| w as f64).sum::<f64>() / r2c1_pre_weights.len() as f64
+        };
+        eprintln!(
+            "[iter-66 diag] seed={} pre-train: r2_r2_synapses={} r2c1_synapses={} \
+             r2c1_l2={l2_pre:.4} r2c1_mean_w={mean_pre:.4} r2c1_init_w_max={iwm:.2}",
+            cfg.seed,
+            c1_synapse_start.unwrap_or(0),
+            r2c1_pre_weights.len(),
+            iwm = cfg.teacher.c1.init_w_max,
+        );
+    }
+
     let vocab: Vec<String> = corpus.vocab.iter().cloned().collect();
     let mut rng = Rng::new(cfg.seed);
     let mut per_epoch_top3: Vec<f32> = Vec::with_capacity(cfg.epochs);
+    // Iter-66: parallel per-epoch C1-readout `top3_accuracy`.
+    // Empty when c1.enabled = false; pushed in lock-step with
+    // `per_epoch_top3` otherwise so a per-epoch zip(R2, C1) is
+    // always position-aligned by epoch index.
+    let mut per_epoch_top3_c1: Vec<f32> = Vec::with_capacity(cfg.epochs);
 
     for epoch in 0..cfg.epochs {
         // Per-epoch iSTDP refresh (iter-49 ramp / iter-46 baseline).
@@ -4623,6 +5155,15 @@ fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: 
         if !no_plasticity {
             brain.regions[1].network.enable_istdp(istdp_params);
         }
+
+        // Iter-66 step 7.5 diagnostic: per-epoch C1 spike accumulators
+        // populated from `TrialOutcome`'s c1_*  fields. Cheap when
+        // c1.diagnostic = false (just unused locals).
+        let mut diag_train_trials: u32 = 0;
+        let mut diag_train_c1_active: u32 = 0;
+        let mut diag_train_c1_total_spikes: u64 = 0;
+        let mut diag_train_c1_clamp_hits: u64 = 0;
+        let mut diag_train_c1_clamp_size: u64 = 0;
 
         // -- Training: cue+target presentations for this epoch --
         let mut schedule: Vec<(RewardPair, bool)> = corpus
@@ -4640,9 +5181,13 @@ fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: 
             if teacher_active {
                 let canonical = target_r2_map.get(&pair.target).cloned().unwrap_or_default();
                 let dg_sdr = dg_sdr_map.get(&pair.cue).cloned().unwrap_or_default();
+                // Iter-66: pass the per-target C1 SDR so the teacher
+                // schedule can clamp C1 cells alongside R2 and gate
+                // R-STDP via M_target during the encoding window.
+                let c1_sdr = target_c1_map.get(&pair.target).cloned().unwrap_or_default();
                 for _rep in 0..cfg.reps_per_pair.max(1) {
                     brain.regions[1].network.reset_state();
-                    let _ = run_teacher_trial(
+                    let outcome = run_teacher_trial(
                         &mut brain,
                         &cfg.teacher,
                         cfg.use_reward,
@@ -4653,7 +5198,17 @@ fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: 
                         stdp_params,
                         istdp_params,
                         &dg_sdr,
+                        &c1_sdr,
                     );
+                    if c1_diag {
+                        diag_train_trials += 1;
+                        diag_train_c1_total_spikes += outcome.c1_teacher_spikes as u64;
+                        if outcome.c1_teacher_spikes > 0 {
+                            diag_train_c1_active += 1;
+                        }
+                        diag_train_c1_clamp_hits += outcome.c1_target_clamp_hits as u64;
+                        diag_train_c1_clamp_size += outcome.c1_target_clamp_size as u64;
+                    }
                     idle(&mut brain, COOLDOWN_MS);
                 }
             } else {
@@ -4744,6 +5299,173 @@ fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: 
         };
         per_epoch_top3.push(top3_accuracy);
 
+        // Iter-66 (M1): C1 readout. Re-uses the same eval-phase
+        // gating (plasticity already disabled above), builds a
+        // C1-fingerprint dictionary by reading C1 cell spikes
+        // during each cue-only presentation, and decodes top-3
+        // against the canonical-target word. Empty when C1 is
+        // disabled — keeps the iter-46/65 path bit-identical.
+        if let Some(ref c1_e_set) = c1_e {
+            let c1_dict = build_vocab_dictionary(
+                &mut brain,
+                &encoder,
+                c1_e_set,
+                &vocab,
+                &dg_sdr_map,
+                cfg.teacher.dg.drive_strength,
+            );
+            let mut c1_top3 = 0usize;
+            let mut c1_pairs_n = 0usize;
+            // Iter-66 step 7.5 diagnostic accumulators.
+            let mut diag_eval_spikes_total: u64 = 0;
+            let mut diag_eval_kwta_empty: u32 = 0;
+            let mut diag_eval_target_in_dict: u32 = 0;
+            let mut diag_eval_mrr_sum: f64 = 0.0;
+            let mut diag_eval_raw_overlap_sum: u64 = 0;
+            let mut diag_eval_raw_overlap_denom: u64 = 0;
+            let dict_n_concepts = c1_dict.len();
+            for pair in &corpus.pairs {
+                let cue_sdr = encoder.encode_word(&pair.cue);
+                if cue_sdr.indices.is_empty() {
+                    continue;
+                }
+                brain.regions[1].network.reset_state();
+                let c1_counts = if let Some(dg_sdr) = dg_sdr_map.get(&pair.cue) {
+                    drive_with_dg_counts(
+                        &mut brain,
+                        &cue_sdr.indices,
+                        dg_sdr,
+                        DRIVE_NA,
+                        cfg.teacher.dg.drive_strength,
+                        RECALL_MS,
+                        c1_e_set,
+                    )
+                } else {
+                    drive_for_with_counts(&mut brain, &cue_sdr.indices, RECALL_MS, c1_e_set)
+                };
+                if c1_diag {
+                    let total: u64 = c1_counts.iter().map(|&c| c as u64).sum();
+                    diag_eval_spikes_total += total;
+                    if let Some(canonical_c1) = target_c1_map.get(&pair.target) {
+                        let kw_top: BTreeSet<u32> =
+                            top_k_indices(&c1_counts, cfg.teacher.c1.sparsity_k as usize)
+                                .into_iter()
+                                .collect();
+                        let canon_set: BTreeSet<u32> = canonical_c1.iter().copied().collect();
+                        let inter = kw_top.intersection(&canon_set).count() as u64;
+                        diag_eval_raw_overlap_sum += inter;
+                        diag_eval_raw_overlap_denom += canon_set.len() as u64;
+                    }
+                }
+                let c1_kwta = top_k_indices(&c1_counts, cfg.teacher.c1.sparsity_k as usize);
+                if c1_kwta.is_empty() {
+                    if c1_diag {
+                        diag_eval_kwta_empty += 1;
+                    }
+                    c1_pairs_n += 1;
+                    continue;
+                }
+                let c1_decoded = c1_dict.decode_top(&c1_kwta, 16);
+                let c1_rank = c1_decoded
+                    .iter()
+                    .position(|(w, _)| w == &pair.target)
+                    .map(|p| p + 1);
+                if c1_diag {
+                    if c1_rank.is_some() {
+                        diag_eval_target_in_dict += 1;
+                    }
+                    if let Some(r) = c1_rank {
+                        diag_eval_mrr_sum += 1.0 / r as f64;
+                    }
+                }
+                if let Some(r) = c1_rank {
+                    if r <= 3 {
+                        c1_top3 += 1;
+                    }
+                }
+                c1_pairs_n += 1;
+            }
+            let c1_acc = if c1_pairs_n > 0 {
+                c1_top3 as f32 / c1_pairs_n as f32
+            } else {
+                0.0
+            };
+            per_epoch_top3_c1.push(c1_acc);
+
+            if c1_diag {
+                // Per-epoch R2→C1 weight stats. Slice the synapses
+                // suffix and compare to the pre-train snapshot.
+                let l2_now: f64 = if let Some(start) = c1_synapse_start {
+                    brain.regions[1].network.synapses[start..]
+                        .iter()
+                        .map(|s| (s.weight as f64) * (s.weight as f64))
+                        .sum::<f64>()
+                        .sqrt()
+                } else {
+                    0.0
+                };
+                let mut nonzero_updates: u64 = 0;
+                let mut max_abs_delta: f32 = 0.0;
+                let mut sum_abs_delta: f64 = 0.0;
+                if let Some(start) = c1_synapse_start {
+                    let now_slice = &brain.regions[1].network.synapses[start..];
+                    for (i, syn) in now_slice.iter().enumerate() {
+                        let pre = r2c1_pre_weights.get(i).copied().unwrap_or(0.0);
+                        let d = syn.weight - pre;
+                        let absd = d.abs();
+                        if absd > 1e-7 {
+                            nonzero_updates += 1;
+                        }
+                        if absd > max_abs_delta {
+                            max_abs_delta = absd;
+                        }
+                        sum_abs_delta += absd as f64;
+                    }
+                }
+                let n_train = diag_train_trials.max(1) as f64;
+                let train_clamp_eff = if diag_train_c1_clamp_size > 0 {
+                    diag_train_c1_clamp_hits as f64 / diag_train_c1_clamp_size as f64
+                } else {
+                    0.0
+                };
+                let eval_n = corpus.pairs.len().max(1) as f64;
+                let eval_mean_spikes = diag_eval_spikes_total as f64 / eval_n;
+                let mrr = diag_eval_mrr_sum / eval_n;
+                let raw_overlap_ratio = if diag_eval_raw_overlap_denom > 0 {
+                    diag_eval_raw_overlap_sum as f64 / diag_eval_raw_overlap_denom as f64
+                } else {
+                    0.0
+                };
+                eprintln!(
+                    "[iter-66 diag] seed={} epoch={epoch}/{ep_total} \
+                     teacher: trials={tt} c1_active_frac={af:.3} c1_spikes_mean={sm:.2} \
+                     clamp_eff={ce:.3} | eval: kwta_empty={ke}/{ep} target_in_dict={td}/{ep} \
+                     spikes_mean={es:.2} top3_r2={r2:.4} top3_c1={c1:.4} mrr_c1={mrr:.4} \
+                     raw_overlap={ro:.3} dict_concepts={dc} | r2c1: l2={l2:.4} nz_upd={nu} \
+                     max|Δw|={mx:.4} sum|Δw|={sd:.4}",
+                    cfg.seed,
+                    ep_total = cfg.epochs,
+                    tt = diag_train_trials,
+                    af = (diag_train_c1_active as f64) / n_train,
+                    sm = (diag_train_c1_total_spikes as f64) / n_train,
+                    ce = train_clamp_eff,
+                    ke = diag_eval_kwta_empty,
+                    ep = corpus.pairs.len(),
+                    td = diag_eval_target_in_dict,
+                    es = eval_mean_spikes,
+                    r2 = top3_accuracy,
+                    c1 = c1_acc,
+                    mrr = mrr,
+                    ro = raw_overlap_ratio,
+                    dc = dict_n_concepts,
+                    l2 = l2_now,
+                    nu = nonzero_updates,
+                    mx = max_abs_delta,
+                    sd = sum_abs_delta,
+                );
+            }
+        }
+
         // Restore plasticity state for the next epoch's training. If
         // recall_mode_active was used to disable everything, only STDP /
         // iSTDP need re-enabling here — homeostasis / intrinsic /
@@ -4782,19 +5504,29 @@ fn run_target_overlap_one_seed(corpus: &RewardCorpus, cfg: &RewardConfig, mode: 
             &pre_l2,
             &post_l2,
             &format!(
-                "iter-63 untrained arm changed weights (seed={}, vocab={}, ep={}, dg={})",
+                "iter-63 untrained arm changed weights (seed={}, vocab={}, ep={}, dg={}, c1={})",
                 cfg.seed,
                 corpus.vocab.len(),
                 cfg.epochs,
-                cfg.teacher.dg.enabled
+                cfg.teacher.dg.enabled,
+                cfg.teacher.c1.enabled,
             ),
         );
     }
 
-    if per_epoch_top3.is_empty() {
+    let r2_mean = if per_epoch_top3.is_empty() {
         0.0
     } else {
         per_epoch_top3.iter().sum::<f32>() / per_epoch_top3.len() as f32
+    };
+    let c1_mean = if per_epoch_top3_c1.is_empty() {
+        None
+    } else {
+        Some(per_epoch_top3_c1.iter().sum::<f32>() / per_epoch_top3_c1.len() as f32)
+    };
+    OverlapSeedResult {
+        r2: r2_mean,
+        c1: c1_mean,
     }
 }
 
@@ -5063,7 +5795,7 @@ fn cached_untrained_target_top3(corpus: &RewardCorpus, cfg: &RewardConfig, seed:
     cfg_un.teacher.no_plasticity = true;
     cfg_un.use_reward = false;
     cfg_un.epochs = cfg_un.epochs.max(1);
-    let value = run_target_overlap_one_seed(corpus, &cfg_un, ArmMode::Untrained);
+    let value = run_target_overlap_one_seed(corpus, &cfg_un, ArmMode::Untrained).r2;
     if let Ok(mut guard) = untrained_cache().lock() {
         guard.entry(key).or_insert(value);
     }
@@ -5165,7 +5897,7 @@ pub fn run_axis_sweep(
             cfg_t.seed = seed;
             cfg_t.teacher.no_plasticity = false;
             assert!(cfg_t.epochs > 0, "iter-64 trained arm requires epochs > 0");
-            let trained = run_target_overlap_one_seed(corpus, &cfg_t, ArmMode::Trained);
+            let trained = run_target_overlap_one_seed(corpus, &cfg_t, ArmMode::Trained).r2;
             trained_per_seed.push(trained);
 
             eprintln!(

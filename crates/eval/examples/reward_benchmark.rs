@@ -21,7 +21,7 @@ use eval::{
     render_jaccard_floor_diagnosis, render_jaccard_sweep, render_reward_markdown,
     render_target_overlap_sweep, run_axis_sweep, run_determinism_smoke, run_jaccard_bench,
     run_jaccard_floor_diagnosis, run_postmortem_diagnostic, run_reward_benchmark,
-    run_target_overlap_arm, ArmMode, DgConfig, Iter49Mode, RewardConfig, SweepAxis,
+    run_target_overlap_arm, ArmMode, C1Config, DgConfig, Iter49Mode, RewardConfig, SweepAxis,
     TeacherForcingConfig,
 };
 
@@ -106,6 +106,32 @@ fn main() {
     let direct_r1r2_weight_scale: f32 = parse_arg(&args, "--direct-r1r2-weight-scale", 0.0_f32);
     let dg_drive_strength: f32 = parse_arg(&args, "--dg-drive-strength", 200.0_f32);
 
+    // Iter-66 (M1): CA1-equivalent C1 readout. `--c1-readout`
+    // enables the new layer; `--c1-teacher-strength` sets the
+    // M_target neuromodulator pulse during the teacher phase
+    // (drives the existing R-STDP rule on the new R2-E → C1
+    // synapses, see notes/66-ca1-heteroassoc-readout.md).
+    let c1_readout = flag(&args, "--c1-readout");
+    let c1_teacher_strength: f32 = parse_arg(&args, "--c1-teacher-strength", 1.0_f32);
+    let c1_size: u32 = parse_arg(&args, "--c1-size", 1000_u32);
+    let c1_sparsity_k: u32 = parse_arg(&args, "--c1-sparsity-k", 20_u32);
+    let c1_from_r2_fanout: u32 = parse_arg(&args, "--c1-from-r2-fanout", 30_u32);
+    let c1_init_w_max: f32 = parse_arg(&args, "--c1-init-w-max", 0.5_f32);
+    // Iter-66 step 7.5: per-epoch diagnostic logs for the C1 path
+    // (R2→C1 weight L2 / Δw stats, teacher-phase C1 spike count,
+    // eval-phase C1 spike count, target rank / MRR, raw kWTA ∩
+    // canonical-target overlap). Off by default; mandatory for the
+    // step 7.5 verdict before the 8-seed step 8 main run.
+    let c1_diagnostic = flag(&args, "--c1-diagnostic");
+    // Iter-66.5 Path-1 fix (notes/66.5-eval-aligned-c1-rstdp.md):
+    // when set together with --c1-readout, the teacher Phase 4
+    // omits the canonical R2 target SDR from the clamp so R2 fires
+    // its natural cue-driven response. R-STDP on R2-E → C1 then
+    // aligns the eval-time R2 cue pattern with the canonical C1
+    // target. Default off ⇒ iter-66 behaviour bit-identical (every
+    // existing reward_bench snapshot test still passes verbatim).
+    let c1_eval_aligned_rstdp = flag(&args, "--c1-eval-aligned-rstdp");
+
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
     //   wmax-cap       — symptom: iSTDP w_max 8.0 → 2.0
@@ -183,6 +209,16 @@ fn main() {
             direct_r1r2_weight_scale,
             drive_strength: dg_drive_strength,
         },
+        c1: C1Config {
+            enabled: c1_readout,
+            size: c1_size,
+            sparsity_k: c1_sparsity_k,
+            from_r2_fanout: c1_from_r2_fanout,
+            init_w_max: c1_init_w_max,
+            teacher_strength: c1_teacher_strength,
+            diagnostic: c1_diagnostic,
+            eval_aligned_rstdp: c1_eval_aligned_rstdp,
+        },
     };
 
     // Iter-58 vocab-scaling stress test: --corpus-vocab 32 (default;
@@ -214,6 +250,7 @@ fn main() {
         "--axis-sweep",
         "--r2-capacity-sweep",
         "--debug-cascade",
+        "--c1-readout",
     ]
     .into_iter()
     .filter(|name| flag(&args, name) || parse_string(&args, name).is_some())
@@ -560,6 +597,113 @@ fn main() {
                 }
             }
         }
+        return;
+    }
+
+    // Iter-66 (M1) — CA1-equivalent C1 readout bench mode. Always
+    // trained arm (untrained C1 has nothing to read out), always
+    // teacher-forcing, always with the C1 layer enabled. Prints
+    // per-seed R2 and C1 readouts side-by-side, then the paired
+    // (c1_Δ̄ − r2_Δ̄) cross-readout delta. The locked acceptance
+    // matrix in notes/66-ca1-heteroassoc-readout.md is applied at
+    // the verdict step (iter-66 step 8) — this routing block is
+    // the CLI surface; verdict rendering lands with the main run.
+    //
+    // Always pairs c1_readout=true with run_target_overlap_arm
+    // ArmMode::Trained: the iter-66 ENTRY pre-registers the
+    // trained arm only.
+    if flag(&args, "--c1-readout") {
+        let seeds_str = parse_string(&args, "--seeds").unwrap_or_else(|| seed.to_string());
+        let seeds: Vec<u64> = seeds_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .collect();
+        if seeds.is_empty() {
+            eprintln!(
+                "--c1-readout: --seeds must contain at least one parseable u64 (got '{seeds_str}')",
+            );
+            std::process::exit(2);
+        }
+        assert!(
+            teacher.enabled,
+            "iter-66 --c1-readout requires --teacher-forcing (the C1 layer is supervised \
+             by the canonical-target SDR clamp during the encoding phase; running without \
+             teacher-forcing would skip the M_target gating window entirely).",
+        );
+        assert!(
+            teacher.c1.enabled,
+            "internal: --c1-readout flag was set but teacher.c1.enabled was not propagated; \
+             check the CLI parser block.",
+        );
+
+        let cfg = RewardConfig {
+            epochs,
+            use_reward: true,
+            seed,
+            reps_per_pair: reps,
+            teacher,
+        };
+
+        eprintln!(
+            "[iter-66] c1_readout mode=trained seeds={seeds:?} epochs={epochs} \
+             vocab={} dg={} c1.size={} c1.sparsity_k={} c1.from_r2_fanout={} \
+             c1.teacher_strength={:.2} clamp={target_clamp} teacher_ms={teacher_ms} \
+             recall_mode_eval={}",
+            corpus.vocab.len(),
+            cfg.teacher.dg.enabled,
+            cfg.teacher.c1.size,
+            cfg.teacher.c1.sparsity_k,
+            cfg.teacher.c1.from_r2_fanout,
+            cfg.teacher.c1.teacher_strength,
+            cfg.teacher.recall_mode_eval,
+        );
+
+        let arm = run_target_overlap_arm(&corpus, &cfg, &seeds, ArmMode::Trained);
+
+        // Render the per-seed table for both readouts. The verdict
+        // matrix is applied at the iter-66 step-8 main run; this
+        // block is the smoke surface.
+        let mut s = String::new();
+        s.push_str("### Iter-66 — C1 readout (trained arm)\n\n");
+        s.push_str(&format!(
+            "_n_seeds = {}, vocab = {}, ep = {}, DG = {}, recall-mode = {}, \
+             c1.size = {}, c1.teacher_strength = {:.2}_\n\n",
+            seeds.len(),
+            corpus.vocab.len(),
+            epochs,
+            cfg.teacher.dg.enabled,
+            cfg.teacher.recall_mode_eval,
+            cfg.teacher.c1.size,
+            cfg.teacher.c1.teacher_strength,
+        ));
+        s.push_str("| Seed | target_top3_overlap (R2) | c1_target_top3_overlap (C1) | C1 − R2 |\n");
+        s.push_str("| ---: | ---: | ---: | ---: |\n");
+        for (i, sd) in seeds.iter().enumerate() {
+            let r2 = arm.per_seed[i];
+            let c1 = arm.c1_per_seed.get(i).copied().unwrap_or(f32::NAN);
+            s.push_str(&format!(
+                "| {} | {:.4} | {:.4} | {:+.4} |\n",
+                sd,
+                r2,
+                c1,
+                c1 - r2,
+            ));
+        }
+        s.push('\n');
+        s.push_str(&format!(
+            "**Aggregate:** R2 μ = {:.4} ± {:.4}, C1 μ = {:.4} ± {:.4} (n = {}).\n\n",
+            arm.mean,
+            arm.std,
+            arm.c1_mean,
+            arm.c1_std,
+            seeds.len(),
+        ));
+        s.push_str(
+            "Verdict matrix (locked in notes/66-ca1-heteroassoc-readout.md) is applied \
+             at the step-8 main run (8 seeds × 32 epochs). Smoke runs report \
+             pipeline integrity only.\n",
+        );
+        print!("{s}");
         return;
     }
 

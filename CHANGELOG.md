@@ -4,6 +4,152 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — Iteration 66 (deep research: cue → target binding pivot)
+
+Literature-driven decision document. 28 peer-reviewed sources spanning
+hippocampal models (Marr 1971; Treves & Rolls 1994; O'Reilly & McClelland
+1994; Schapiro et al. 2017), classical and modern associative memory
+(Willshaw 1969; Kanerva 1988; Hopfield 1982; Krotov & Hopfield 2016;
+Ramsauer et al. 2020), three-factor SNN learning (Izhikevich 2007;
+Frémaux & Gerstner 2016; Brea et al. 2013; Bellec et al. 2020),
+hippocampal indexing and complementary learning systems (Teyler &
+DiScenna 1986; McClelland, McNaughton & O'Reilly 1995; Norman &
+O'Reilly 2003), and BTSP / engram-level evidence (Bittner et al. 2017;
+Magee & Grienberger 2020; Tonegawa et al. 2015).
+
+### Hard recommendation
+
+**Choice B — CA3/CA1 split with a CA1-equivalent C1 layer (Mechanism
+M1).** Target-presence-gated three-factor R-STDP on a R2 → C1
+projection; primary metric `c1_target_top3_overlap` (decoder reads C1,
+not R2). Branch: `iter-66-ca1-heteroassoc-readout`. Locked seeds
+42/7/13/99/1/2/3/4 (cross-iter comparability). Locked acceptance
+matrix (α/β/γ/δ thresholds analogous to iter-64 but anchored to a
+fresh untrained-C1 baseline).
+
+### Killed paths (per literature evidence)
+
+- "Make R2 bind by tuning STDP-stack hyperparameters" — Cassenaer &
+  Laurent (2007/2012), Frémaux & Gerstner (2016), Brea et al.
+  (2013), and Schmidgall et al. (2024) collectively rule out pure
+  two-factor STDP on a recurrent attractor for heteroassociative
+  binding. iter-65 falsification is consistent with this entire
+  body of work.
+- "Single structure does separation + completion + binding" —
+  O'Reilly & McClelland (1994) and O'Reilly & Rudy (2001) argue this
+  is structurally precluded.
+- "Axis C `direct_r1r2_weight_scale` is on the right track" — per
+  Schapiro et al. (2017), the direct EC → CA1 path is biologically
+  real but lands in *CA1*, not CA3. iter-64 wired it to R2 (CA3
+  analogue); the iter-65 false-positive at 4 seeds is the empirical
+  signature of that confound.
+
+### Deferred to iter-67+ (kept as fallback)
+
+- M2 (Willshaw binary heteroassociative store) — implement as a
+  *baseline* in iter-66 to bound `target_top3_overlap` upper limit.
+- M3 (modern-Hopfield head) — same baseline role with a tighter
+  information-theoretic upper bound.
+- M5 (BTSP) — biologically most faithful candidate; deferred only on
+  implementation-cost grounds (new plasticity rule with seconds-scale
+  eligibility window).
+- M6 (CHL / contrastive head) — iter-67+ if M1's three-factor signal
+  is too weak.
+- Replay / consolidation (Káli & Dayan 2004; Kumaran et al. 2016) —
+  iter-68+ once a binding store exists.
+
+Full document: `notes/66-deep-research-cue-target-binding.md`.
+
+## Unreleased — Iteration 65 (perforant path robustness — Branch C Reject)
+
+iter-64 closed with axis C value=0.3 as the only candidate
+mechanism (4-seed full-phase α: Δ̄ = +0.0164, t(3) = +0.996,
+n_pos = 3/4). iter-65 doubled the seed count to 8 to test
+robustness.
+
+### Run
+
+  cargo run --release -p eval --example reward_benchmark -- \
+    --axis-sweep direct-r1r2-weight-scale \
+    --values 0.3 \
+    --seeds 42,7,13,99,1,2,3,4 \
+    --axis-sweep-phase full \
+    --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval
+
+8 seeds × 32 epochs at the same configuration as iter-64 axis C
+value=0.3. Wallclock ~3 h. Pre-registered seed list locked in
+notes/65 ENTRY before the run; pre-registered acceptance matrix
+locked at the same time.
+
+### Per-seed results
+
+  seed=42  +0.0215  iter-64 reproduced bit-identical
+  seed=7   +0.0215  iter-64 reproduced bit-identical
+  seed=13  +0.0508  iter-64 reproduced bit-identical
+  seed=99  −0.0283  iter-64 reproduced bit-identical (deterministic outlier)
+  seed=1   −0.0020  NEW: marginal-negative
+  seed=2   +0.0107  NEW: positive
+  seed=3   −0.0039  NEW: marginal-negative
+  seed=4   −0.0156  NEW: clearly negative
+
+### Aggregate
+
+  μ_untrained = 0.0327
+  μ_trained   = 0.0396
+  Δ̄           = +0.0068
+  σ_Δ         = 0.0248
+  SE          = σ_Δ / √8 = 0.00877
+  n_pos       = 4/8 (chance)
+  n_above_threshold(0.0621) = 0/8
+  paired t(7) = +0.779
+
+### Verdict — Branch (C) Reject (locked)
+
+  (A) Confirm — needs Δ ≥ 0.0621 on 8/8 AND t(7) > 1.895: ❌
+  (B) Partial — needs Δ̄ > 0 AND n_pos ≥ 6/8 AND t(7) > 0: ❌
+  (C) Reject — Δ̄ ≤ 0 OR n_pos ≤ 4/8: ✓ (n_pos = 4/8 boundary)
+
+The 4-seed (3/4 = 75 %) positive result from iter-64 was a
+sample-frequency artefact of a true ~50 % success-rate distribution.
+σ_Δ = 0.0248 is at the same magnitude as σ_untrained_iter63 = 0.0213;
+Δ̄ = +0.0068 is approximately one-third of one σ_untrained — well
+inside the iter-63-locked noise floor.
+
+The architecture (R1/DG/R2 with iter-46 plasticity stack + axis C
+value=0.3 perforant-path re-introduction) does not produce a robust
+cue → target signal that the iter-44/45 decoder can read.
+
+### Determinism + cache integrity
+
+The four iter-64 seeds (42, 7, 13, 99) reproduced their full-phase Δ
+values bit-identical across iter-64 and iter-65 runs (cache pre-seed
+at iter-63 baseline + RNG-determinism via UntrainedCacheKey + the
+locked seed→config mapping). seed=99 specifically remains a
+deterministic negative outlier across both runs, confirming it is a
+seed-specific failure mode at value=0.3, not random noise.
+
+### iter-66 entry — locked by (C) Reject
+
+Per the iter-65 ENTRY locked fork, (C) Reject sends iter-66 into
+the structural binding question. The deep-research literature scan
+(28 peer-reviewed sources, see iter-66 entry above) collapses the
+three sub-options to a single recommendation:
+
+  iter-66 = CA3/CA1 split (Mechanism M1) — new CA1-equivalent C1
+  layer with target-presence-gated three-factor R-STDP on R2 → C1
+  projection. Primary metric: c1_target_top3_overlap (decoder reads
+  C1 fingerprints, not R2). Branch: iter-66-ca1-heteroassoc-readout.
+
+### Supplementary measurements (in flight)
+
+iter-65 ENTRY also locked three sanity-check measurements via
+jaccard-bench at the same 8 seeds + value=0.3 config: same-cue mean,
+cross-cue separation, eval-drift L2 invariant. Currently running;
+partial data confirms iter-60/62 properties hold (same-cue = 1.000,
+cross-cue ≈ 0.025–0.030, recall-mode L2 bit-identical). Full table
+will be appended to notes/65 in a follow-up commit. These do not
+change the (C) Reject verdict on the primary metric.
+
 ## Unreleased — Iteration 64 (mechanism diagnosis: axis sweeps)
 
 iter-63 closed Branch (B) FAIL: 32 epochs of full plasticity on the
