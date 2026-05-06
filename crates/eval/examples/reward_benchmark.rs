@@ -234,6 +234,7 @@ fn main() {
         "--axis-sweep",
         "--r2-capacity-sweep",
         "--debug-cascade",
+        "--c1-readout",
     ]
     .into_iter()
     .filter(|name| flag(&args, name) || parse_string(&args, name).is_some())
@@ -580,6 +581,113 @@ fn main() {
                 }
             }
         }
+        return;
+    }
+
+    // Iter-66 (M1) — CA1-equivalent C1 readout bench mode. Always
+    // trained arm (untrained C1 has nothing to read out), always
+    // teacher-forcing, always with the C1 layer enabled. Prints
+    // per-seed R2 and C1 readouts side-by-side, then the paired
+    // (c1_Δ̄ − r2_Δ̄) cross-readout delta. The locked acceptance
+    // matrix in notes/66-ca1-heteroassoc-readout.md is applied at
+    // the verdict step (iter-66 step 8) — this routing block is
+    // the CLI surface; verdict rendering lands with the main run.
+    //
+    // Always pairs c1_readout=true with run_target_overlap_arm
+    // ArmMode::Trained: the iter-66 ENTRY pre-registers the
+    // trained arm only.
+    if flag(&args, "--c1-readout") {
+        let seeds_str = parse_string(&args, "--seeds").unwrap_or_else(|| seed.to_string());
+        let seeds: Vec<u64> = seeds_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u64>().ok())
+            .collect();
+        if seeds.is_empty() {
+            eprintln!(
+                "--c1-readout: --seeds must contain at least one parseable u64 (got '{seeds_str}')",
+            );
+            std::process::exit(2);
+        }
+        assert!(
+            teacher.enabled,
+            "iter-66 --c1-readout requires --teacher-forcing (the C1 layer is supervised \
+             by the canonical-target SDR clamp during the encoding phase; running without \
+             teacher-forcing would skip the M_target gating window entirely).",
+        );
+        assert!(
+            teacher.c1.enabled,
+            "internal: --c1-readout flag was set but teacher.c1.enabled was not propagated; \
+             check the CLI parser block.",
+        );
+
+        let cfg = RewardConfig {
+            epochs,
+            use_reward: true,
+            seed,
+            reps_per_pair: reps,
+            teacher,
+        };
+
+        eprintln!(
+            "[iter-66] c1_readout mode=trained seeds={seeds:?} epochs={epochs} \
+             vocab={} dg={} c1.size={} c1.sparsity_k={} c1.from_r2_fanout={} \
+             c1.teacher_strength={:.2} clamp={target_clamp} teacher_ms={teacher_ms} \
+             recall_mode_eval={}",
+            corpus.vocab.len(),
+            cfg.teacher.dg.enabled,
+            cfg.teacher.c1.size,
+            cfg.teacher.c1.sparsity_k,
+            cfg.teacher.c1.from_r2_fanout,
+            cfg.teacher.c1.teacher_strength,
+            cfg.teacher.recall_mode_eval,
+        );
+
+        let arm = run_target_overlap_arm(&corpus, &cfg, &seeds, ArmMode::Trained);
+
+        // Render the per-seed table for both readouts. The verdict
+        // matrix is applied at the iter-66 step-8 main run; this
+        // block is the smoke surface.
+        let mut s = String::new();
+        s.push_str("### Iter-66 — C1 readout (trained arm)\n\n");
+        s.push_str(&format!(
+            "_n_seeds = {}, vocab = {}, ep = {}, DG = {}, recall-mode = {}, \
+             c1.size = {}, c1.teacher_strength = {:.2}_\n\n",
+            seeds.len(),
+            corpus.vocab.len(),
+            epochs,
+            cfg.teacher.dg.enabled,
+            cfg.teacher.recall_mode_eval,
+            cfg.teacher.c1.size,
+            cfg.teacher.c1.teacher_strength,
+        ));
+        s.push_str("| Seed | target_top3_overlap (R2) | c1_target_top3_overlap (C1) | C1 − R2 |\n");
+        s.push_str("| ---: | ---: | ---: | ---: |\n");
+        for (i, sd) in seeds.iter().enumerate() {
+            let r2 = arm.per_seed[i];
+            let c1 = arm.c1_per_seed.get(i).copied().unwrap_or(f32::NAN);
+            s.push_str(&format!(
+                "| {} | {:.4} | {:.4} | {:+.4} |\n",
+                sd,
+                r2,
+                c1,
+                c1 - r2,
+            ));
+        }
+        s.push('\n');
+        s.push_str(&format!(
+            "**Aggregate:** R2 μ = {:.4} ± {:.4}, C1 μ = {:.4} ± {:.4} (n = {}).\n\n",
+            arm.mean,
+            arm.std,
+            arm.c1_mean,
+            arm.c1_std,
+            seeds.len(),
+        ));
+        s.push_str(
+            "Verdict matrix (locked in notes/66-ca1-heteroassoc-readout.md) is applied \
+             at the step-8 main run (8 seeds × 32 epochs). Smoke runs report \
+             pipeline integrity only.\n",
+        );
+        print!("{s}");
         return;
     }
 
