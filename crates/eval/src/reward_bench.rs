@@ -2349,14 +2349,39 @@ fn run_teacher_trial(
     } else {
         r2_e
     };
+    // Iter-67-α2 (R2-isolation per Bekos's selectivity-fix prompt):
+    // when BTSP is on, gate the upstream cue drive (R1 → R2 +
+    // DG → R2) to ZERO during the Phase 4 clamp window. The
+    // motivation, post the homeostasis-gating fix
+    // (notes/67-step-6-smoke-seed42-ep32-v3-homeostasis-gated.log
+    // confirmed BTSP saturates indiscriminately when R2 keeps
+    // firing during teacher): without this isolation, R2 fires
+    // its full cue + recurrent + DG response throughout teacher,
+    // BTSP tags ALL active R2-E synapses (engram + noise), and
+    // the plateau-arm event potentiates them all uniformly →
+    // w_ratio ≈ 1.0 (target ≈ non-target). With cue input cut
+    // during teacher, only the residual cue-engram membrane
+    // potentials carry over from cue/delay/prediction/lead-in;
+    // those decay quickly under tau_m = 20 ms, leaving the
+    // C1-target clamp as the dominant post-side driver. BTSP
+    // tags accumulated DURING the cue/delay/prediction substrate
+    // (via the long eligibility_window_ms = 200) capture the
+    // engram cells; tags during teacher add only a small residual
+    // from membrane decay. Plateau-arm potentiates these
+    // engram-biased tagged synapses → target/non-target weight
+    // separation. iter-66/iter-66.5 path bit-identical when
+    // c1.btsp = false (gate is `c1_active && cfg.c1.btsp`).
+    let isolate_r2_for_btsp = c1_active && cfg.c1.btsp;
+    let teacher_r1_strength = if isolate_r2_for_btsp { 0.0 } else { DRIVE_NA };
+    let teacher_dg_strength = if isolate_r2_for_btsp { 0.0 } else { dg_strength };
     let teacher_counts = if dg_active {
         drive_with_r2_clamp_dg(
             brain,
             cue_sdr,
             dg_sdr,
             &combined_clamp,
-            DRIVE_NA,
-            dg_strength,
+            teacher_r1_strength,
+            teacher_dg_strength,
             cfg.target_clamp_strength,
             clamp_ms as f32,
             track_set,
@@ -2366,7 +2391,7 @@ fn run_teacher_trial(
             brain,
             cue_sdr,
             &combined_clamp,
-            DRIVE_NA,
+            teacher_r1_strength,
             cfg.target_clamp_strength,
             clamp_ms as f32,
             track_set,
