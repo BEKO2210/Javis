@@ -472,6 +472,19 @@ pub struct C1Config {
     /// overlap of the eval kWTA with the canonical-target C1
     /// SDR. Off by default (CLI flag `--c1-diagnostic`).
     pub diagnostic: bool,
+    /// Iter-66.5 Path-1 fix (`notes/66.5-eval-aligned-c1-rstdp.md`).
+    /// When `true`, the teacher Phase 4 omits the canonical R2
+    /// target SDR from the clamp (R2 fires its natural
+    /// cue-driven response instead). The C1 target SDR clamp
+    /// and the M_target = `c1.teacher_strength` modulator pulse
+    /// stay active. R-STDP on R2-E → C1 then aligns
+    /// (eval-time R2 cue pattern) → (canonical C1 target),
+    /// instead of iter-66's
+    /// (canonical R2 target SDR) → (canonical C1 target SDR)
+    /// which iter-66 step-7.5 falsified at recall time.
+    /// Off by default ⇒ iter-66 behaviour bit-identical;
+    /// CLI flag `--c1-eval-aligned-rstdp`.
+    pub eval_aligned_rstdp: bool,
 }
 
 impl Default for C1Config {
@@ -484,6 +497,7 @@ impl Default for C1Config {
             init_w_max: 0.5,
             teacher_strength: 1.0,
             diagnostic: false,
+            eval_aligned_rstdp: false,
         }
     }
 }
@@ -709,6 +723,7 @@ impl Default for TeacherForcingConfig {
                 init_w_max: 0.5,
                 teacher_strength: 1.0,
                 diagnostic: false,
+                eval_aligned_rstdp: false,
             },
         }
     }
@@ -762,6 +777,7 @@ impl TeacherForcingConfig {
                 init_w_max: 0.5,
                 teacher_strength: 1.0,
                 diagnostic: false,
+                eval_aligned_rstdp: false,
             },
         }
     }
@@ -2222,7 +2238,21 @@ fn run_teacher_trial(
     // empty (iter-46/65 path), `combined_clamp` borrows
     // `target_r2_sdr` as-is — no allocation, bit-identical to the
     // pre-iter-66 control flow.
-    let combined_clamp: std::borrow::Cow<'_, [u32]> = if c1_target_sdr.is_empty() {
+    //
+    // Iter-66.5 Path-1 fix (`notes/66.5-eval-aligned-c1-rstdp.md`):
+    // when `cfg.c1.eval_aligned_rstdp` is set AND C1 is active
+    // for this trial, the canonical R2 target SDR is dropped from
+    // the clamp so R2 fires its natural cue-driven response. The
+    // C1 target SDR clamp stays. R-STDP then aligns
+    // (eval-time R2 cue pattern) → (canonical C1 target) instead
+    // of iter-66's (canonical R2 target) → (canonical C1 target).
+    // When the flag is off (default), this branch is skipped and
+    // the iter-66 / iter-65 / iter-46 numerics are bit-identical.
+    let drop_r2_clamp_for_c1 =
+        cfg.c1.enabled && cfg.c1.eval_aligned_rstdp && !c1_target_sdr.is_empty();
+    let combined_clamp: std::borrow::Cow<'_, [u32]> = if drop_r2_clamp_for_c1 {
+        std::borrow::Cow::Borrowed(c1_target_sdr)
+    } else if c1_target_sdr.is_empty() {
         std::borrow::Cow::Borrowed(target_r2_sdr)
     } else {
         let mut v = Vec::with_capacity(target_r2_sdr.len() + c1_target_sdr.len());
@@ -3941,7 +3971,11 @@ fn build_benchmark_brain(corpus: &RewardCorpus, cfg: &RewardConfig) -> BrainBuil
                 )
             })
             .collect();
-        (Some(c1_set((c1_start, c1_end))), map, Some(r2_r2_synapse_count))
+        (
+            Some(c1_set((c1_start, c1_end))),
+            map,
+            Some(r2_r2_synapse_count),
+        )
     } else {
         (None, std::collections::HashMap::new(), None)
     };
@@ -4807,12 +4841,7 @@ pub struct TargetOverlapMetrics {
 }
 
 impl TargetOverlapMetrics {
-    fn new(
-        mode: ArmMode,
-        seeds: Vec<u64>,
-        per_seed: Vec<f32>,
-        c1_per_seed: Vec<f32>,
-    ) -> Self {
+    fn new(mode: ArmMode, seeds: Vec<u64>, per_seed: Vec<f32>, c1_per_seed: Vec<f32>) -> Self {
         let n = per_seed.len();
         let mean = if n == 0 {
             0.0
@@ -4832,8 +4861,11 @@ impl TargetOverlapMetrics {
             c1_per_seed.iter().sum::<f32>() / c1_n as f32
         };
         let c1_std = if c1_n > 1 {
-            let var =
-                c1_per_seed.iter().map(|v| (v - c1_mean).powi(2)).sum::<f32>() / (c1_n - 1) as f32;
+            let var = c1_per_seed
+                .iter()
+                .map(|v| (v - c1_mean).powi(2))
+                .sum::<f32>()
+                / (c1_n - 1) as f32;
             var.sqrt()
         } else {
             0.0
@@ -5092,8 +5124,7 @@ fn run_target_overlap_one_seed(
         let mean_pre: f64 = if r2c1_pre_weights.is_empty() {
             0.0
         } else {
-            r2c1_pre_weights.iter().map(|&w| w as f64).sum::<f64>()
-                / r2c1_pre_weights.len() as f64
+            r2c1_pre_weights.iter().map(|&w| w as f64).sum::<f64>() / r2c1_pre_weights.len() as f64
         };
         eprintln!(
             "[iter-66 diag] seed={} pre-train: r2_r2_synapses={} r2c1_synapses={} \
@@ -5153,10 +5184,7 @@ fn run_target_overlap_one_seed(
                 // Iter-66: pass the per-target C1 SDR so the teacher
                 // schedule can clamp C1 cells alongside R2 and gate
                 // R-STDP via M_target during the encoding window.
-                let c1_sdr = target_c1_map
-                    .get(&pair.target)
-                    .cloned()
-                    .unwrap_or_default();
+                let c1_sdr = target_c1_map.get(&pair.target).cloned().unwrap_or_default();
                 for _rep in 0..cfg.reps_per_pair.max(1) {
                     brain.regions[1].network.reset_state();
                     let outcome = run_teacher_trial(
@@ -5319,12 +5347,10 @@ fn run_target_overlap_one_seed(
                     let total: u64 = c1_counts.iter().map(|&c| c as u64).sum();
                     diag_eval_spikes_total += total;
                     if let Some(canonical_c1) = target_c1_map.get(&pair.target) {
-                        let kw_top: BTreeSet<u32> = top_k_indices(
-                            &c1_counts,
-                            cfg.teacher.c1.sparsity_k as usize,
-                        )
-                        .into_iter()
-                        .collect();
+                        let kw_top: BTreeSet<u32> =
+                            top_k_indices(&c1_counts, cfg.teacher.c1.sparsity_k as usize)
+                                .into_iter()
+                                .collect();
                         let canon_set: BTreeSet<u32> = canonical_c1.iter().copied().collect();
                         let inter = kw_top.intersection(&canon_set).count() as u64;
                         diag_eval_raw_overlap_sum += inter;

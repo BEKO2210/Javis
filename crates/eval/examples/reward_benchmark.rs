@@ -123,6 +123,14 @@ fn main() {
     // canonical-target overlap). Off by default; mandatory for the
     // step 7.5 verdict before the 8-seed step 8 main run.
     let c1_diagnostic = flag(&args, "--c1-diagnostic");
+    // Iter-66.5 Path-1 fix (notes/66.5-eval-aligned-c1-rstdp.md):
+    // when set together with --c1-readout, the teacher Phase 4
+    // omits the canonical R2 target SDR from the clamp so R2 fires
+    // its natural cue-driven response. R-STDP on R2-E → C1 then
+    // aligns the eval-time R2 cue pattern with the canonical C1
+    // target. Default off ⇒ iter-66 behaviour bit-identical (every
+    // existing reward_bench snapshot test still passes verbatim).
+    let c1_eval_aligned_rstdp = flag(&args, "--c1-eval-aligned-rstdp");
 
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
@@ -209,6 +217,7 @@ fn main() {
             init_w_max: c1_init_w_max,
             teacher_strength: c1_teacher_strength,
             diagnostic: c1_diagnostic,
+            eval_aligned_rstdp: c1_eval_aligned_rstdp,
         },
     };
 
