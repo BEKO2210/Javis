@@ -688,10 +688,15 @@ impl Network {
             c.age = 0;
         }
         // iter-67 BTSP transient state: tags + burst traces + plateau
-        // armed-until clear on every reset_state. Diagnostic counters
-        // also reset so per-trial accumulators are clean. Synapse
-        // weights themselves survive (they're topology + learned
-        // state, not transient).
+        // armed-until clear on every reset_state. Synapse weights
+        // themselves survive (they're topology + learned state, not
+        // transient). The diagnostic counters
+        // (`btsp_plateau_events`, `btsp_potentiation_events`) are
+        // intentionally NOT reset here — they accumulate across
+        // multiple trials within a training epoch (each trial calls
+        // reset_state) so the caller can read a per-epoch total.
+        // Use `enable_btsp` to clear the counters (it does that as
+        // part of its setup).
         for x in self.btsp_synapse_tag.iter_mut() {
             *x = 0.0;
         }
@@ -701,8 +706,6 @@ impl Network {
         for x in self.btsp_post_armed_until.iter_mut() {
             *x = f32::NEG_INFINITY;
         }
-        self.btsp_plateau_events = 0;
-        self.btsp_potentiation_events = 0;
         self.time = 0.0;
         self.step_counter = 0;
         self.synapse_events = 0;

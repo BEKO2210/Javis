@@ -5227,6 +5227,14 @@ fn run_target_overlap_one_seed(
         let mut diag_train_c1_total_spikes: u64 = 0;
         let mut diag_train_c1_clamp_hits: u64 = 0;
         let mut diag_train_c1_clamp_size: u64 = 0;
+        // Iter-67: snapshot BTSP counters at start of training so the
+        // per-epoch diff captures only training-phase events. The
+        // counters persist across reset_state (intentional — they
+        // accumulate across trials within a single epoch's training);
+        // eval-phase trials don't fire BTSP (recall-mode plasticity
+        // off) so the diff = training-only events.
+        let btsp_pe_at_train_start = brain.regions[1].network.btsp_plateau_events;
+        let btsp_pot_at_train_start = brain.regions[1].network.btsp_potentiation_events;
 
         // -- Training: cue+target presentations for this epoch --
         let mut schedule: Vec<(RewardPair, bool)> = corpus
@@ -5499,17 +5507,22 @@ fn run_target_overlap_one_seed(
                 } else {
                     0.0
                 };
-                // Iter-67: BTSP per-epoch counters (read off the
-                // network's persistent BTSP diagnostic accumulators)
-                // + target/non-target mean weight on R2-E → C1.  K4
-                // (synaptic memory trace) compares these two means at
-                // end-of-training; the per-epoch read also lets the
-                // diagnostic show how the binding builds over epochs.
-                // When c1.btsp = false the network counters stay at 0
-                // and the per-class mean weights are still informative
-                // on the iter-66.5 R-STDP path.
-                let btsp_pe = brain.regions[1].network.btsp_plateau_events;
-                let btsp_pot = brain.regions[1].network.btsp_potentiation_events;
+                // Iter-67: BTSP per-epoch counters as DELTAS vs the
+                // start-of-training snapshot, so the diagnostic shows
+                // per-epoch totals (not cumulative-since-enable).
+                // When c1.btsp = false both deltas stay 0.  The
+                // per-class mean weights are computed below and are
+                // still informative on the iter-66.5 R-STDP path.
+                let btsp_pe = brain
+                    .regions[1]
+                    .network
+                    .btsp_plateau_events
+                    .wrapping_sub(btsp_pe_at_train_start);
+                let btsp_pot = brain
+                    .regions[1]
+                    .network
+                    .btsp_potentiation_events
+                    .wrapping_sub(btsp_pot_at_train_start);
                 let (r2c1_target_w, r2c1_nontarget_w) = if let Some(start) = c1_synapse_start {
                     let mut tgt_sum: f64 = 0.0;
                     let mut tgt_n: u64 = 0;
