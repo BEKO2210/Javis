@@ -533,6 +533,16 @@ pub struct C1Config {
     /// BTSP / iSTDP all see the architectural weight.  CLI flag
     /// `--c1-btsp-teacher-recurrent-i-scale`.
     pub btsp_teacher_recurrent_i_scale: f32,
+    /// Iter-67-γ.1.1: opt-out switch for the iter-67-α2 R2-isolation
+    /// (cue + DG drive cut to 0 during teacher).  Default `false`
+    /// (= iter-67-α2 isolation ON, matches iter-67/γ.1 v4 baseline).
+    /// `true`: keep cue + DG drive at full strength during teacher
+    /// Phase 4 clamp window — R2 fires its natural cue-driven
+    /// response so γ.1's E/I-split has an active substrate to
+    /// expose.  Tests Bekos's actual locked γ.1 hypothesis where
+    /// cue-engram E-cells fire under reduced inhibition.  CLI flag
+    /// `--c1-btsp-no-r2-isolation`.
+    pub btsp_no_r2_isolation: bool,
 }
 
 impl Default for C1Config {
@@ -552,6 +562,7 @@ impl Default for C1Config {
             btsp_target_gated: true,
             btsp_teacher_recurrent_e_scale: 1.0,
             btsp_teacher_recurrent_i_scale: 0.3,
+            btsp_no_r2_isolation: false,
         }
     }
 }
@@ -784,6 +795,7 @@ impl Default for TeacherForcingConfig {
                 btsp_target_gated: true,
                 btsp_teacher_recurrent_e_scale: 1.0,
                 btsp_teacher_recurrent_i_scale: 0.3,
+                btsp_no_r2_isolation: false,
             },
         }
     }
@@ -844,6 +856,7 @@ impl TeacherForcingConfig {
                 btsp_target_gated: true,
                 btsp_teacher_recurrent_e_scale: 1.0,
                 btsp_teacher_recurrent_i_scale: 0.3,
+                btsp_no_r2_isolation: false,
             },
         }
     }
@@ -2425,7 +2438,14 @@ fn run_teacher_trial(
     // engram-biased tagged synapses → target/non-target weight
     // separation. iter-66/iter-66.5 path bit-identical when
     // c1.btsp = false (gate is `c1_active && cfg.c1.btsp`).
-    let isolate_r2_for_btsp = c1_active && cfg.c1.btsp;
+    // Iter-67-γ.1.1: opt-out switch.  When `cfg.c1.no_r2_isolation`
+    // is set, keep cue + DG drive at full strength during teacher
+    // (default behaviour pre-iter-67-α2).  Tests Bekos's actual
+    // locked γ.1 hypothesis: cue-engram E-cells fire under
+    // reduced inhibition.  When the flag is off (default),
+    // iter-67-α2's R2-isolation stays ON ⇒ bit-identical to
+    // iter-67-γ.1 / iter-67-α2 baselines.
+    let isolate_r2_for_btsp = c1_active && cfg.c1.btsp && !cfg.c1.btsp_no_r2_isolation;
     let teacher_r1_strength = if isolate_r2_for_btsp { 0.0 } else { DRIVE_NA };
     let teacher_dg_strength = if isolate_r2_for_btsp {
         0.0
