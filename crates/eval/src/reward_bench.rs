@@ -2308,6 +2308,27 @@ fn run_teacher_trial(
     if c1_active {
         brain.set_neuromodulator(cfg.c1.teacher_strength);
     }
+    // Iter-67-α (post-Step-6 fix per Bekos's homeostasis-catch-22
+    // diagnosis): when BTSP is on, hard-gate homeostasis OFF for
+    // the duration of the Phase 4 clamp window. The 500 nA C1
+    // target clamp drives canonical-target C1 cells to saturation
+    // firing (~14 spikes / 30 ms). Homeostatic synaptic scaling
+    // (`scale_only_down = true, a_target = 2.0`) then measures
+    // that activity as far above target and scales the cells'
+    // incoming R2-E → C1-target weights DOWN — directly cancelling
+    // the BTSP plateau-gated potentiation. iter-67's first smoke
+    // (notes/67-step-6-smoke-seed42-ep32-v2.log) confirmed the
+    // catch-22: w_ratio = 0.42 oscillating, target-mean weight
+    // 41 % of non-target, with weight movement of 0.0014/epoch
+    // (≈ 700 epochs to reach K4's ratio ≥ 1.5). Disabling
+    // homeostasis only during the clamp window — and only when
+    // BTSP is on — preserves iter-46 / iter-65 / iter-66 numerics
+    // bit-identically when c1.btsp = false. Same save/restore
+    // pattern as the existing STDP / iSTDP gating above.
+    let prior_homeostasis_t = brain.regions[1].network.homeostasis;
+    if c1_active && cfg.c1.btsp {
+        brain.regions[1].network.disable_homeostasis();
+    }
     // Iter-66: when C1 is active, augment the spike-tracking set
     // with the C1 cell index range so step-7.5 diagnostics can
     // read C1 spike counts out of `teacher_counts`. The original
@@ -2353,6 +2374,14 @@ fn run_teacher_trial(
     };
     if c1_active {
         brain.set_neuromodulator(prior_modulator);
+    }
+    // Iter-67-α: restore homeostasis state to whatever it was
+    // before the clamp window. When `cfg.c1.btsp = false` this is
+    // a pure no-op (we never disabled it).
+    if c1_active && cfg.c1.btsp {
+        if let Some(h) = prior_homeostasis_t {
+            brain.regions[1].network.enable_homeostasis(h);
+        }
     }
     if !cfg.plasticity_during_teacher {
         match prior_stdp_t {
