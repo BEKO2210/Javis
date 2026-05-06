@@ -332,3 +332,91 @@ step 7 is a smoke commit; step 8 is the verdict commit.
 > - **(D) Reject — architecture insufficient; iter-67 =
 >   Willshaw baseline (M2) to test if DG code itself is the
 >   bottleneck.**
+
+---
+
+## Step 7 — Smoke result (1 seed × 8 epochs, pipeline integrity)
+
+**Date:** 2026-05-06.
+**Commits:** `e0dea5a` (steps 1–6), `246d863` (step 6 cont. CLI
+routing), this commit (step 7 smoke result).
+
+**CLI invocation:** locked from the ENTRY — verbatim.
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --c1-readout --c1-teacher-strength 1.0 \
+  --seeds 42 --epochs 8 \
+  --teacher-forcing --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval \
+  --decorrelated-init
+```
+
+**Result table:**
+
+| Seed | target_top3_overlap (R2) | c1_target_top3_overlap (C1) | C1 − R2 |
+| ---: | ---: | ---: | ---: |
+| 42 | 0.0273 | 0.0000 | −0.0273 |
+
+**Pipeline integrity (ENTRY's smoke success criteria):**
+
+- Compiles: ✓
+- Runs end-to-end (no panic): ✓
+- Asserts hold (`assert_no_weight_drift` not exercised because
+  trained arm: no untrained-mode pre/post L2 invariant required;
+  decorrelated_init `assert_decorrelated_disjoint` ✓): ✓
+- `c1_target_top3_overlap` is in `[0.0, 1.0]`: ✓ (= 0.0000)
+
+**All four ENTRY smoke criteria PASS.** The smoke is therefore
+a **GO** to step 8 (main run, 8 seeds × 32 epochs).
+
+### Smoke observations (informative, not gating)
+
+1. **R2 readout at 8 ep = 0.0273.** Consistent with iter-65 R2
+   training trajectory (iter-65 trained mean over 32 ep was
+   0.0396; at 8 ep the partial-trajectory reading would land
+   around 0.025–0.035). No regression vs iter-65's R2 path.
+2. **C1 readout at 8 ep = 0.0000.** Three candidate explanations,
+   to be discriminated by the step-8 32-ep main run:
+   - **(C1.a)** *Insufficient training.* The R2 metric at 8 ep
+     is itself only 0.0273; R2-E cells don't fire the canonical-
+     target pattern reliably during cue-only eval, so the
+     R2-E → C1 path doesn't see a discriminative pre-spike
+     pattern to learn. At 32 ep the R2 readout climbs to
+     0.0396; if C1 readout climbs in lock-step, M1 is on the
+     right trajectory.
+   - **(C1.b)** *C1 cells silent during eval.* If R2-E spikes
+     are too sparse / R2-E → C1 weights too low to push C1
+     cells over LIF threshold, the eval-phase kWTA returns
+     empty, no concept is learned in the C1 dictionary, and
+     the metric drops to 0.0 mechanically. Diagnostic at
+     step-8: per-epoch C1 spike count log.
+   - **(C1.c)** *Non-discriminative C1 fingerprints.* If every
+     cue produces the same C1 fingerprint (e.g. a single
+     dominant attractor), the dictionary learns identical
+     fingerprints for every word and decoding is ambiguous /
+     degenerate to chance. iter-53 confirmed deterministic
+     dynamics under recall-mode (mean Jaccard = 1.0
+     within-cue), so this would manifest as cross-cue Jaccard
+     near 1.0 across the dictionary entries — testable at
+     step-8 with a one-shot Jaccard diagnostic if needed.
+3. **Architectural side-effect: R2-R2 R-STDP fires during the
+   M_target window.** The implementation gates the modulator
+   globally on R2's `Network`, so the M_target = +1 pulse
+   during the teacher Phase 4 also drives R-STDP updates on
+   R2-R2 synapses (the existing recurrent attractor). This is
+   a deliberate consequence of the minimum-scope design — to
+   isolate per-synapse M_target gating would require adding a
+   per-synapse plasticity flag to snn-core, which iter-66
+   ENTRY explicitly declines ("No new plasticity rule"). The
+   side-effect tightens R2's recurrent representation
+   alongside building C1; net direction on the R2 readout is
+   ambiguous (could help or hurt). Step-8 will report
+   per-seed R2 deltas vs iter-65 to surface any drift.
+
+### Step-8 main run — green-lit
+
+Per the ENTRY: "step 7 is a smoke commit; step 8 is the
+verdict commit." The step-7 smoke meets all pre-registered
+pipeline-integrity criteria. Proceeding to step-8 (8 seeds ×
+32 epochs) with the locked acceptance matrix unchanged.
