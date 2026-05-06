@@ -12,6 +12,7 @@
 //! inhibitory pre-neurons subtract. Weights themselves are non-negative
 //! magnitudes, clamped by STDP into `[w_min, w_max]`.
 
+use crate::btsp::BtspParams;
 use crate::heterosynaptic::{HeterosynapticParams, NormKind};
 use crate::homeostasis::HomeostasisParams;
 use crate::intrinsic::IntrinsicParams;
@@ -123,6 +124,13 @@ pub struct Network {
     /// machinery sees the same scalar.
     #[serde(default)]
     pub reward: Option<RewardParams>,
+    /// Iter-67 BTSP plateau-eligibility rule (Bittner 2017 / Magee
+    /// & Grienberger 2020). Per-post-cell plateau detection +
+    /// per-synapse eligibility tag. See `crate::btsp` for the
+    /// rule semantics. Off by default (`None`) ⇒ every snn-core
+    /// callsite stays bit-identical to the pre-iter-67 path.
+    #[serde(default)]
+    pub btsp: Option<BtspParams>,
 
     /// Slow pre-trace `r2` (Pfister-Gerstner triplet LTD term). Empty
     /// unless `stdp.triplet_enabled() == true`.
@@ -171,6 +179,47 @@ pub struct Network {
     /// call when `ReplayParams::alternate_reverse` is on.
     #[serde(skip, default)]
     pub replay_flip: bool,
+
+    // ==== iter-67 BTSP plateau-eligibility rule (transient) ====
+    /// Per-synapse BTSP eligibility tag. Empty unless
+    /// `Network::enable_btsp` was called. Tag accumulates +1 on
+    /// every pre-spike whose post-cell is in the BTSP filter, and
+    /// decays exponentially with `BtspParams::eligibility_window_ms`.
+    /// Consumed (set to 0) at the plateau-arm transition on its
+    /// post-cell.
+    #[serde(skip, default)]
+    pub btsp_synapse_tag: Vec<f32>,
+    /// Per-post-cell fast burst trace. Empty unless BTSP is on.
+    /// `+1` on every post-spike (for cells in the filter); decays
+    /// with `BtspParams::plateau_window_ms`. Compared against
+    /// `BtspParams::plateau_threshold_spikes` for plateau-arm
+    /// detection.
+    #[serde(skip, default)]
+    pub btsp_post_burst_trace: Vec<f32>,
+    /// Per-post-cell time-of-disarm. `f32::NEG_INFINITY` when not
+    /// armed. Set to `current_time + post_plateau_decay_ms` when
+    /// the burst trace crosses the threshold from below; refreshed
+    /// (extended) on every subsequent post-spike during the armed
+    /// window. The disarm transition is checked at the start of
+    /// every step.
+    #[serde(skip, default)]
+    pub btsp_post_armed_until: Vec<f32>,
+    /// Per-post-cell mask: `true` ⇒ this post-cell participates in
+    /// the BTSP rule. Empty when BTSP is off; full-`true` when
+    /// `enable_btsp` was called without a filter; selectively
+    /// `true` when called with a filter. Stored as `Vec<bool>` for
+    /// cache-friendly random access in the hot loop.
+    #[serde(skip, default)]
+    pub btsp_post_mask: Vec<bool>,
+    /// Diagnostic counter — total plateau-arm transitions since
+    /// last reset. Cleared by `Network::reset_state`.
+    #[serde(skip, default)]
+    pub btsp_plateau_events: u64,
+    /// Diagnostic counter — total per-synapse one-shot
+    /// potentiation events (`Δw > 0` applied) since last reset.
+    /// Cleared by `Network::reset_state`.
+    #[serde(skip, default)]
+    pub btsp_potentiation_events: u64,
 }
 
 impl Network {
@@ -204,6 +253,7 @@ impl Network {
             heterosynaptic: None,
             structural: None,
             reward: None,
+            btsp: None,
             pre_trace2: Vec::new(),
             post_trace2: Vec::new(),
             eligibility: Vec::new(),
@@ -215,6 +265,12 @@ impl Network {
             prune_counters: Vec::new(),
             dead_synapses: 0,
             replay_flip: false,
+            btsp_synapse_tag: Vec::new(),
+            btsp_post_burst_trace: Vec::new(),
+            btsp_post_armed_until: Vec::new(),
+            btsp_post_mask: Vec::new(),
+            btsp_plateau_events: 0,
+            btsp_potentiation_events: 0,
         }
     }
 
@@ -507,6 +563,61 @@ impl Network {
         self.reward = None;
     }
 
+    /// Iter-67: switch on the BTSP plateau-eligibility rule. See
+    /// `crate::btsp` for the rule semantics.
+    ///
+    /// `post_filter`:
+    /// - `None` ⇒ every post-cell in the network participates in
+    ///   BTSP.
+    /// - `Some(indices)` ⇒ only the listed post-cells participate.
+    ///   Pre-spike events whose post is *not* in the filter do not
+    ///   accumulate tags; post-spike events on cells not in the
+    ///   filter do not contribute to the plateau-arm logic. This
+    ///   is what lets the iter-67 caller restrict the rule to the
+    ///   C1 cell index range while leaving R2-R2 plasticity intact
+    ///   in the same `Network`.
+    ///
+    /// Allocates per-synapse `btsp_synapse_tag` (size =
+    /// `synapses.len()`) + per-post-cell `btsp_post_burst_trace`,
+    /// `btsp_post_armed_until` (both size = `neurons.len()`) +
+    /// `btsp_post_mask` (also `neurons.len()`).
+    pub fn enable_btsp(&mut self, params: BtspParams, post_filter: Option<&[usize]>) {
+        let n = self.neurons.len();
+        let s = self.synapses.len();
+        if self.btsp_synapse_tag.len() != s {
+            self.btsp_synapse_tag = vec![0.0; s];
+        }
+        if self.btsp_post_burst_trace.len() != n {
+            self.btsp_post_burst_trace = vec![0.0; n];
+        }
+        if self.btsp_post_armed_until.len() != n {
+            self.btsp_post_armed_until = vec![f32::NEG_INFINITY; n];
+        }
+        let mut mask = match post_filter {
+            None => vec![true; n],
+            Some(_) => vec![false; n],
+        };
+        if let Some(indices) = post_filter {
+            for &idx in indices {
+                if idx < n {
+                    mask[idx] = true;
+                }
+            }
+        }
+        self.btsp_post_mask = mask;
+        self.btsp_plateau_events = 0;
+        self.btsp_potentiation_events = 0;
+        self.btsp = Some(params);
+    }
+
+    /// Iter-67: switch off BTSP. Leaves the per-synapse / per-post
+    /// transient buffers in place (cheap on memory; idle without the
+    /// `Some(params)` flag) so a subsequent `enable_btsp` can
+    /// re-arm without re-allocating.
+    pub fn disable_btsp(&mut self) {
+        self.btsp = None;
+    }
+
     /// Set the global neuromodulator (dopamine surrogate). The next
     /// [`Network::step`] reads this value when `reward` is `Some`.
     /// Persisting state across steps is the caller's responsibility:
@@ -576,6 +687,22 @@ impl Network {
         for c in self.prune_counters.iter_mut() {
             c.age = 0;
         }
+        // iter-67 BTSP transient state: tags + burst traces + plateau
+        // armed-until clear on every reset_state. Diagnostic counters
+        // also reset so per-trial accumulators are clean. Synapse
+        // weights themselves survive (they're topology + learned
+        // state, not transient).
+        for x in self.btsp_synapse_tag.iter_mut() {
+            *x = 0.0;
+        }
+        for x in self.btsp_post_burst_trace.iter_mut() {
+            *x = 0.0;
+        }
+        for x in self.btsp_post_armed_until.iter_mut() {
+            *x = f32::NEG_INFINITY;
+        }
+        self.btsp_plateau_events = 0;
+        self.btsp_potentiation_events = 0;
         self.time = 0.0;
         self.step_counter = 0;
         self.synapse_events = 0;
@@ -692,6 +819,24 @@ impl Network {
                 }
             }
         }
+        // 2d) iter-67 BTSP trace decays — per-synapse eligibility tag
+        //     and per-post-cell burst trace. Plateau-armed-until is a
+        //     timestamp, not a decay; auto-disarm is checked at use
+        //     sites below. Off path skips on `Option::is_none`.
+        if let Some(bp) = self.btsp {
+            if !self.btsp_synapse_tag.is_empty() {
+                let dtag = (-dt / bp.eligibility_window_ms.max(1e-3)).exp();
+                for x in self.btsp_synapse_tag.iter_mut() {
+                    *x *= dtag;
+                }
+            }
+            if !self.btsp_post_burst_trace.is_empty() {
+                let dburst = (-dt / bp.plateau_window_ms.max(1e-3)).exp();
+                for x in self.btsp_post_burst_trace.iter_mut() {
+                    *x *= dburst;
+                }
+            }
+        }
 
         // 3) Step every LIF, recording spikes. SoA layout: per-neuron
         //    transient state lives in parallel `Vec<f32>` slices on
@@ -754,6 +899,13 @@ impl Network {
         let meta_params = self.metaplasticity;
         let intrinsic_params = self.intrinsic;
         let reward_params = self.reward;
+        // iter-67 BTSP precompute. Off path: every BTSP block in the
+        // spike loop short-circuits at this single boolean.
+        let btsp_active = self.btsp.is_some()
+            && !self.btsp_post_mask.is_empty()
+            && !self.btsp_synapse_tag.is_empty()
+            && !self.btsp_post_burst_trace.is_empty();
+        let btsp_params = self.btsp;
 
         for &src in &fired {
             if stdp.is_some() {
@@ -797,6 +949,17 @@ impl Network {
                 let channel = self.ensure_channel(kind);
                 channel[post] += sign * w;
                 self.synapse_events += 1;
+                // iter-67 BTSP: per-pre-spike eligibility tag tick on
+                // synapses targeting filtered post-cells. Off path:
+                // `btsp_active = false` skips the read entirely. Only
+                // accumulates on excitatory pre — inhibitory R2-I →
+                // post is not subject to BTSP potentiation.
+                if btsp_active
+                    && matches!(src_kind, NeuronKind::Excitatory)
+                    && self.btsp_post_mask[post]
+                {
+                    self.btsp_synapse_tag[eid] += 1.0;
+                }
                 match src_kind {
                     NeuronKind::Excitatory => {
                         if let Some(p) = stdp {
@@ -901,6 +1064,70 @@ impl Network {
             if triplet_active {
                 self.pre_trace2[src] += 1.0;
                 self.post_trace2[src] += 1.0;
+            }
+
+            // iter-67 BTSP plateau detector + one-shot potentiation.
+            // Treats the firing `src` as a post-cell. Off path:
+            // single boolean check, zero work.
+            if btsp_active && self.btsp_post_mask[src] {
+                self.btsp_post_burst_trace[src] += 1.0;
+                let bp = btsp_params.expect("btsp_active checked above");
+                let was_armed = self.btsp_post_armed_until[src] > t;
+                if self.btsp_post_burst_trace[src] >= bp.plateau_threshold_spikes {
+                    // (Re-)arm or extend the disarm timer on every
+                    // post-spike while above threshold. The one-shot
+                    // potentiation only fires on the disarmed → armed
+                    // transition; subsequent post-spikes during the
+                    // armed window only refresh the disarm time.
+                    self.btsp_post_armed_until[src] = t + bp.post_plateau_decay_ms;
+                    if !was_armed {
+                        self.btsp_plateau_events = self.btsp_plateau_events.wrapping_add(1);
+                        if bp.target_gated {
+                            // Per-post-cell credit assignment: scan
+                            // only this cell's incoming.
+                            let n_in = self.incoming[src].len();
+                            for i in 0..n_in {
+                                let eid = self.incoming[src][i] as usize;
+                                let tag = self.btsp_synapse_tag[eid];
+                                if tag <= 0.0 {
+                                    continue;
+                                }
+                                let dw = bp.potentiation_strength * tag;
+                                if dw == 0.0 {
+                                    continue;
+                                }
+                                let w = self.synapses[eid].weight;
+                                let new_w = (w + dw).clamp(bp.w_min, bp.w_max);
+                                self.synapses[eid].weight = new_w;
+                                self.btsp_synapse_tag[eid] = 0.0;
+                                self.btsp_potentiation_events =
+                                    self.btsp_potentiation_events.wrapping_add(1);
+                            }
+                        } else {
+                            // Ablation: any-cell-plateau → network-wide
+                            // potentiation. O(N_synapses) per event;
+                            // only used as a control to verify that
+                            // per-post locality is what makes the rule
+                            // work.
+                            for eid in 0..self.synapses.len() {
+                                let tag = self.btsp_synapse_tag[eid];
+                                if tag <= 0.0 {
+                                    continue;
+                                }
+                                let dw = bp.potentiation_strength * tag;
+                                if dw == 0.0 {
+                                    continue;
+                                }
+                                let w = self.synapses[eid].weight;
+                                let new_w = (w + dw).clamp(bp.w_min, bp.w_max);
+                                self.synapses[eid].weight = new_w;
+                                self.btsp_synapse_tag[eid] = 0.0;
+                                self.btsp_potentiation_events =
+                                    self.btsp_potentiation_events.wrapping_add(1);
+                            }
+                        }
+                    }
+                }
             }
         }
 

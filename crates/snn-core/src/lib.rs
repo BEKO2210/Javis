@@ -51,6 +51,7 @@
 //!   All default-off; existing networks are bit-identical.
 
 pub mod brain;
+pub mod btsp;
 pub mod heterosynaptic;
 pub mod homeostasis;
 pub mod intrinsic;
@@ -68,6 +69,7 @@ pub mod structural;
 pub mod synapse;
 
 pub use brain::{Brain, BrainState, InterEdge, PendingEvent, PendingQueue};
+pub use btsp::BtspParams;
 pub use heterosynaptic::{HeterosynapticParams, NormKind};
 pub use homeostasis::HomeostasisParams;
 pub use intrinsic::IntrinsicParams;

@@ -485,6 +485,33 @@ pub struct C1Config {
     /// Off by default ⇒ iter-66 behaviour bit-identical;
     /// CLI flag `--c1-eval-aligned-rstdp`.
     pub eval_aligned_rstdp: bool,
+    /// Iter-67 BTSP plateau-eligibility rule on R2-E → C1.
+    /// When `true`, `enable_btsp` is called on R2's network with
+    /// the C1 cell index range as the participation filter
+    /// (R2-R2 R-STDP / STDP / etc stay untouched). See
+    /// `notes/67-btsp-tagged-eligibility-c1.md` for the locked
+    /// pre-registration. Off by default ⇒ iter-66.5 behaviour
+    /// bit-identical; CLI flag `--c1-btsp`.
+    pub btsp: bool,
+    /// Iter-67: per-synapse eligibility tag decay (ms). Locked
+    /// default 200 ms covers the iter-46 6-phase cue + delay +
+    /// prediction + teacher lead-in interval (~ 80 ms) with
+    /// safety margin. CLI flag `--c1-btsp-window-ms`.
+    pub btsp_window_ms: f32,
+    /// Iter-67: per-tagged-pre-spike weight increment applied at
+    /// the plateau-arm transition (`Δw = strength × tag`).
+    /// Default 0.4 — two pre-spikes during the eligibility window
+    /// saturate the synapse to `w_max = 0.8`. CLI flag
+    /// `--c1-btsp-strength`.
+    pub btsp_strength: f32,
+    /// Iter-67: per-post-cell credit-assignment toggle. Default
+    /// `true` — only the post-cell that crossed plateau receives
+    /// retroactive potentiation on its incoming synapses.
+    /// `false` (ablation) — ANY post-cell's plateau triggers
+    /// potentiation on every tagged synapse network-wide. Use
+    /// the ablation only to verify per-post-cell locality is
+    /// the binding mechanism. CLI flag `--c1-btsp-target-gated`.
+    pub btsp_target_gated: bool,
 }
 
 impl Default for C1Config {
@@ -498,6 +525,10 @@ impl Default for C1Config {
             teacher_strength: 1.0,
             diagnostic: false,
             eval_aligned_rstdp: false,
+            btsp: false,
+            btsp_window_ms: 200.0,
+            btsp_strength: 0.4,
+            btsp_target_gated: true,
         }
     }
 }
@@ -724,6 +755,10 @@ impl Default for TeacherForcingConfig {
                 teacher_strength: 1.0,
                 diagnostic: false,
                 eval_aligned_rstdp: false,
+                btsp: false,
+                btsp_window_ms: 200.0,
+                btsp_strength: 0.4,
+                btsp_target_gated: true,
             },
         }
     }
@@ -778,6 +813,10 @@ impl TeacherForcingConfig {
                 teacher_strength: 1.0,
                 diagnostic: false,
                 eval_aligned_rstdp: false,
+                btsp: false,
+                btsp_window_ms: 200.0,
+                btsp_strength: 0.4,
+                btsp_target_gated: true,
             },
         }
     }
@@ -5097,6 +5136,30 @@ fn run_target_overlap_one_seed(
                 .network
                 .enable_reward_learning(reward_params());
         }
+        // Iter-67 BTSP plateau-eligibility on R2-E → C1.  Restricted
+        // to the C1 cell index range via `post_filter` so R2-R2
+        // synapses (also in this network) are NOT subject to BTSP —
+        // only the new R2-E → C1 sub-pathway gets the plateau-gated
+        // retroactive potentiation rule.  R-STDP stays alive on the
+        // R2-R2 synapses (handled above by enable_reward_learning).
+        // No-op when c1.btsp = false ⇒ iter-66 / iter-66.5 numerics
+        // bit-identical.
+        if cfg.teacher.c1.enabled && cfg.teacher.c1.btsp {
+            if let Some(ref c1_e_set) = c1_e {
+                let bp = snn_core::BtspParams {
+                    eligibility_window_ms: cfg.teacher.c1.btsp_window_ms,
+                    plateau_window_ms: 30.0,
+                    plateau_threshold_spikes: 5.0,
+                    potentiation_strength: cfg.teacher.c1.btsp_strength,
+                    post_plateau_decay_ms: 50.0,
+                    w_min: 0.0,
+                    w_max: 0.8,
+                    target_gated: cfg.teacher.c1.btsp_target_gated,
+                };
+                let post_filter: Vec<usize> = c1_e_set.iter().copied().collect();
+                brain.regions[1].network.enable_btsp(bp, Some(&post_filter));
+            }
+        }
     }
 
     let pre_l2 = snapshot_weights(&brain);
@@ -5436,13 +5499,76 @@ fn run_target_overlap_one_seed(
                 } else {
                     0.0
                 };
+                // Iter-67: BTSP per-epoch counters (read off the
+                // network's persistent BTSP diagnostic accumulators)
+                // + target/non-target mean weight on R2-E → C1.  K4
+                // (synaptic memory trace) compares these two means at
+                // end-of-training; the per-epoch read also lets the
+                // diagnostic show how the binding builds over epochs.
+                // When c1.btsp = false the network counters stay at 0
+                // and the per-class mean weights are still informative
+                // on the iter-66.5 R-STDP path.
+                let btsp_pe = brain.regions[1].network.btsp_plateau_events;
+                let btsp_pot = brain.regions[1].network.btsp_potentiation_events;
+                let (r2c1_target_w, r2c1_nontarget_w) = if let Some(start) = c1_synapse_start {
+                    let mut tgt_sum: f64 = 0.0;
+                    let mut tgt_n: u64 = 0;
+                    let mut non_sum: f64 = 0.0;
+                    let mut non_n: u64 = 0;
+                    // Build a per-post-cell membership flag: true
+                    // ⇔ this C1 cell is in *any* word's canonical
+                    // C1 target SDR.  R2-E → C1 synapses then
+                    // sort into target / non-target buckets by
+                    // their post-cell.
+                    let n_neurons = brain.regions[1].network.neurons.len();
+                    let mut is_target_cell = vec![false; n_neurons];
+                    for sdr in target_c1_map.values() {
+                        for &idx in sdr {
+                            let i = idx as usize;
+                            if i < n_neurons {
+                                is_target_cell[i] = true;
+                            }
+                        }
+                    }
+                    let synapses = &brain.regions[1].network.synapses;
+                    for syn in synapses[start..].iter() {
+                        let w = syn.weight as f64;
+                        let post = syn.post;
+                        if is_target_cell.get(post).copied().unwrap_or(false) {
+                            tgt_sum += w;
+                            tgt_n += 1;
+                        } else {
+                            non_sum += w;
+                            non_n += 1;
+                        }
+                    }
+                    let tgt_mean = if tgt_n > 0 {
+                        tgt_sum / tgt_n as f64
+                    } else {
+                        0.0
+                    };
+                    let non_mean = if non_n > 0 {
+                        non_sum / non_n as f64
+                    } else {
+                        0.0
+                    };
+                    (tgt_mean, non_mean)
+                } else {
+                    (0.0, 0.0)
+                };
+                let r2c1_w_ratio = if r2c1_nontarget_w > 1e-9 {
+                    r2c1_target_w / r2c1_nontarget_w
+                } else {
+                    0.0
+                };
                 eprintln!(
                     "[iter-66 diag] seed={} epoch={epoch}/{ep_total} \
                      teacher: trials={tt} c1_active_frac={af:.3} c1_spikes_mean={sm:.2} \
                      clamp_eff={ce:.3} | eval: kwta_empty={ke}/{ep} target_in_dict={td}/{ep} \
                      spikes_mean={es:.2} top3_r2={r2:.4} top3_c1={c1:.4} mrr_c1={mrr:.4} \
                      raw_overlap={ro:.3} dict_concepts={dc} | r2c1: l2={l2:.4} nz_upd={nu} \
-                     max|Δw|={mx:.4} sum|Δw|={sd:.4}",
+                     max|Δw|={mx:.4} sum|Δw|={sd:.4} tgt_w={tw:.4} non_w={nw:.4} \
+                     w_ratio={wr:.3} | btsp: plateau_events={pe} potentiation_events={pot}",
                     cfg.seed,
                     ep_total = cfg.epochs,
                     tt = diag_train_trials,
@@ -5462,6 +5588,11 @@ fn run_target_overlap_one_seed(
                     nu = nonzero_updates,
                     mx = max_abs_delta,
                     sd = sum_abs_delta,
+                    tw = r2c1_target_w,
+                    nw = r2c1_nontarget_w,
+                    wr = r2c1_w_ratio,
+                    pe = btsp_pe,
+                    pot = btsp_pot,
                 );
             }
         }
