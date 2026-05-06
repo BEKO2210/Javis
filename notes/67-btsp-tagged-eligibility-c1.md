@@ -833,3 +833,87 @@ Recommendation: **window sweep 100 / 150 / 250 first** (it's
 the cheapest experiment and confirms whether window has any
 meaningful effect at all in the current architecture).
 Awaiting Bekos's explicit Go.
+
+---
+
+## Step 7.γ.2-sweep — verdict: window-axis fully excluded
+
+**Date:** 2026-05-06.
+**Config:** Bekos's locked exclusion test — only
+`--c1-btsp-window-ms` varied at 100 / 150 / 250 ms × 5 epochs
+each, all other parameters at the iter-67-β baseline +
+`--c1-btsp-teacher-recurrent-scale 1.0` (v3 recurrent).
+**Log:** `notes/67-step-7-iter67-gamma2-window-sweep.log`.
+
+### Sweep table (final epoch, ep 4)
+
+| Window (ms) | w_ratio | tgt_w | non_w | kwta_empty | dict | top3_c1 | spikes_mean |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+|  50 (γ.2)   | 1.203 (ep2) | 0.252 | 0.209 | 32/32 | 0 | 0 | 0.00 |
+| 100         | 1.220       | 0.255 | 0.209 | 32/32 | 0 | 0 | 0.00 |
+| 150         | 1.222       | 0.255 | 0.209 | 32/32 | 0 | 0 | 0.00 |
+| 200 (v4)    | 1.222 (ep4) | 0.255 | 0.209 | 32/32 | 0 | 0 | 0.00 |
+| 250         | 1.223       | 0.255 | 0.209 | 32/32 | 0 | 0 | 0.00 |
+
+All five windows converge to **identical asymptotes within
+0.003**: `w_ratio = 1.220 ± 0.003`, `tgt_w = 0.255`, `non_w =
+0.209`, `kwta_empty = 32/32`, `dict_concepts = 0`,
+`top3_c1 = 0`, R2-side `top3_r2 = 0.0312`.
+
+### Bekos's locked verdict tree outcome
+
+| Branch | Trigger | Match |
+| --- | --- | :---: |
+| (A) Window-Achse relevant | one window produces selectivity > v3's 1.0 AND C1 active | ✗ |
+| (B) Alle Fenster gleicher asymptotischer Bereich | ✓ all five at 1.22 ± 0.003 | **✓** |
+| (C) 250 ms breiter wird schlechter | 250 ms ≈ 200 ms | partial — tiny improvement (1.223 vs 1.222) but not decisive |
+
+**Verdict: (B) — Window-Achse vollständig ausgeschlossen.**
+γ.2's tighter-window hypothesis (Bittner 2017 biological
+windows ≈ 10–50 ms) does not transfer to this architecture's
+binding regime because the binding constraint is the R2 E/I
+ratio, not the BTSP eligibility decay.
+
+### Diagnosis (consolidated)
+
+The window axis controls only the *amplitude* of tags at
+plateau-arming time (decay constant on the per-synapse tag
+trace). With the same set of pre-synaptic R2-E cells firing
+during each trial (recurrent-attractor + cue-substrate echo),
+all windows tag the same synapses at proportionally scaled
+strengths. Plateau-arming consumes them; weight equilibrium
+is set by the R-STDP/STDP/heterosynaptic bound at `w_max =
+0.8`. Tighter window slows convergence; wider window speeds
+it. Both reach the same equilibrium at saturation density
+≈ 0.255 per synapse with `w_ratio = 1.22`.
+
+The "engram-stable cells get more weight" effect would
+require the *which-synapses-get-tagged* geometry to change,
+not just the tag-amplitude scalar. The window axis cannot
+change geometry.
+
+### Pre-registered next step (Bekos's tree → γ.1)
+
+Per Bekos's verdict tree: "B → Window-Achse ausgeschlossen →
+γ.1 E-only recurrent scaling".
+
+γ.1 implementation pre-registered in `notes/67 §"Three
+pre-registered iter-67-γ paths"`:
+- Add `Network::set_recurrent_e_scale(scale, pre_max)` that
+  scales **only the excitatory** recurrent synapse delivery
+  (kind = SynapseKind::Ampa AND src is excitatory). Inhibitory
+  recurrent stays at full strength — or independently at a
+  separate scale.
+- Wire through `C1Config.btsp_teacher_recurrent_e_scale` and
+  `btsp_teacher_recurrent_i_scale` (locked initial defaults
+  `e = 1.0, i = 0.3` per Bekos's friend's rationale: keep E
+  firing, reduce I-suppression, expose cue-engram via the
+  imbalance).
+- CLI: `--c1-btsp-teacher-recurrent-e-scale <f32>` and
+  `--c1-btsp-teacher-recurrent-i-scale <f32>`.
+
+Implementation cost: ~ 30–50 LOC in snn-core (kind-aware
+scale gating in the synaptic delivery loop) + ~ 20 LOC in
+eval. Off path bit-identical when c1.btsp = false.
+
+Awaiting Bekos's explicit Go on γ.1.
