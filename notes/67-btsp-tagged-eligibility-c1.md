@@ -739,3 +739,97 @@ biological role (Bittner 2017 used τ ≈ 10–50 ms windows).
 If it doesn't break the silence, γ.1 (E-only recurrent
 scaling) is the next-most-targeted; γ.3 is a fallback that
 abandons the BTSP-driven binding mechanism.
+
+---
+
+## Step 7.γ.2 — verdict: (B) Window 50 ms zu eng
+
+**Date:** 2026-05-06.
+**Config:** Bekos's locked γ.2 invocation (clean causality:
+only `--c1-btsp-window-ms 200 → 50` changed, plus
+`--c1-btsp-teacher-recurrent-scale 1.0` to undo iter-67-β's
+default of 0.15 = back to the original BTSP no-scaling).
+**Log:** `notes/67-step-7-iter67-gamma2-window50.log` (3
+epochs of 32, killed once asymptote was clear).
+
+### Per-epoch curve (window=50 vs window=200)
+
+```text
+ep | γ.2 (50) w_ratio | v4  (200) w_ratio | γ.2 tgt_w | v4 tgt_w
+ 0 | 1.089            | 1.186             | 0.228     | 0.248
+ 1 | 1.174            | 1.209             | 0.246     | 0.253
+ 2 | 1.203            | 1.219             | 0.252     | 0.255
+```
+
+Plateau / potentiation event counts identical between γ.2 and
+v4 (5120 / ~11k from epoch 1+). The only difference is tag
+strength magnitude — and the result is that γ.2's tags decay
+faster, so per-plateau Δw is smaller, weights converge to
+~ 0.25 (same as v4) with slightly lower w_ratio.
+
+### Bekos's locked gate outcome
+
+Per the iter-67-γ.2 ENTRY decision tree (this conversation):
+
+| Branch | Trigger | Match |
+| --- | --- | :---: |
+| (A) γ.2 positive: `top3_c1 > 0` AND `w_ratio` clearly > v3's 1.0 | both required | ✗ (top3_c1 = 0, w_ratio < v4) |
+| (B) C1 wieder silent | `kwta_empty` 32/32 | **✓** |
+| (C) C1 active but readout 0 | needs C1 firing | ✗ |
+| (D) R2 destabilized | `top3_r2 < 0.005` | ✗ (R2 stable at 0.0312) |
+
+**Verdict: (B). Window 50 ms ist zu eng.** Per Bekos's locked
+follow-up: either `window sweep 100 ms` or `γ.1` (E-only
+recurrent scaling).
+
+### Diagnosis (mechanistic)
+
+Tightening the eligibility window from 200 → 50 ms reduces
+the *amplitude* of tags at plateau-arming time without
+changing *which* synapses get tagged. The gating geometry
+(post-cell C1 plateau) is unchanged; only the tag's
+exponential-decay constant changes. Result:
+- Same R2-E pre-spike pattern → same set of synapses tagged.
+- Tags decay 4 × faster → smaller residual at plateau time.
+- Per-plateau Δw scales linearly with tag → smaller Δw.
+- Same equilibrium location (limited by w_max = 0.8) but
+  slower convergence (and lower asymptote until equilibrium).
+
+The "engram-stable cells get more weight" effect Bekos's
+prompt hypothesised would require the *tag accumulation
+itself* to be biased by recency — which is what tighter
+window does mathematically, but the tag-decay weight is
+still spread over all R2-E cells that fired in the window.
+The biasing effect vs the decay-amplitude effect is
+mathematically the same scalar; tightening doesn't separate
+them.
+
+### Pre-registered next steps (decision tree)
+
+1. **Sweep the window to 100 / 150 / 250 ms** at one seed × 5
+   epochs each. If the asymptote w_ratio stays at ~ 1.22
+   independent of window, then window is fully decoupled
+   from selectivity in this architecture (rule out
+   single-knob window-dependence). Implementation: 0 LOC,
+   only CLI sweep.
+2. **γ.1 — E-only recurrent scaling** (~ 30 LOC in snn-core):
+   add `set_recurrent_e_scale(scale, pre_max)` that scales
+   only excitatory recurrent delivery. Target: `scale_e =
+   1.0, scale_i = 0.3` keeps E-cells firing while reducing
+   I-suppression, possibly producing both gain AND
+   selectivity if the cue-engram is isolated by reduced
+   inhibition rather than reduced excitation. Cleaner E/I
+   decoupling than the iter-67-β uniform scale.
+3. **Combined γ.1 + tighter window**: pick a window value
+   from step 1 that maximises per-epoch w_ratio, combine
+   with γ.1's E-only scaling.
+4. **γ.3 — higher init R2-E → C1 weights + lower plateau
+   threshold** (0 LOC config change): bypass the BTSP
+   convergence story entirely, exposing the binding via
+   stronger pre-trained weights. Fallback if neither γ.1
+   nor windows work.
+
+Recommendation: **window sweep 100 / 150 / 250 first** (it's
+the cheapest experiment and confirms whether window has any
+meaningful effect at all in the current architecture).
+Awaiting Bekos's explicit Go.
