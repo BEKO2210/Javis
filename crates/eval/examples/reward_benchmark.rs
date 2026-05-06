@@ -21,7 +21,7 @@ use eval::{
     render_jaccard_floor_diagnosis, render_jaccard_sweep, render_reward_markdown,
     render_target_overlap_sweep, run_axis_sweep, run_determinism_smoke, run_jaccard_bench,
     run_jaccard_floor_diagnosis, run_postmortem_diagnostic, run_reward_benchmark,
-    run_target_overlap_arm, ArmMode, DgConfig, Iter49Mode, RewardConfig, SweepAxis,
+    run_target_overlap_arm, ArmMode, C1Config, DgConfig, Iter49Mode, RewardConfig, SweepAxis,
     TeacherForcingConfig,
 };
 
@@ -106,6 +106,18 @@ fn main() {
     let direct_r1r2_weight_scale: f32 = parse_arg(&args, "--direct-r1r2-weight-scale", 0.0_f32);
     let dg_drive_strength: f32 = parse_arg(&args, "--dg-drive-strength", 200.0_f32);
 
+    // Iter-66 (M1): CA1-equivalent C1 readout. `--c1-readout`
+    // enables the new layer; `--c1-teacher-strength` sets the
+    // M_target neuromodulator pulse during the teacher phase
+    // (drives the existing R-STDP rule on the new R2-E → C1
+    // synapses, see notes/66-ca1-heteroassoc-readout.md).
+    let c1_readout = flag(&args, "--c1-readout");
+    let c1_teacher_strength: f32 = parse_arg(&args, "--c1-teacher-strength", 1.0_f32);
+    let c1_size: u32 = parse_arg(&args, "--c1-size", 1000_u32);
+    let c1_sparsity_k: u32 = parse_arg(&args, "--c1-sparsity-k", 20_u32);
+    let c1_from_r2_fanout: u32 = parse_arg(&args, "--c1-from-r2-fanout", 30_u32);
+    let c1_init_w_max: f32 = parse_arg(&args, "--c1-init-w-max", 0.5_f32);
+
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
     //   wmax-cap       — symptom: iSTDP w_max 8.0 → 2.0
@@ -182,6 +194,14 @@ fn main() {
             to_r2_weight: dg_to_r2_weight,
             direct_r1r2_weight_scale,
             drive_strength: dg_drive_strength,
+        },
+        c1: C1Config {
+            enabled: c1_readout,
+            size: c1_size,
+            sparsity_k: c1_sparsity_k,
+            from_r2_fanout: c1_from_r2_fanout,
+            init_w_max: c1_init_w_max,
+            teacher_strength: c1_teacher_strength,
         },
     };
 
