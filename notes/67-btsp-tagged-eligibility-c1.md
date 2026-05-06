@@ -596,3 +596,146 @@ two fixes are individually correct but their combination at
 the locked teacher schedule does not produce both effects
 simultaneously.** iter-67-β (partial echo-state) is the
 pre-registered next step contingent on Bekos's explicit Go.
+
+---
+
+## Step 7 — iter-67-β verdict: no Goldilocks zone exists
+
+**Date:** 2026-05-06.
+**Commits:** `2d5c983` (impl), this commit (sweep verdict).
+**Logs:**
+- `notes/67-step-7-iter67-beta-v5-echo15.log` — single-seed
+  v5 at scale = 0.15 (Bekos's friend's locked default).
+- `notes/67-step-7-iter67-beta-recurrent-scale-sweep.log` —
+  sweep at scales 0.30 / 0.50 / 0.80, 5 epochs each.
+
+### Sweep table (epoch 4 of each scale)
+
+| Scale | w_ratio | tgt_w | non_w | kwta_empty | dict | top3_c1 | spikes_mean |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.0 (v4)  | 1.222 | 0.255 | 0.209 | 32/32 | 0  | 0       | 0.00 |
+| 0.15 (v5) | 1.190 | 0.272 | 0.229 | 32/32 | 0  | 0       | 0.00 |
+| 0.30      | 1.200 | 0.275 | 0.229 | 30/32 | 0  | 0       | 0.06 |
+| 0.50      | 1.205 | 0.270 | 0.224 | 32/32 | 0  | 0       | 0.00 |
+| 0.80      | 1.216 | 0.264 | 0.217 | 32/32 | 0  | 0       | 0.00 |
+| 1.00 (v3) | 0.999 | 0.785 | 0.788 |  0/32 | 64 | 0.06 noise | 6300 |
+
+### Diagnosis: sharp transition near scale = 1.0, no
+Goldilocks zone in this architecture
+
+- All scales **0.0 → 0.80** produce essentially identical
+  results: w_ratio ≈ 1.20, target / non-target weights ≈ 0.25,
+  C1 silent at recall, dict empty. The 0.30 row's `kwta_empty
+  = 30/32` is single-cue noise (likely a chance R2-E pattern
+  hitting the right C1-target cells).
+- Only **scale = 1.0 (= v3 full recurrent)** breaks C1
+  silence: `kwta_empty = 0/32`, `dict_concepts = 64`,
+  `spikes_mean ≈ 6300`. But selectivity also collapses
+  (`w_ratio = 0.999`).
+- The transition is **sharp**: somewhere between 0.80 and
+  1.00, R2 transitions from "almost no firing" to "full
+  firing", and the BTSP signal flips from "selective but
+  no gain" to "gain but no selectivity".
+
+**Mechanism (architectural).** R2 has heavy inhibition by
+design:
+- `R2_INH_FRAC = 0.30` (30 % I-cells)
+- `g_inh = 0.80` vs `g_exc = 0.20` (I-weights 4 × E-weights
+  in `build_memory_region`)
+
+At any scale below ~0.95, recurrent inhibitory current still
+overwhelms recurrent excitatory current, suppressing E-cells
+to silence regardless of cue substrate. Only when *all*
+recurrent (E + I) is at full strength does the E/I balance
+allow E-cells to fire — but at that point the recurrent
+attractor is also fully active, so BTSP tags noise + engram
+indiscriminately.
+
+**The selectivity vs gain coupling is built into R2's E/I
+ratio**, not a tunable parameter at this layer of the stack.
+The partial-echo-state knob cannot decouple them because it
+scales E and I uniformly.
+
+### Bekos's friend's predicted gate at scale = 0.15 — outcome
+
+| Gate prediction | Required | Observed | Pass? |
+| --- | --- | --- | :---: |
+| `w_ratio` after epoch 1 ≥ 1.5 | yes | 1.190 | ✗ |
+| `dict_concepts` after epoch 1 ≥ 32 | yes | 0 | ✗ |
+| `top3_c1` after epoch 5 ≥ 0.20 | yes | 0.0 | ✗ |
+| `tgt_w` after epoch 1 ≥ 0.40 | yes | 0.272 | ✗ |
+
+**All four predictions FAIL.** The friend's analysis was
+mechanistically sound (energy-integration interpretation of
+BTSP is correct) but the predicted Goldilocks zone in scale
+space doesn't materialise in this architecture.
+
+### iter-67-β formal verdict
+
+Same as iter-67 step 6: **(C) Flat zero on the readout** with
+a partial K4 (selectivity capped at w_ratio ≈ 1.22). The
+recurrent-scale sweep over 0.0–1.0 conclusively shows there
+is no scale value that produces both selectivity AND gain
+simultaneously in the locked R2 architecture.
+
+### Three pre-registered iter-67-γ paths (not yet implemented)
+
+Each addresses a different aspect of the architectural
+coupling. Picking one requires Bekos's explicit Go.
+
+#### γ.1 — E-only recurrent scaling
+
+Scale only the **excitatory** recurrent synapses during
+teacher; leave inhibitory at full strength (or lower it).
+This decouples E-firing from I-suppression. Implementation:
+extend `Network::set_recurrent_scale` with a `kind_filter`
+parameter (or add a separate `set_recurrent_e_scale`).
+~ 30 LOC.
+
+Hypothesis: at e.g. `scale_e = 1.0, scale_i = 0.3`, R2-E
+cells fire freely (gain ✓) but only the cue-engram cells
+benefit because (a) cue-substrate priming is strong on
+engram cells AND (b) the C1-clamp-induced post-spike
+provides selective gating. Risk: runaway R2-E firing
+without inhibition.
+
+#### γ.2 — Tighter BTSP eligibility window
+
+The current `eligibility_window_ms = 200` covers
+cue + delay + prediction. If we tighten to e.g. 50 ms, only
+the prediction-phase pre-spikes contribute tags — and those
+are the most cue-engram-specific (cue + delay have settled
+into the strongest pattern). Implementation: just change
+the BtspParams default. ~ 1 LOC.
+
+Hypothesis: with cue + delay + prediction giving R2-E cue-
+engram cells enough membrane potential to fire ~50 ms
+before clamp, BTSP tags will be biased toward the engram
+even with full recurrent during teacher. Risk: too few
+tags, same gain failure as v4.
+
+#### γ.3 — Higher initial R2-E → C1 weights + lower
+plateau threshold
+
+Bypass the BTSP-via-saturation route entirely: pre-train
+R2-E → C1 weights at a higher init level (e.g. `init_w_max
+= 2.0` instead of 0.5) so that even a single firing R2-E
+input drives C1 cells over threshold. Simultaneously lower
+the BTSP `plateau_threshold_spikes` from 5 to 2 so plateau
+arms on weaker C1 firing. Implementation: only knob changes.
+~ 0 LOC.
+
+Hypothesis: with stronger initial weights, eval-phase R2-E
+cue activity is already enough to fire C1 cells (gain ✓),
+and BTSP refines selectively over epochs. Risk: initial
+weights so high that selectivity never has a chance to
+emerge (uniform pre-firing).
+
+### Recommendation
+
+Run γ.2 (tighter eligibility window) first — it's a 1-LOC
+config change with the cleanest hypothesis link to BTSP's
+biological role (Bittner 2017 used τ ≈ 10–50 ms windows).
+If it doesn't break the silence, γ.1 (E-only recurrent
+scaling) is the next-most-targeted; γ.3 is a fallback that
+abandons the BTSP-driven binding mechanism.
