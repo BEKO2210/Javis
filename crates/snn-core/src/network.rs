@@ -222,27 +222,36 @@ pub struct Network {
     pub btsp_potentiation_events: u64,
 
     // ==== iter-67-β R2-recurrent partial-echo-state scale ====
-    /// Multiplier applied to outgoing-synapse delivery (NOT to
-    /// the stored weight, NOT to the membrane potential) when
-    /// both `pre` and `post` indices are strictly less than
-    /// `recurrent_scale_pre_max`. Default 1.0 (no scaling, off
-    /// path: single boolean check). The plasticity rules
-    /// (STDP / iSTDP / R-STDP / BTSP) read the un-scaled stored
-    /// weight, so the scale only attenuates the post-synaptic
-    /// current — exactly what the iter-67-β prompt asks for
-    /// ("Skalierung muss auf den Synapsen-Input angewendet
-    /// werden, nicht auf das Membranpotenzial selbst").
-    /// Used by iter-67-β to set R2-R2 recurrent connectivity to
-    /// 15 % during the teacher Phase 4 clamp window while
-    /// leaving R2-E → C1 (post >= recurrent_scale_pre_max)
-    /// unaffected.
+    /// Iter-67-γ.1 split: per-kind multipliers applied to
+    /// outgoing-synapse delivery (NOT to the stored weight, NOT
+    /// to the membrane potential) when both `pre` and `post`
+    /// indices are strictly less than `recurrent_scale_pre_max`.
+    /// `recurrent_e_scale` is used when the pre-cell is
+    /// excitatory, `recurrent_i_scale` when it is inhibitory.
+    /// Both default 1.0 (no scaling, off path: a single boolean
+    /// check).  Plasticity rules (STDP / iSTDP / R-STDP / BTSP)
+    /// read the un-scaled stored weight, so the scale only
+    /// attenuates the post-synaptic current — exactly what the
+    /// iter-67-β / γ.1 prompts ask for ("Skalierung muss auf den
+    /// Synapsen-Input angewendet werden, nicht auf das
+    /// Membranpotenzial selbst").
+    /// iter-67-β used a uniform `recurrent_scale` (E and I
+    /// scaled together) which iter-67-β's sweep proved cannot
+    /// decouple gain from selectivity — recurrent inhibition
+    /// dominates at any uniform scale ≤ 0.80.  iter-67-γ.1 splits
+    /// E and I so the operator can hold E at full strength while
+    /// reducing I, exposing the cue-engram via the imbalance.
     #[serde(skip, default = "default_one_f32")]
-    pub recurrent_scale: f32,
-    /// Index threshold for the `recurrent_scale` filter (post
+    pub recurrent_e_scale: f32,
+    #[serde(skip, default = "default_one_f32")]
+    pub recurrent_i_scale: f32,
+    /// Index threshold for the recurrent-scale filter (post
     /// indices `< this` AND pre indices `< this`).  Default
     /// `u32::MAX` → all-pairs (which combined with the default
-    /// `recurrent_scale = 1.0` yields a no-op).  iter-67-β sets
-    /// this to `r2_n_used` so only R2-R2 synapses get scaled.
+    /// E and I scales of 1.0 yields a no-op).  iter-67-γ.1 sets
+    /// this to `r2_n_used` so only R2-R2 synapses get scaled
+    /// (R2-E → C1 synapses with post >= r2_n_used are
+    /// unaffected).
     #[serde(skip, default = "default_u32_max")]
     pub recurrent_scale_pre_max: u32,
 }
@@ -303,7 +312,8 @@ impl Network {
             btsp_post_mask: Vec::new(),
             btsp_plateau_events: 0,
             btsp_potentiation_events: 0,
-            recurrent_scale: 1.0,
+            recurrent_e_scale: 1.0,
+            recurrent_i_scale: 1.0,
             recurrent_scale_pre_max: u32::MAX,
         }
     }
@@ -652,24 +662,45 @@ impl Network {
         self.btsp = None;
     }
 
-    /// Iter-67-β: set the per-network recurrent-synapse delivery
-    /// scale.  When `scale != 1.0`, every spike-driven synaptic
-    /// delivery on a synapse with both `pre` and `post` indices
-    /// `< pre_max` has its `weight` multiplied by `scale` BEFORE
-    /// being added to the post-cell's synaptic-current channel.
-    /// The stored synapse `weight` is unchanged; STDP / R-STDP /
-    /// BTSP read the un-scaled value.  Used by iter-67-β's
-    /// "partial echo-state" teacher phase: scale R2-R2 recurrent
-    /// to ~0.15 to keep only the strongest cue-engram cells
-    /// firing while cue + DG drive are also gated to 0.
+    /// Iter-67-β: uniform recurrent-synapse delivery scale.
+    /// Sets both `recurrent_e_scale` and `recurrent_i_scale` to
+    /// the same value.  When the resulting scale != 1.0, every
+    /// spike-driven synaptic delivery on a synapse with both
+    /// `pre` and `post` indices `< pre_max` has its `weight`
+    /// multiplied by the per-pre-kind scale BEFORE being added
+    /// to the post-cell's synaptic-current channel.  The stored
+    /// synapse `weight` is unchanged; STDP / R-STDP / BTSP read
+    /// the un-scaled value.  iter-67-γ.1 supersedes this with
+    /// the E/I-specific setters below; this uniform API is kept
+    /// for backward-compat with iter-67-β code paths and for
+    /// callers that don't need E/I separation.
     pub fn set_recurrent_scale(&mut self, scale: f32, pre_max: usize) {
-        self.recurrent_scale = if scale.is_finite() { scale } else { 1.0 };
+        let s = if scale.is_finite() { scale } else { 1.0 };
+        self.recurrent_e_scale = s;
+        self.recurrent_i_scale = s;
         self.recurrent_scale_pre_max = pre_max.min(u32::MAX as usize) as u32;
     }
 
-    /// Iter-67-β: reset to no scaling.  Default-state restorer.
+    /// Iter-67-γ.1: set the per-network recurrent-synapse delivery
+    /// scales SEPARATELY for excitatory and inhibitory pre-cells.
+    /// Used by the iter-67-γ.1 partial-echo-state teacher phase:
+    /// hold E recurrent at full strength (`e_scale = 1.0`) while
+    /// reducing I-suppression (`i_scale = 0.3`), exposing the
+    /// cue-engram via the resulting E/I imbalance.  Both scales
+    /// apply only to synapses where both `pre` and `post`
+    /// indices are `< pre_max` (i.e. the R2-R2 recurrent block,
+    /// not the R2-E → C1 feedforward suffix).
+    pub fn set_recurrent_e_i_scales(&mut self, e_scale: f32, i_scale: f32, pre_max: usize) {
+        self.recurrent_e_scale = if e_scale.is_finite() { e_scale } else { 1.0 };
+        self.recurrent_i_scale = if i_scale.is_finite() { i_scale } else { 1.0 };
+        self.recurrent_scale_pre_max = pre_max.min(u32::MAX as usize) as u32;
+    }
+
+    /// Iter-67-β / γ.1: reset to no scaling.  Default-state
+    /// restorer.  Both E and I scales return to 1.0.
     pub fn clear_recurrent_scale(&mut self) {
-        self.recurrent_scale = 1.0;
+        self.recurrent_e_scale = 1.0;
+        self.recurrent_i_scale = 1.0;
         self.recurrent_scale_pre_max = u32::MAX;
     }
 
@@ -999,15 +1030,21 @@ impl Network {
             //   firing (silent E) drives LTP; co-activity (E recently
             //   fired) drives LTD. Magnitudes stay non-negative.
             let n_out = self.outgoing[src].len();
-            // iter-67-β: precompute the recurrent-scale state once
-            // per spike (`src` is constant inside this loop).  Off
-            // path (`recurrent_scale = 1.0`): the inner-loop branch
-            // is `false`, no read of the post-cell index against
-            // pre_max, no multiply.  Bit-identical to pre-iter-67-β
-            // numerics when the scale is left at its default.
+            // iter-67-β / γ.1: precompute the recurrent-scale state
+            // once per spike (`src` is constant inside this loop).
+            // The per-pre-kind scale is selected by `src_kind` —
+            // iter-67-γ.1 splits E and I scaling to decouple R2's
+            // E/I balance during the BTSP teacher phase. Off path
+            // (both scales = 1.0): the inner-loop branch is `false`,
+            // no read of the post-cell index against pre_max, no
+            // multiply. Bit-identical to pre-iter-67-β numerics
+            // when both scales are at default.
+            let active_scale = match src_kind {
+                NeuronKind::Excitatory => self.recurrent_e_scale,
+                NeuronKind::Inhibitory => self.recurrent_i_scale,
+            };
             let scale_recurrent =
-                self.recurrent_scale != 1.0 && (src as u32) < self.recurrent_scale_pre_max;
-            let recurrent_scale = self.recurrent_scale;
+                active_scale != 1.0 && (src as u32) < self.recurrent_scale_pre_max;
             let recurrent_pre_max = self.recurrent_scale_pre_max;
             for i in 0..n_out {
                 let eid = self.outgoing[src][i] as usize;
@@ -1015,13 +1052,17 @@ impl Network {
                 let w = self.synapses[eid].weight;
                 let kind = self.synapses[eid].kind;
                 let channel = self.ensure_channel(kind);
-                // iter-67-β recurrent scale: only apply when the
-                // synapse is "recurrent" by the index criterion
+                // iter-67-β / γ.1 recurrent scale: only apply when
+                // the synapse is "recurrent" by the index criterion
                 // (both pre and post < pre_max).  Stored weight
                 // unchanged; STDP / R-STDP / BTSP downstream read
-                // the un-scaled `self.synapses[eid].weight`.
+                // the un-scaled `self.synapses[eid].weight`.  γ.1's
+                // per-kind scaling produces an E/I imbalance during
+                // the teacher window: `e_scale = 1.0, i_scale = 0.3`
+                // keeps E firing while reducing I-suppression, so
+                // the strongest cue-engram E-cells dominate.
                 let delivered_w = if scale_recurrent && (post as u32) < recurrent_pre_max {
-                    w * recurrent_scale
+                    w * active_scale
                 } else {
                     w
                 };

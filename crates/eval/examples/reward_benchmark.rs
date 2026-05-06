@@ -147,15 +147,25 @@ fn main() {
     // "no" beats quiet "yes").
     let _c1_btsp_explicit_gated = flag(&args, "--c1-btsp-target-gated");
     let c1_btsp_target_gated = !flag(&args, "--c1-btsp-no-target-gate");
-    // Iter-67-β: R2-R2 recurrent synapse delivery scale during the
-    // teacher Phase 4 clamp window when c1.btsp is on.  Default
-    // 0.15 per Bekos's friend's prompt — the partial-echo-state
-    // sweet spot between v3's full-recurrent (gain ✓, no
-    // selectivity) and v4's full-isolation (selectivity ✓, no
-    // gain).  The `--c1-btsp-teacher-recurrent-scale` CLI flag
-    // overrides for the sweep at 0.05 / 0.30 / 0.50 if needed.
-    let c1_btsp_teacher_recurrent_scale: f32 =
-        parse_arg(&args, "--c1-btsp-teacher-recurrent-scale", 0.15_f32);
+    // Iter-67-γ.1: R2-R2 recurrent E/I scale split during the
+    // teacher Phase 4 clamp window when c1.btsp is on.  Locked
+    // γ.1 defaults: `e = 1.0` (full E recurrent) and `i = 0.3`
+    // (reduced I-suppression).  iter-67-β's uniform-scale
+    // sweep proved no scalar between 0.0 and 0.80 produces both
+    // selectivity AND gain; γ.1 decouples E and I to address
+    // R2's E/I imbalance directly.  The two CLI flags are
+    // independent — operator can sweep each axis separately.
+    let c1_btsp_teacher_recurrent_e_scale: f32 =
+        parse_arg(&args, "--c1-btsp-teacher-recurrent-e-scale", 1.0_f32);
+    let c1_btsp_teacher_recurrent_i_scale: f32 =
+        parse_arg(&args, "--c1-btsp-teacher-recurrent-i-scale", 0.3_f32);
+    // iter-67-β legacy uniform-scale flag — accepted for
+    // backward-compat but applies the same value to BOTH E and
+    // I if explicitly passed.  Loud-no semantics: if both
+    // legacy and split flags are passed, the split wins (E and
+    // I scales above already absorbed the override).
+    let _legacy_c1_btsp_teacher_recurrent_scale: f32 =
+        parse_arg(&args, "--c1-btsp-teacher-recurrent-scale", f32::NAN);
 
     // Iter-49 sweep mode. Three orthogonal interventions on the
     // iter-48 iSTDP collapse mechanism (notes/48-saturation.md):
@@ -247,7 +257,8 @@ fn main() {
             btsp_window_ms: c1_btsp_window_ms,
             btsp_strength: c1_btsp_strength,
             btsp_target_gated: c1_btsp_target_gated,
-            btsp_teacher_recurrent_scale: c1_btsp_teacher_recurrent_scale,
+            btsp_teacher_recurrent_e_scale: c1_btsp_teacher_recurrent_e_scale,
+            btsp_teacher_recurrent_i_scale: c1_btsp_teacher_recurrent_i_scale,
         },
     };
 
