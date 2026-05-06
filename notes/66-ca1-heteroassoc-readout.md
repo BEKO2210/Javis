@@ -414,9 +414,265 @@ a **GO** to step 8 (main run, 8 seeds × 32 epochs).
    ambiguous (could help or hurt). Step-8 will report
    per-seed R2 deltas vs iter-65 to surface any drift.
 
-### Step-8 main run — green-lit
+### Step-8 main run — green-lit (provisionally; revoked at step 7.5)
 
 Per the ENTRY: "step 7 is a smoke commit; step 8 is the
 verdict commit." The step-7 smoke meets all pre-registered
 pipeline-integrity criteria. Proceeding to step-8 (8 seeds ×
 32 epochs) with the locked acceptance matrix unchanged.
+
+> **NOTE (added in step 7.5 commit):** The smoke's pipeline
+> integrity criteria pass, but a follow-up diagnostic round
+> requested by Bekos before burning the 8-seed × 32-ep main
+> run (locked acceptance gate: "C1 activity > 0 in relevant
+> phases AND R2→C1 weights change measurably AND target gate
+> triggered AND no bit-genau zero dynamics over the C1 path")
+> identified that the architecture as locked DOES NOT produce
+> a discriminative C1 readout. **Step 8 is REVOKED at the
+> step 7.5 verdict.** See "Step 7.5 — diagnostic verdict"
+> below.
+
+---
+
+## Step 7.5 — diagnostic verdict (REVOKES step-8 green-light)
+
+**Date:** 2026-05-06.
+**Commits:** `3d1ec0f` (instrumentation), `ead6e32` (C1 spike
+tracking fix in teacher phase), this commit (verdict).
+**Diagnostic logs:** `/tmp/iter66/diag-seed42-ep8-v2.log`,
+`/tmp/iter66/sweep-iwm.log`, `/tmp/iter66/sweep-fanout.log`.
+
+### Diagnostic invocation
+
+```sh
+# Locked iter-66 ENTRY config + --c1-diagnostic, baseline FO=30, IWM=0.5
+cargo run --release -p eval --example reward_benchmark -- \
+  --c1-readout --c1-diagnostic --c1-teacher-strength 1.0 \
+  --seeds 42 --epochs 8 --teacher-forcing \
+  --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval \
+  --decorrelated-init
+
+# Plus init_w_max sweep ∈ {0.5, 1.0, 2.0} × 4 epochs
+# Plus from_r2_fanout sweep ∈ {30, 100, 200, 400} × 4 epochs
+```
+
+Bekos's pre-locked discrimination targets:
+- **(A)** insufficient training: C1 active, weights change, but 8 ep too short
+- **(B)** silent C1: kWTA empty during eval ⇒ readout mechanically zero
+- **(C)** non-discriminative: C1 fires, but fingerprints don't separate cues
+
+### Wiring sanity check (✓)
+
+Pre-train R2-E → C1 stats (locked FO=30, IWM=0.5):
+
+```text
+r2_r2_synapses    = 199 492
+r2c1_synapses     = 42 000     (= 1400 R2-E × 30 fan-out ✓)
+r2c1_l2           = 59.0621    (matches uniform(0, 0.5) closed form ✓)
+r2c1_mean_w       = 0.2496     (≈ 0.25 expected ✓)
+```
+
+Wiring end-to-end correct.
+
+### Observation 1 — teacher phase works
+
+Across 3 epochs at locked config:
+
+```text
+teacher: trials=256 c1_active_frac=1.000 c1_spikes_mean=572→362
+         clamp_eff=1.000
+```
+
+Every trial fires every canonical-target C1 cell (clamp_eff = 1.0,
+i.e. 20/20 target cells fired under the 500 nA clamp). C1 activity
+during teacher = 100%. **R-STDP gating is correctly triggered**
+(c1_active_frac = 1.000 ≡ M_target = +1 fires on every trial).
+
+### Observation 2 — R2→C1 plasticity is alive
+
+```text
+r2c1: l2=59.06 → 43.65 → 44.69 → 43.92  (oscillating equilibrium)
+      nz_upd=42 000     (every synapse changed)
+      max|Δw|=0.7995    (single-synapse swing of nearly the full
+                         w_max range; some weight went 0 ↔ 0.8)
+      sum|Δw|=10 424    (≈ N×0.25; total magnitude of weight
+                         movement matches the init range)
+```
+
+Weights are NOT bit-frozen. R-STDP + STDP + homeostasis operate on
+every R2-E → C1 synapse every epoch.
+
+### Observation 3 — eval phase: C1 is silent
+
+```text
+eval: kwta_empty=32/32 target_in_dict=0/32 spikes_mean=0.00
+      top3_c1=0.0000 mrr_c1=0.0000 raw_overlap=0.000
+      dict_concepts=0
+```
+
+**C1 cells fire ZERO spikes during cue-only eval at the locked
+config**, across all 32 vocab cues. The dictionary builder fails
+to learn any concept (kWTA returns empty for every word), so the
+decoder has nothing to match against — top3_c1 = 0.000 is
+mechanically forced.
+
+### init_w_max sweep — IWM axis is dead
+
+| init_w_max | r2c1_l2 (post-ep0) | kwta_empty (eval) | top3_c1 |
+| ---: | ---: | ---: | ---: |
+| 0.5 (locked) | 43.65 | 32/32 | 0.0000 |
+| 1.0 | 44.22 | 32/32 | 0.0000 |
+| 2.0 | 44.52 | 32/32 | 0.0000 |
+
+Post-epoch L2 converges to ≈ 44 *regardless of init*. Mechanism:
+`homeostasis()` has `a_target=2.0, scale_only_down=true` —
+heavy teacher-phase firing of canonical C1 target cells triggers
+homeostatic down-scaling on their incoming R2-E synapses, AND
+intrinsic plasticity (`alpha_spike=0.05, offset_max=5.0`) raises
+those cells' thresholds. The network drives weights to a fixed
+equilibrium that the IWM sweep cannot break.
+
+**Verdict on IWM axis:** init_w_max alone cannot fix C1 silence.
+Architectural constraint, not parameter-tuning.
+
+### from_r2_fanout sweep — structural axis surfaces life
+
+| FO | r2c1 syn | kwta_empty/32 (final) | spikes_mean | dict_concepts | raw_overlap | top3_c1 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 30 (locked) | 42 000 | 32 | 0.00 | 0 | 0.000 | 0.000 |
+| 100 | 140 000 | 31 | 0.06 | 1 | 0.000 | 0.000 |
+| 200 | 280 000 | 31 | 0.22 | 1 | 0.005 | 0.000 |
+| 400 | 560 000 | 28–29 | 0.34–0.78 | 3–4 | 0.000–0.003 | 0.000 |
+
+Fan-out crosses the silence threshold somewhere between FO=30 and
+FO=100 — at FO=400, ~4 of 32 cues produce nonzero C1 firing during
+eval. **Structural axis confirmed as the right knob.**
+
+But — even at FO=400 with C1 firing on multiple cues:
+
+```text
+target_in_dict = 0/32  raw_overlap = 0.000–0.003  top3_c1 = 0.000
+```
+
+**The C1 cells that DO fire during eval fire the WRONG pattern.**
+The canonical-target C1 SDR (the supervised goal pattern) is never
+overlapped (raw_overlap ≈ 0); the target word never enters the
+decoded ranking (target_in_dict = 0). top3_c1 stays bit-frozen at
+0.000 across all 4 epochs.
+
+### Diagnosis: (B) ∧ (C) — both branches simultaneously fail
+
+At locked config (FO=30): **(B) silent C1.**
+At FO=100–400: silent partially breaks, but **(C) non-discriminative
+fingerprints** takes over — C1 fires, but on patterns uncorrelated
+with the canonical target.
+
+**Root-cause walk-through.** During teacher Phase 4:
+
+- Canonical R2 target SDR (~30 cells) is clamped via 500 nA →
+  fires heavily.
+- Canonical C1 target SDR (~20 cells) is clamped via 500 nA →
+  fires heavily.
+- M_target = +1 is set for the teacher window.
+- R-STDP eligibility tag accumulates only on synapses whose pre
+  AND post both fire → **only the ~30×20×(30/1000) ≈ 18 R2-target
+  → C1-target synapses per trial get LTP**. The other 41 982
+  synapses get pre-only or post-only events (no eligibility ⇒ no
+  R-STDP update; STDP-LTD via post-trace if post fires before
+  pre, but post-trace is small for non-target cells that don't
+  fire ⇒ ≈ no STDP either).
+- Homeostasis sees the 20 C1 target cells firing at saturation
+  → scales their incoming weights DOWN to keep activity at
+  `a_target=2.0`. This *opposes* the R-STDP-driven LTP on the
+  18 active synapses.
+
+Net result on weight matrix: a small positive R-STDP-driven LTP
+on R2-target → C1-target synapses, *cancelled* by homeostatic
+down-scaling on those same synapses. The R2-target → C1-target
+pathway is NOT meaningfully strengthened.
+
+During eval (cue-only, no clamps):
+
+- R2's natural cue-driven response is whatever R2's recurrent
+  attractor produces — and iter-65 already showed this is
+  **basically chance** vs the canonical target SDR
+  (top3_r2 = 0.0312 ≈ 1/32 ≈ chance for vocab=32 at-best, here
+  vocab=64 with corpus-vocab=64 means ≈ 2-3% top-3 hits per cue).
+- Even the small R-STDP-strengthened R2-target → C1-target
+  pathway never *fires* during eval, because R2 doesn't produce
+  the canonical target SDR.
+- C1 fires (when fan-out is large enough) on whatever R2 actually
+  produces, which has no learned mapping to canonical C1 target.
+  Hence raw_overlap ≈ 0 and top3_c1 ≈ 0.
+
+**The architectural mismatch:** the iter-66 ENTRY trains R-STDP on
+(canonical R2 target) → (canonical C1 target) under double-clamp,
+but the canonical R2 target SDR doesn't emerge from R2 during
+eval. So the readout learning signal lives at a pattern that
+never gets re-activated by the cue-only eval phase.
+
+### Bekos's step-7.5 acceptance gate (locked) — outcome
+
+| Gate | Required | Observed | Pass? |
+| --- | --- | --- | :---: |
+| C1 activity > 0 in relevant phases | yes (teacher AND eval) | teacher: ✓ (100%); eval: ✗ at locked FO, partial at FO≥100 | ✗ |
+| R2→C1 weights change measurably | yes | nz_upd=42 000 every epoch | ✓ |
+| target gate triggered | yes | c1_active_frac=1.000, M_target=+1 fires | ✓ |
+| no bit-genau zero dynamics over C1 path | yes | top3_c1=0.0000 across 4 ep at FO=400 (no rising curve) | ✗ |
+
+**Bekos's "Wenn C1 aktiv + Gewichte ändern sich, aber
+c1_target_top3_overlap bleibt 0" branch:** "Full Run nur dann
+starten, wenn 32-epoch single-seed eine steigende Kurve zeigt."
+Across 4 epochs at FO=400 the curve is *flat at 0*, no upward
+trajectory. **Step 8 (8-seed × 32-ep main run) is NOT green-lit.**
+
+### Recommendation — what to fix before iter-66 verdict run
+
+The diagnostic localised the failure to a clean architectural
+constraint: R-STDP under simultaneous double-clamp + active
+homeostasis cannot produce a learning signal that survives the
+cue-only eval phase. Three minimal-scope fixes for an
+iter-66.5 follow-up:
+
+1. **Bias R-STDP toward eval-phase R2 patterns.** Instead of
+   double-clamp during teacher, drive R2 with the cue *only*
+   (no R2-target clamp), let R2's natural response emerge,
+   then apply a delayed C1 clamp + M_target pulse. R-STDP
+   learns (R2 cue-driven pattern) → (canonical C1 target) —
+   exactly the mapping needed at eval. Does NOT add new
+   plasticity rules; just reorders the teacher schedule.
+   Implementation: invert Phase 4's R2-clamp; gate C1-clamp
+   on a 10–20 ms delay vs cue onset.
+2. **Disable homeostasis on R2's `Network` for iter-66 runs.**
+   `homeostasis().scale_only_down = true` + the
+   `a_target = 2.0` Hz target are tuned for R2's recurrent
+   attractor; they actively cancel R-STDP signal on
+   feedforward R2-E → C1 synapses. The iter-46 stack assumed
+   one shared region; iter-66's logical sub-region split
+   needs per-pathway control. Workaround without snn-core
+   changes: omit `enable_homeostasis(homeostasis())` in
+   `run_target_overlap_one_seed` when c1.enabled. Does NOT
+   add new plasticity rules; just disables an existing one.
+3. **Switch to BTSP one-shot rule (Mechanism M5 from
+   notes/66-deep-research-cue-target-binding.md).** A single
+   supervised trial creates a stable R-STDP-equivalent
+   eligibility window without iterative competition with
+   homeostasis. Adds new plasticity rule to snn-core; biggest
+   scope of the three but the literature-recommended
+   alternative if (1)/(2) don't hold up.
+
+(1) is cheapest and most likely to work; (2) is a one-line code
+change orthogonal to (1); (3) is the iter-67 fallback if (1)+(2)
+don't break the C1 silence.
+
+### Iter-66 status: PAUSED at step 7.5
+
+The implementation (steps 1–7) is correct and committed.
+The architecture as locked in the ENTRY does not produce a
+learning signal at C1. **Step 8 (8-seed × 32-ep main run) is
+NOT executed.** Branch `claude/iter66-ca1-heteroassoc-readout`
+holds the diagnostic verdict; iter-66.5 (or iter-67) will be
+pre-registered separately to address fix (1) and/or (2) above.
+The locked acceptance matrix and seed set carry over verbatim
+to that follow-up.
