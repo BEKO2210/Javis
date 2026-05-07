@@ -83,9 +83,40 @@ COLLAPSE_MAX_RUN = 2
 def _parse_log(path: str) -> tuple[Optional[int], List[dict]]:
     """Parse the diagnostic log.  Returns (declared_total_epochs,
     list-of-per-epoch-dicts).  Empty list when no diagnostic lines
-    found."""
+    found.
+
+    Auto-detects and decodes PowerShell-style UTF-16 LE logs with
+    line-wrap + native-command-error noise.  No-op on clean
+    UTF-8 logs."""
     rows: List[dict] = []
     total: Optional[int] = None
+
+    raw = open(path, "rb").read()
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        # PowerShell-redirected log; clean in-memory before parsing.
+        from pathlib import Path
+        # Lazy-import the cleaner so the eval script stays
+        # standalone-runnable even if `clean_powershell_log` is
+        # missing for some reason.
+        try:
+            from clean_powershell_log import clean as _clean_ps
+        except ImportError:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "clean_powershell_log",
+                str(Path(__file__).parent / "clean_powershell_log.py"),
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _clean_ps = mod.clean
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".log", delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+        _clean_ps(Path(path), tmp_path)
+        path = str(tmp_path)
+
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             m = _DIAG_RE.search(line)
