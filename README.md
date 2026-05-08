@@ -21,7 +21,7 @@ your LLM, returning a few decoded concepts instead of full document chunks.
 [![Observability](https://img.shields.io/badge/observability-tracing%20%C2%B7%20Prometheus-7aa2ff)](#production-readiness)
 [![Container](https://img.shields.io/badge/container-Docker%20%2B%20Compose-2496ed?logo=docker&logoColor=white)](#run-with-docker)
 [![Bio inspired](https://img.shields.io/badge/bio--inspired-LIF%20%C2%B7%20STDP%20%C2%B7%20iSTDP%20%C2%B7%20BTSP-62d6ff)](#plasticity)
-[![Iter 66](https://img.shields.io/badge/iter--66-CA3%2FCA1%20split%20%C2%B7%20literature%20pivot-ff66c4)](#iterations)
+[![Iter 67](https://img.shields.io/badge/iter--67-BTSP%20%C2%B7%20%CE%B3.4%20pre--registered-ff66c4)](#iterations)
 
 > **⚠ Research-only license.** Javis is licensed under
 > [PolyForm Noncommercial 1.0.0](LICENSE). It is **not** for production
@@ -551,23 +551,24 @@ Every iteration is logged in [`notes/`](notes). Each note is a single
 hypothesis, a pre-fixed acceptance criterion, and the measurement that
 either confirms or falsifies it. The chain is the public artefact.
 
-> **Latest snapshot (iter-65 falsified · iter-66 pivot to CA3/CA1).**
-> The iter-64 axis-C value=0.3 perforant-path α was a sample-frequency
-> artefact: iter-65 8-seed robustness check produced `Δ̄=+0.0068`,
-> `t(7)=+0.779`, **`n_pos=4/8` (chance level)** → Branch (C) Reject per
-> the locked acceptance matrix. **The current Javis architecture does not
-> produce robust cue → target binding.** A 28-source deep-research scan
-> (`notes/66`) — Marr (1971), Treves & Rolls (1994), O'Reilly &
-> McClelland (1994), Norman & O'Reilly (2003), Schapiro et al. (2017),
-> Cassenaer & Laurent (2007/2012), Bellec et al. (2020), Bittner et al.
-> (2017), and others — converges on one recommendation:
-> **iter-66 = CA3/CA1 split**. Add a new CA1-equivalent C1 layer with
-> target-presence-gated three-factor R-STDP on R2 → C1, primary metric
-> `c1_target_top3_overlap` (decoder reads C1, not R2). Reasoning:
-> Marr's original hippocampal model has *two* learned matrices (EC→CA3,
-> CA3→CA1); Javis has only the CA3 analogue. The literature explicitly
-> rules out one-structure-does-binding via STDP on a recurrent attractor.
-> → [notes/66](notes/66-deep-research-cue-target-binding.md), [notes/65](notes/65-perforant-path-robustness.md), [notes/64](notes/64-mechanism-diagnosis.md), [notes/63](notes/63-cue-target-metric.md)
+> **Latest snapshot (iter-67-γ.1.1 Gate-B Class C · γ.4 pre-registered).**
+> The iter-66 CA3/CA1 split + iter-66.5 eval-aligned R-STDP did not produce
+> a robust C1-target signal on its own; iter-67 introduced **BTSP
+> (Behavioral-Timescale Synaptic Plasticity, Bittner 2017 / Magee &
+> Grienberger 2020)** as the binding rule on R2-E → C1. Locked
+> configuration γ.1.1 (`reports/gate_a_gamma_1_1_config.md`) cleared
+> Gate-A (3/4 seeds PASS at last-8 mean ≥ 0.05). The full Gate-B 8-seed
+> run (`reports/gate_b_gamma_1_1_8seed_summary.md`) lands at **5/8 PASS,
+> mean(last-8) = 0.0693 ± 0.0375 — Class (C) Partial** per the locked
+> acceptance matrix. Diagnostic: training-side metrics bit-identical
+> across all 8 seeds; failures are eval-phase fingerprint discrimination,
+> with all 3 FAIL seeds showing DEGRADING-or-flat per-cue trajectories.
+> γ.1.1 binds via fingerprint geometry (`w_ratio ≈ 1.000` universally),
+> not via weight magnitude. The (C) branch's locked fallback,
+> **iter-67-γ.4 (per-post target-gating with non-target depression)**,
+> is now implemented + pre-registered (`reports/gate_b_gamma_4_entry.md`)
+> awaiting the 8-seed compute on the same locked seed set {0..7}.
+> → [reports/gate_b_gamma_1_1_8seed_summary.md](reports/gate_b_gamma_1_1_8seed_summary.md), [reports/gate_b_gamma_4_entry.md](reports/gate_b_gamma_4_entry.md), [notes/67](notes/67-btsp-tagged-eligibility-c1.md), [notes/66.5](notes/66.5-eval-aligned-c1-rstdp.md), [notes/66](notes/66-ca1-heteroassoc-readout.md)
 
 ### Phase 0 — Bio foundations · iter 00–19
 
@@ -667,30 +668,43 @@ diagnosis · ❌ fail · 🚀 architectural pivot.
 | 64 | Mechanism diagnosis (3 axes complete). **Axis C `value=0.3` (perforant + DG): α at 4 seeds** (smoke `Δ̄=+0.019`, full `Δ̄=+0.016`, n_pos=3/4 both phases). Axis A + Axis B both narrow-window: every non-default value is sub-floor or locked-state (`Δ = 0 bit-for-bit` on most seed-value points); the iter-46 defaults are highly tuned | ⚠ Mechanism candidate (axis C) for iter-65 | [→](notes/64-mechanism-diagnosis.md) |
 | 65 | Perforant path robustness check. Axis C value=0.3 at 8 seeds × 32 ep: `Δ̄ = +0.0068`, `t(7) = +0.779`, **`n_pos = 4/8` (chance level)** → **Branch (C) Reject**. The 4-seed α was a sample-frequency artefact of a true ~50 % success-rate distribution. Original 4 seeds reproduced bit-identical to iter-64; new seeds 1, 3, 4 split mostly-negative; seed=99 deterministic outlier persists | ❌ 4-seed α was sample artefact | [→](notes/65-perforant-path-robustness.md) |
 | 66 | **Deep-research literature pivot.** 28 peer-reviewed sources (Marr, Treves & Rolls, O'Reilly & McClelland, Norman & O'Reilly, Schapiro, Cassenaer & Laurent, Bellec, Izhikevich, Frémaux & Gerstner, Bittner, Magee & Grienberger, Krotov & Hopfield, Ramsauer, Willshaw, Kanerva, …) converge on: current architecture lacks a CA1-equivalent heteroassociative readout. **Recommendation: CA3/CA1 split (Mechanism M1)** — new C1 layer with target-presence-gated three-factor R-STDP on R2 → C1, primary metric `c1_target_top3_overlap` | 🚀 Architecture pivot recommended | [→](notes/66-deep-research-cue-target-binding.md) |
+| 66.5 | **iter-66 readout pivot.** Eval-aligned R-STDP on R2-E → C1: drop the canonical R2 target SDR from the teacher Phase 4 clamp so R-STDP trains on the natural cue-driven R2 pattern instead of the canonical pattern (Path-1 fix). Improves cue→target binding in single-seed smoke but multi-seed `c1_target_top3_overlap` still flat at 0 | ❌ R-STDP alone insufficient — pivot to BTSP | [→](notes/66.5-eval-aligned-c1-rstdp.md) |
+| 67 | **BTSP (Bittner 2017 / Magee & Grienberger 2020) on R2-E → C1.** Plateau-eligibility kernel: per-synapse tag accumulates on every pre-spike with 200 ms decay; per-post-cell `burst_trace` arms plateau at ≥ 5 spikes / 30 ms; on disarm→arm transition, all incoming tagged synapses receive `Δw = +strength × tag` one-shot. iter-67-γ.1 / γ.1.1 sweeps locked an E/I-split partial-echo-state config (E=1.0, I=0.3, R2-isolation OFF). γ.1.1 cleared **Gate-A (3/4 seeds PASS)**; Gate-B 8-seed run **5/8 PASS, mean(last-8) = 0.069 ± 0.038 → Class (C) Partial** per locked acceptance matrix. γ.4 fallback (per-post target-gating + non-target depression) implemented and pre-registered, awaiting compute | ⚠ Class C — γ.4 next | [→](notes/67-btsp-tagged-eligibility-c1.md) · [Gate-A](reports/gate_a_gamma_1_1_4seed_summary.md) · [Gate-B](reports/gate_b_gamma_1_1_8seed_summary.md) · [γ.4 ENTRY](reports/gate_b_gamma_4_entry.md) |
 
 **Where we are.** iter-63 closed the Jaccard chain by re-introducing
-the iter-44/45 decoder-relative `top3_accuracy` on the DG-enabled brain,
-calibrating threshold against the untrained baseline (μ_untrained =
-0.0195 ± 0.0213, threshold = 0.0621), and running the trained main
-run at 4 seeds × 32 epochs. Verdict: Branch (B) FAIL. Plasticity
-*does not write* a cue → target signal that the decoder can read
-on the iter-63 configuration. iter-60 (separation) and iter-62
-(recall stability) demonstrably work — what is missing is a measurable
-signal that the *post-DG path maps cue → target*, not just *separates
-cues*.
+the iter-44/45 decoder-relative `top3_accuracy` on the DG-enabled brain.
+iter-64/65 mechanism-diagnosis axes failed at 8 seeds — Branch (C)
+Reject for the perforant-path α. iter-66 deep-research scan
+recommended a CA3/CA1 split (Mechanism M1), and iter-66/66.5
+implemented the C1 readout with target-presence-gated R-STDP. Multi-
+seed `c1_target_top3_overlap` was still flat at 0 — R-STDP alone is
+insufficient on the binding pathway.
 
-**iter-64** runs three isolated mechanism-diagnosis axes —
-`dg_to_r2_weight` (DG dominance), `r2_p_connect` (recurrent attractor
-strength), `direct_r1r2_weight_scale` (perforant path re-introduction)
-— each with a per-value α/β/γ/δ classification against the iter-63
-noise band. **Axis C (perforant path) smoke surfaced an α at
-`value=0.3`**: three seeds show meaningful positive Δ (seed=42 = +0.043,
-seed=7 = +0.037, seed=13 = +0.023), with seed=99 the lone outlier.
-The biological reading: a *moderate* perforant path provides a stable
-"raw cue" handle that R2 plasticity can shape into a target-aligned
-engram while DG (mossy fibres) maintains separation. The full-phase
-(32 ep) confirmation run on `value=0.3` is currently in flight; if α
-persists, iter-65 deepens at 8 seeds × 32 ep on this point.
+**iter-67** introduces **BTSP (Bittner 2017 / Magee & Grienberger 2020)**
+as the plateau-gated retroactive-potentiation rule on R2-E → C1, with
+a 200 ms eligibility window that bridges the iter-46 cue → delay →
+prediction → teacher window pair-STDP cannot reach. Locked
+configuration γ.1.1 cleared **Gate-A (3/4 seeds PASS)** —
+the first iter-66+ configuration with a multi-seed-confirmed
+non-zero C1 readout signal. **Gate-B 8-seed run (`reports/
+gate_b_gamma_1_1_8seed_summary.md`)** lands at **5/8 PASS, mean(last-8)
+= 0.0693 ± 0.0375, t(7) vs 0 = 5.23 — Class (C) Partial**.
+Per-seed diagnostic: all 3 FAIL seeds show DEGRADING-or-flat
+trajectories; all 5 PASS seeds show improving trajectories;
+training-side metrics are bit-identical across all 8 seeds.
+γ.1.1 binds via fingerprint geometry (`w_ratio ≈ 1.000` universally),
+not via per-class weight magnitude.
+
+The (C) branch's locked fallback **iter-67-γ.4 — per-post target-gating
+with non-target depression** is now implemented in `crates/snn-core/
+src/btsp.rs` (`BtspParams::non_target_depression_strength`) +
+pre-registered in `reports/gate_b_gamma_4_entry.md` with the same
+locked seed set {0..7}, the same Gate-B acceptance matrix, and four
+explicit hypotheses (H1 lift FAIL seeds, H2 preserve PASS seeds, H3
+weight separation `w_ratio > 1.05`, H4 trajectory pattern eliminated).
+γ.1.1 numerics are bit-identical when `--c1-btsp-non-target-depression-
+strength = 0.0` (verified: 6/6 BTSP tests + 11/11 eval tests PASS
+unchanged).
 
 ---
 

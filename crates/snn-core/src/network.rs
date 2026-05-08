@@ -221,12 +221,12 @@ pub struct Network {
     #[serde(skip, default)]
     pub btsp_potentiation_events: u64,
     /// Iter-67-γ.4: per-post-cell "is target" mask consulted at
-    /// plateau-arm time when `BtspParams::non_target_depression_strength
-    /// > 0`. Empty by default ⇒ γ.1.1 path (every plateau-arm
-    /// potentiates). When populated by the host code (size =
-    /// `neurons.len()`), `true` ⇒ this cell is a teacher target
-    /// for the current step (apply LTP), `false` ⇒ this cell is a
-    /// non-target (apply LTD scaled by
+    /// plateau-arm time when `BtspParams::non_target_depression_strength`
+    /// is greater than 0. Empty by default ⇒ γ.1.1 path (every
+    /// plateau-arm potentiates). When populated by the host code
+    /// (size = `neurons.len()`), `true` ⇒ this cell is a teacher
+    /// target for the current step (apply LTP), `false` ⇒ this
+    /// cell is a non-target (apply LTD scaled by
     /// `non_target_depression_strength`). The host is responsible
     /// for setting this mask immediately before each teacher
     /// Phase 4 drive and clearing it after.

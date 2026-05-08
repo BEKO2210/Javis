@@ -2477,14 +2477,11 @@ fn run_teacher_trial(
     // (non-target post). When the strength is 0 (γ.1.1 default),
     // skip the call ⇒ the target_post mask stays empty ⇒ plateau-arm
     // hot loop is bit-identical to γ.1.1.
-    let gamma4_active = c1_active
-        && cfg.c1.btsp
-        && cfg.c1.btsp_non_target_depression_strength > 0.0;
+    let gamma4_active =
+        c1_active && cfg.c1.btsp && cfg.c1.btsp_non_target_depression_strength > 0.0;
     if gamma4_active {
-        let target_indices: Vec<usize> =
-            c1_target_sdr.iter().map(|&i| i as usize).collect();
-        brain
-            .regions[1]
+        let target_indices: Vec<usize> = c1_target_sdr.iter().map(|&i| i as usize).collect();
+        brain.regions[1]
             .network
             .set_btsp_target_post(&target_indices);
     }
@@ -5340,8 +5337,10 @@ fn run_target_overlap_one_seed(
                     w_min: 0.0,
                     w_max: 0.8,
                     target_gated: cfg.teacher.c1.btsp_target_gated,
-                    non_target_depression_strength:
-                        cfg.teacher.c1.btsp_non_target_depression_strength,
+                    non_target_depression_strength: cfg
+                        .teacher
+                        .c1
+                        .btsp_non_target_depression_strength,
                 };
                 let post_filter: Vec<usize> = c1_e_set.iter().copied().collect();
                 brain.regions[1].network.enable_btsp(bp, Some(&post_filter));

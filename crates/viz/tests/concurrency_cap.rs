@@ -79,15 +79,27 @@ async fn released_permit_unblocks_next_session() {
 
     // Wait for the train to finish, releasing the permit.
     train_handle.await.unwrap();
-    // Brief settle for the permit Drop to land.
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Third: must be accepted now.
-    let resp = ws_upgrade_request(addr).await;
+    // Third: must be accepted once the permit Drop lands. The Drop
+    // is asynchronous w.r.t. our WebSocket-close await, so retry up
+    // to ~5 s on a slow CI runner instead of relying on a fixed
+    // sleep — the previous 50 ms settle was flaky on GitHub Actions.
+    let third_status = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let r = ws_upgrade_request(addr).await;
+            if r.status == 101 {
+                break 101;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break r.status;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
     assert_eq!(
-        resp.status, 101,
-        "expected 101 (Switching Protocols) after permit release, got {}",
-        resp.status,
+        third_status, 101,
+        "expected 101 (Switching Protocols) after permit release within 5 s, last status {third_status}",
     );
 
     // The metric should have at least one rejection recorded.
