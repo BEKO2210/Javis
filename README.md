@@ -13,7 +13,7 @@ your LLM, returning a few decoded concepts instead of full document chunks.
 [![Rust edition 2021](https://img.shields.io/badge/rust-edition%202021-CE422B?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: PolyForm Noncommercial 1.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0-d62828)](#license)
 [![CI](https://img.shields.io/github/actions/workflow/status/BEKO2210/Javis/ci.yml?branch=main&label=ci&logo=github)](.github/workflows/ci.yml)
-[![Tests 130/130](https://img.shields.io/badge/tests-130%2F130%20passing-3fb950)](#tests)
+[![Tests 150/150](https://img.shields.io/badge/tests-150%2F150%20passing-3fb950)](#tests)
 [![Clippy clean](https://img.shields.io/badge/clippy-0%20warnings-3fb950)](#tests)
 [![MSRV 1.86](https://img.shields.io/badge/MSRV-1.86-CE422B?logo=rust&logoColor=white)](#tests)
 [![Self-recall 100%25](https://img.shields.io/badge/self--recall-100%25-3fb950)](#performance-profile)
@@ -534,14 +534,13 @@ cargo test --release
 
 | Suite | Tests | Validates |
 | --- | ---: | --- |
-| `snn-core` | 54 | LIF dynamics, STDP & iSTDP, homeostasis, BTSP soft bounds, E/I balance, multi-region routing, snapshot serde, assembly formation, bounds-checked APIs, heap pending queue, AMPA/NMDA/GABA channels, read-only step equivalence |
-| `snn-core` iter-44 | 15 | triplet STDP, reward-modulated STDP / eligibility, BCM metaplasticity, intrinsic plasticity, heterosynaptic L2, structural sprout/prune, offline replay/consolidation, full-stack composite, passive-network regression guard |
-| `encoders` | 24 | SDR union/overlap, hash determinism, top-k decode, threshold-floor decode (iter 44.1), injection, full pattern completion |
-| `eval` | 13 | RAG-vs-Javis token efficiency, Wikipedia scaling, intra-topic recall, contextual mode, scale-bench smoke |
+| `snn-core` | 74 | LIF dynamics, pair / triplet STDP & iSTDP, homeostasis, BCM metaplasticity, intrinsic plasticity, heterosynaptic L2, structural sprout/prune, offline replay/consolidation, reward-modulated STDP / eligibility, BTSP soft bounds, **BTSP plateau-eligibility (iter-67: tag accumulation, plateau-arm threshold, one-shot potentiation, disarm-after-silence, weight clamp, off-path bit-identity)**, E/I balance, multi-region routing, snapshot serde, assembly formation, bounds-checked APIs, heap pending queue, AMPA/NMDA/GABA channels, read-only step equivalence |
+| `encoders` | 26 | SDR union/overlap, hash determinism, top-k decode, threshold-floor decode (iter 44.1), injection, full pattern completion |
+| `eval` | 28 | RAG-vs-Javis token efficiency, Wikipedia scaling, intra-topic recall, contextual mode, scale-bench smoke, iter-65 / iter-66 / iter-66.5 reward-bench snapshots, axis-sweep harness, postmortem diagnostics |
 | `llm` | 3 | Anthropic adapter mock contract, token heuristic |
-| `viz` | 16 | WebSocket smoke, train+recall, ask both, snapshot round-trip, `/health` + `/ready`, `/metrics`, concurrency cap, snapshot schema migration (v1→v2) |
+| `viz` | 16 | WebSocket smoke, train+recall, ask both, snapshot round-trip, `/health` + `/ready`, `/metrics`, concurrency cap (deflaked iter-67-γ.4 chore), snapshot schema migration (v1→v2) |
 | Doc-tests | 3 | Public quick-start examples in `snn-core` and `encoders` |
-| **Total** | **130** | with **zero clippy warnings** workspace-wide |
+| **Total** | **150** | with **zero clippy warnings** workspace-wide (1 test ignored — long-running multi-region soak) |
 
 ---
 
