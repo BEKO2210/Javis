@@ -4,6 +4,381 @@ All notable changes to Javis. The version line follows the iteration
 note that introduced the change — every iteration has a corresponding
 `notes/NN-*.md` with the full reasoning, measurements, and references.
 
+## Unreleased — chore: CI hygiene + iter-67-γ.4 ENTRY landing
+
+Repo-hygiene + readability pass after the iter-67-γ.4 implementation.
+
+### Fixed
+
+- `cargo fmt --all` over the four iter-67-γ.4 sites flagged by CI
+  (`parse_arg` call layout, `gamma4_active` let-binding, the
+  `target_indices` collect, and the `BtspParams.non_target_depression_strength`
+  field in `reward_bench.rs`).
+- `crates/snn-core/src/network.rs` doc-comment on
+  `Network::btsp_target_post`: rewrite the `> 0` reference that
+  `clippy::doc_lazy_continuation` parsed as an unclosed quote
+  (replaced with "is greater than 0").
+- `crates/viz/tests/concurrency_cap.rs` —
+  `released_permit_unblocks_next_session` was flaky on shared GitHub
+  Actions runners. The 50 ms post-train settle has been replaced with
+  a 5-second retry loop that polls the upgrade endpoint at 50 ms
+  intervals and accepts the first 101. Local: 2/2 PASS in ~15 s.
+
+### Updated
+
+- `README.md` — Latest-snapshot block + iterations table updated to
+  iter-67 (BTSP ENTRY → γ.1.1 Gate-A 3/4 PASS → Gate-B 5/8 Class (C) →
+  γ.4 fallback pre-registered). Added rows 66.5 and 67. Header badge
+  flipped from `iter-66 · CA3/CA1 split` to
+  `iter-67 · BTSP · γ.4 pre-registered`.
+- `.gitignore` — added editor / IDE detritus (`.idea/`, `.vscode/`,
+  `*.swp`, `*.swo`, `*~`), `*.log.tmp` / `*.log.bak`, `.env` /
+  `.env.local`, `*.orig` rustfmt backup files. `reports/` and `notes/`
+  stay tracked (research-deliverable artefacts).
+
+### CI gates verified locally
+
+- `cargo fmt --all -- --check`                                 clean
+- `cargo clippy --all-targets --workspace -- -D warnings`      clean
+- `cargo doc --workspace --no-deps --all-features` (`-D warnings`) clean
+- `cargo test --release -p snn-core`                           65/65 PASS
+- `cargo test --release -p snn-core --test btsp_plateau_eligibility`  6/6 PASS
+- `cargo test --release -p viz --test concurrency_cap`          2/2 PASS
+- `cargo test --release -p eval`                               11/11 PASS
+
+## Unreleased — Iteration 67-γ.4 (per-post target-gating with non-target depression — ENTRY, locked)
+
+Conditional on Gate-B γ.1.1 verdict Class (C) Partial. γ.4 is the
+locked (C)-branch fallback per the Gate-B γ.1.1 ENTRY's acceptance
+matrix.
+
+### Mechanism (locked)
+
+γ.4 modifies the BTSP plateau-arm branch on the C1 readout layer:
+target post-cells receive LTP (existing γ.1.1 rule, unchanged);
+non-target post-cells receive LTD scaled by a new param
+`BtspParams::non_target_depression_strength`. Eligibility tag is
+consumed on both LTP and LTD to preserve one-shot semantics. CLI
+flag `--c1-btsp-non-target-depression-strength <float>`, default
+`0.0` (γ.1.1 numerics bit-identical when off — verified: 6/6 BTSP
+tests + 11/11 eval tests PASS unchanged). Locked production value:
+`0.2` (= 0.5 × `--c1-btsp-strength = 0.4`).
+
+### Implementation
+
+- `crates/snn-core/src/btsp.rs` — `BtspParams::non_target_depression_strength`
+  (default `0.0`).
+- `crates/snn-core/src/network.rs` — `Network::btsp_target_post:
+  Vec<bool>` (lazy-allocated mask), `set_btsp_target_post(&[usize])`,
+  `clear_btsp_target_post()`, plateau-arm LTP/LTD branch,
+  `btsp_depression_events: u64` diagnostic counter.
+- `crates/eval/src/reward_bench.rs` —
+  `C1Config::btsp_non_target_depression_strength` wired through to
+  `BtspParams`. In `run_teacher_trial`: when the strength > 0,
+  `set_btsp_target_post(c1_target_sdr)` immediately before the teacher
+  Phase 4 drive; `clear_btsp_target_post()` immediately after.
+- `crates/eval/examples/reward_benchmark.rs` — CLI flag wiring.
+- Off-path determinism: `gamma4_active` gate (`strength > 0 &&
+  target_post non-empty`) ensures γ.1.1 numerics bit-identical when
+  the flag is not passed.
+
+### Pre-registration
+
+- Locked seed set: `{0, 1, 2, 3, 4, 5, 6, 7}` = γ.1.1 Gate-B set
+  verbatim (direct seed-by-seed comparison: did γ.4 lift seeds 0/4/7
+  without breaking 1/2/3/5/6?).
+- Four explicit hypotheses:
+  - **H1 (lift):** seeds 0, 4, 7 (γ.1.1 FAIL) cross last-8 mean ≥ 0.05.
+  - **H2 (preserve):** seeds 1, 2, 3, 5, 6 (γ.1.1 PASS) stay ≥ 0.05.
+  - **H3 (separation):** `w_ratio = tgt_w / non_w > 1.05` on ≥ 5/8
+    seeds (vs γ.1.1's 1.000 universal).
+  - **H4 (trajectory):** DEGRADING per-cue trajectory eliminated on
+    ≥ 2/3 of the previously-failing seeds.
+- Same Gate-B acceptance matrix (A/B/C/D) as Gate-B γ.1.1 with the
+  added rule that γ.4 must beat γ.1.1's 8-seed mean (0.0693) to count
+  as Class (A) or (B); equal-to-γ.1.1 collapses to (C).
+
+Pre-registration: `reports/gate_b_gamma_4_entry.md`. Awaiting 8-seed
+compute on the locked `{0..7}` seed set.
+
+## Unreleased — Iteration 67-γ.1.1 Gate-B (8-seed verdict — Class C Partial)
+
+Locked γ.1.1 configuration (`reports/gate_a_gamma_1_1_config.md`,
+commit `ab9ae16`) extended from the Gate-A 4-seed pass to the full
+8-seed × 32-epoch verdict matrix per the iter-66 ENTRY's locked
+acceptance schedule.
+
+### Run
+
+8 sequential 32-epoch runs on Bekos's Windows PC; seeds 0–3 reused
+verbatim from the Gate-A confirmation run (deterministic per-seed
+reproducible), seeds 4–7 freshly run. Wallclock ~9.5 h / 4-seed batch
+× 2 batches.
+
+### Result
+
+- **5/8 seeds PASS** at last-8 mean ≥ 0.05 (seeds 1, 2, 3, 5, 6).
+- **3/8 seeds FAIL** (seeds 0, 4, 7).
+- Mean of last-8 means across 8 seeds: **0.0693 ± 0.0375**
+  (identical to the 4-seed prior 0.069 → t vs prior = 0.025).
+- `t(7)` vs 0.05 threshold = 1.46 (not significant).
+- `t(7)` vs 0 (descriptive) = 5.23 (highly significant).
+- PASS-only mean: 0.0930 ± 0.0225. FAIL-only mean: 0.0299 ± 0.0137.
+  Bimodality is real, not a sample artefact.
+
+**Verdict: Class (C) Partial** per the locked Gate-B acceptance
+matrix (`5/8 ≤ n_pos < 7/8` AND `t(7) > 0`).
+
+### Diagnostic (Step 5 of locked plan)
+
+- Per-cue trajectory: all 5 PASS seeds show *improving* second-half
+  > first-half top3_c1; all 3 FAIL seeds show DEGRADING (seeds 0, 4)
+  or flat (seed 7). Trajectory predicts verdict 8/8.
+- Training-side metrics bit-identical across all 8 seeds: C1 spikes
+  (teacher) range 6 327 – 6 348 (< 0.4 % spread); `tgt_w` and
+  `non_w` both `[0.798, 0.800]` (< 0.3 %); `w_ratio = 1.000 ± 0.0001`
+  universally.
+- `raw_overlap` does NOT predict verdict (seeds 0 and 6 bracket the
+  range 0.020 vs 0.012, one fails one passes).
+- R2 readout: 8/8 within or just below the iter-65 chance band
+  (0.0205 – 0.0537). No collapse on any seed.
+
+### Conclusion
+
+γ.1.1 binds via *kWTA fingerprint geometry*, NOT via per-class
+weight magnitude separation (`w_ratio ≈ 1.000` universally; K4
+strict ≥ 1.5 unmet on every seed). The failure mode on the 3
+losing seeds is purely eval-phase fingerprint discrimination on
+adverse R2/DG wirings.
+
+### Cross-platform validation
+
+Seeds 0 and 1 were independently replicated on the Linux container
+before the Windows-PC 4-seed Gate-A run. `top3_c1`, `top3_r2`,
+`target_in_dict`, `kwta_empty` are bit-identical across platforms.
+Sub-permille drifts on weight-magnitude diagnostics (`tgt_w` 0.7849
+↔ 0.7904, `plateau_events` 224 464 ↔ 224 311) attributable to
+rustc/MSVC vs Linux-clang FP-codegen differences. Verdicts agree.
+
+### Locked next step
+
+Per the (C) row of the Gate-B acceptance matrix:
+**iter-67-γ.4 (per-post target-gating with non-target depression)**.
+γ.4 spec + implementation pre-registered in
+`reports/gate_b_gamma_4_entry.md` immediately after Gate-B verdict
+landing (no compute on iter-67-γ.1.1 after this without a fresh
+ENTRY).
+
+Full report: `reports/gate_b_gamma_1_1_8seed_summary.md`.
+
+## Unreleased — Iteration 67-γ.1.1 Gate-A (4-seed PASS — first multi-seed C1 readout signal)
+
+iter-67's BTSP plateau-eligibility rule reaches the locked Gate-A
+criterion: 4-seed × 32-epoch confirmation at the frozen γ.1.1
+configuration.
+
+### Frozen γ.1.1 configuration
+
+```sh
+cargo run --release -p eval --example reward_benchmark -- \
+  --c1-readout --c1-diagnostic --c1-eval-aligned-rstdp \
+  --c1-btsp --c1-btsp-target-gated --c1-btsp-no-r2-isolation \
+  --c1-btsp-window-ms 200 --c1-btsp-strength 0.4 \
+  --c1-btsp-teacher-recurrent-e-scale 1.0 \
+  --c1-btsp-teacher-recurrent-i-scale 0.3 \
+  --c1-teacher-strength 1.0 \
+  --seeds <SEED> --epochs 32 \
+  --teacher-forcing --target-clamp-strength 500 --teacher-ms 40 \
+  --corpus-vocab 64 --dg-bridge --plasticity-off-during-eval \
+  --decorrelated-init
+```
+
+Frozen at commit `ab9ae16`, machine-readable form
+`reports/gate_a_gamma_1_1_config.json`. Compile-time numerical locks
+(BTSP `plateau_window_ms = 30 ms`, `plateau_threshold_spikes = 5`,
+`post_plateau_decay_ms = 50 ms`, `w_max = 0.8`; C1 size = 1000,
+sparsity_k = 20, fanout 30) documented in
+`reports/gate_a_gamma_1_1_config.md`.
+
+### Result
+
+| seed | verdict | last-8 mean (ep 24–31) | 32-ep mean | longest contig.-zero | R2 32-ep mean |
+| ---: | :--- | ---: | ---: | ---: | ---: |
+| 0 | **FAIL** | 0.0156 | 0.0361 | 2 | 0.0303 |
+| 1 | **PASS** | 0.0977 | 0.0811 | 0 | 0.0381 |
+| 2 | **PASS** | 0.0898 | 0.0791 | 0 | 0.0322 |
+| 3 | **PASS** | 0.0742 | 0.0625 | 1 | 0.0264 |
+
+3/4 PASS, mean(last-8) across all 4 = 0.069 ± 0.037 (excluding
+seed 0: 0.087 ± 0.012). First iter-66+ configuration to produce
+multi-seed-confirmed non-zero `c1_target_top3_overlap` aggregate.
+
+### Candidate lower-bound proof (seed 42)
+
+Pre-Gate-A single-seed candidate at the frozen γ.1.1 config crashed
+at ep 30/32 due to a container restart. Rather than rerun, the
+verdict was committed via *lower-bound proof*: ep 24–30 sum = 0.4062
+≥ 0.400 required ⇒ last-8 mean ≥ 0.0508 ≥ 0.05 even with worst-case
+ep 31 = 0. Compute-respectful science discipline (no rerun, no patch
+silently). Full proof: `reports/gate_a_gamma_1_1_candidate_report.md`.
+
+### Tooling additions
+
+- `scripts/evaluate_gate_a.py` — strict Gate-A evaluator. Verdicts:
+  `PASS`, `PASS_LOWER_BOUND` (partial-run mathematical guarantee),
+  `FAIL`, `INCONCLUSIVE`. Exit codes 0/1/2. Returns `INCONCLUSIVE`
+  rather than `FAIL` when the lower-bound proof does NOT establish
+  PASS — strict discipline avoids false negatives on partial runs.
+- `scripts/clean_powershell_log.py` — auto-decode UTF-16 LE
+  PowerShell logs with ~120-col line-wraps and NativeCommandError
+  wrappers. Detects BOM, joins wrap fragments via record-prefix
+  detection, normalises whitespace. No-op on Linux UTF-8 logs;
+  invoked transparently by `evaluate_gate_a.py`.
+
+Full report: `reports/gate_a_gamma_1_1_4seed_summary.md`.
+
+## Unreleased — Iteration 67 (BTSP plateau-eligibility on R2-E → C1)
+
+iter-66.5 closed with the eval-aligned R-STDP rule still producing
+flat-zero `c1_target_top3_overlap` across multiple seeds. Per the
+iter-66 ENTRY's deferred-mechanism list, **Mechanism M5 (BTSP)** is
+the next biologically-faithful candidate.
+
+### Mechanism
+
+Behavioral-Timescale Synaptic Plasticity (Bittner et al. 2017
+*Nat Neurosci*; Magee & Grienberger 2020 *Annu Rev Neurosci*;
+Milstein et al. 2024 *PLOS Comp Bio*). Two state machines:
+
+1. **Per-synapse eligibility tag** — additive on every pre-spike,
+   exponentially decays with `eligibility_window_ms = 200 ms`. No
+   post-spike required: this is the credit-assignment fix vs
+   pair-STDP.
+2. **Per-post-cell plateau armer** — fast `burst_trace`
+   (`plateau_window_ms = 30 ms`) compared against
+   `plateau_threshold_spikes = 5`. On disarm → arm transition, all
+   incoming tagged synapses receive one-shot `Δw = +strength × tag`
+   (`potentiation_strength = 0.4` ⇒ a two-tagged-pre-spike pattern
+   saturates the synapse to `w_max = 0.8`).
+
+### Implementation
+
+- `crates/snn-core/src/btsp.rs` (new) — `BtspParams` struct +
+  `iter67_smoke()` constructor.
+- `crates/snn-core/src/network.rs` — `Network::btsp` /
+  `enable_btsp(params, post_filter)` / `disable_btsp()` /
+  per-synapse and per-post-cell transient state +
+  `btsp_plateau_events` and `btsp_potentiation_events` diagnostic
+  counters. The `post_filter` slice restricts BTSP to the C1 cell
+  index range so R2-R2 R-STDP stays alive on the same `Network`.
+- `crates/snn-core/tests/btsp_plateau_eligibility.rs` (new) — 6
+  tests pinning: tag accumulation, plateau-arm threshold, one-shot
+  potentiation, plateau disarm after silence, weight clamp at
+  `w_max`, and bit-identical off-path numerics.
+- `crates/eval/examples/reward_benchmark.rs` — CLI flags
+  `--c1-btsp`, `--c1-btsp-window-ms`, `--c1-btsp-strength`,
+  `--c1-btsp-target-gated`, `--c1-btsp-no-target-gate`,
+  `--c1-btsp-teacher-recurrent-e-scale`,
+  `--c1-btsp-teacher-recurrent-i-scale`, `--c1-btsp-no-r2-isolation`.
+
+### Sweep history (notes/67 §"Step 7")
+
+Step 6 smoke surfaced a homeostasis catch-22 (homeostatic scaling
+during the teacher clamp window cancelled BTSP potentiation;
+`w_ratio = 0.42`). Fix: hard-gate homeostasis OFF for the duration
+of the Phase 4 clamp window when `--c1-btsp` is on. Step 7
+α2 added an R2-isolation toggle (cue + DG drive cut to 0 during
+teacher) so BTSP tags accumulated *only* during cue/delay/prediction.
+γ.1 introduced the E/I-split partial echo-state (E=1.0, I=0.3) per
+Bekos's locked γ.1 prompt. γ.1.1 added the R2-isolation OPT-OUT
+to test the actual Bekos hypothesis: cue-engram E-cells fire under
+reduced inhibition. γ.2 window-sweep confirmed all three windows
+(100/150/250 ms) converge to the same asymptote — 200 ms is
+locked. iter-67-β uniform recurrent-scale sweep proved no scalar
+∈ [0.0, 0.80] produces both selectivity AND gain; γ.1's E/I split
+is the architectural fix.
+
+Frozen iter-67-γ.1.1 configuration cleared Gate-A (separate
+changelog entry, above). Subsequent Gate-B 8-seed verdict landed
+at Class (C) Partial; γ.4 fallback pre-registered (separate
+changelog entries, above).
+
+Full document: `notes/67-btsp-tagged-eligibility-c1.md`.
+
+## Unreleased — Iteration 66.5 (eval-aligned R-STDP on R2-E → C1)
+
+iter-66 R-STDP on R2-E → C1 trained the synapses on the *canonical
+R2 target SDR* (the teacher Phase 4 clamp pattern), not on the
+natural cue-driven R2 response. Eval phase reads natural cue-driven
+R2 patterns ⇒ training-eval mismatch. **Path-1 fix:** drop the
+canonical R2 target SDR from the teacher Phase 4 clamp so R2 fires
+its natural cue-driven response, while the C1 target SDR clamp
+stays. R-STDP then aligns (eval-time R2 cue pattern) → (canonical
+C1 target).
+
+### Implementation
+
+- `crates/eval/src/reward_bench.rs` — `C1Config::eval_aligned_rstdp`
+  field, default `false` (iter-66 numerics bit-identical when off).
+  When `true` AND C1 active for the trial, `combined_clamp` borrows
+  `c1_target_sdr` only (R2 target SDR is not concatenated).
+- `crates/eval/examples/reward_benchmark.rs` — CLI flag
+  `--c1-eval-aligned-rstdp`.
+
+### Result
+
+Single-seed smoke run (`notes/66.5-step-4-smoke-seed42-ep32.log`)
+showed mild `c1_target_top3_overlap` improvement at seed=42 over
+the baseline iter-66 path, but multi-seed `c1_target_top3_overlap`
+remained flat at 0 on the first seeds tested. **R-STDP alone is
+insufficient on the binding pathway**; the credit-assignment window
+(~10 ms) cannot bridge the iter-46 6-phase cue → delay →
+prediction → teacher window (~80 ms). Per the iter-66 ENTRY's
+deferred-mechanism list, the next candidate is BTSP (Mechanism M5)
+with a ~200 ms eligibility-tag window. iter-66.5 is preserved as a
+prerequisite plumbing fix — γ.1.1 still ships with
+`--c1-eval-aligned-rstdp` set, because BTSP and eval-aligned
+R-STDP are stacked (BTSP handles the long-window credit
+assignment; R-STDP fine-tunes within the kWTA fingerprint).
+
+Full document: `notes/66.5-eval-aligned-c1-rstdp.md`.
+
+## Unreleased — Iteration 66 (CA1-equivalent C1 readout — implementation)
+
+The iter-66 deep-research recommendation
+(`notes/66-deep-research-cue-target-binding.md`, separate changelog
+entry below) implemented as the C1 readout layer + target-presence-
+gated three-factor R-STDP on R2-E → C1. Decoder switches from R2 to
+C1; primary metric `c1_target_top3_overlap`.
+
+### Implementation
+
+- `crates/eval/src/reward_bench.rs` — new `C1Config` struct,
+  appended to `TeacherForcingConfig` as `c1: C1Config`. Brain
+  construction appends a 1000-cell C1 layer to region 1's network
+  with a sparse R2-E → C1 fanout (locked default 30). M_target
+  neuromodulator pulse during teacher Phase 4 (locked
+  `c1.teacher_strength = 1.0`) gates the existing R-STDP rule on
+  the new R2-E → C1 synapses.
+- `crates/eval/examples/reward_benchmark.rs` — CLI flags
+  `--c1-readout`, `--c1-size`, `--c1-sparsity-k`,
+  `--c1-from-r2-fanout`, `--c1-init-w-max`, `--c1-teacher-strength`,
+  `--c1-diagnostic`.
+- `--c1-diagnostic` emits a per-epoch `[iter-66 diag]` line carrying
+  the auxiliary metrics consumed downstream by
+  `scripts/evaluate_gate_a.py`: `c1_active_frac`, `c1_spikes_mean`,
+  `clamp_eff`, `kwta_empty`, `target_in_dict`, `top3_r2`,
+  `top3_c1`, `mrr_c1`, `raw_overlap`, `dict_concepts`,
+  R2-C1 weight L2 / Δw / `tgt_w` / `non_w` / `w_ratio`.
+
+iter-66 Step 7.5 sweeps over `--c1-from-r2-fanout`,
+`--c1-init-w-max` proved the C1 layer respects the iter-46 / iter-65
+defaults. Step 8 main run produced flat-zero
+`c1_target_top3_overlap` on the first multi-seed test, motivating
+the iter-66.5 eval-aligned R-STDP fix above.
+
+Full document: `notes/66-ca1-heteroassoc-readout.md`.
+
 ## Unreleased — Iteration 66 (deep research: cue → target binding pivot)
 
 Literature-driven decision document. 28 peer-reviewed sources spanning
