@@ -165,6 +165,20 @@ fn main() {
     // to keep cue + DG drive at full strength during teacher so
     // γ.1's E/I-split has an active R2 substrate to expose.
     let c1_btsp_no_r2_isolation = flag(&args, "--c1-btsp-no-r2-isolation");
+    // Iter-67-γ.4: per-post target-gating with non-target depression.
+    // Magnitude of LTD applied at a non-target C1 plateau-arm
+    // transition (`Δw = −strength × tag`).  Default 0.0 = disabled
+    // (γ.1.1 numerics bit-identical).  Recommended starting value
+    // 0.2 (= 0.5 × default `--c1-btsp-strength`) so a single tagged
+    // pre-spike on a non-target post drops the synapse 0.2 from
+    // `w_max = 0.8` toward `w_min = 0.0`.  When set > 0, the eval
+    // harness populates `Network::btsp_target_post` from
+    // `c1_target_sdr` per teacher Phase 4 trial.
+    let c1_btsp_non_target_depression_strength: f32 = parse_arg(
+        &args,
+        "--c1-btsp-non-target-depression-strength",
+        0.0_f32,
+    );
     // iter-67-β legacy uniform-scale flag — accepted for
     // backward-compat but applies the same value to BOTH E and
     // I if explicitly passed.  Loud-no semantics: if both
@@ -266,6 +280,7 @@ fn main() {
             btsp_teacher_recurrent_e_scale: c1_btsp_teacher_recurrent_e_scale,
             btsp_teacher_recurrent_i_scale: c1_btsp_teacher_recurrent_i_scale,
             btsp_no_r2_isolation: c1_btsp_no_r2_isolation,
+            btsp_non_target_depression_strength: c1_btsp_non_target_depression_strength,
         },
     };
 

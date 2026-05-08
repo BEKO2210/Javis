@@ -220,6 +220,23 @@ pub struct Network {
     /// Cleared by `Network::reset_state`.
     #[serde(skip, default)]
     pub btsp_potentiation_events: u64,
+    /// Iter-67-γ.4: per-post-cell "is target" mask consulted at
+    /// plateau-arm time when `BtspParams::non_target_depression_strength
+    /// > 0`. Empty by default ⇒ γ.1.1 path (every plateau-arm
+    /// potentiates). When populated by the host code (size =
+    /// `neurons.len()`), `true` ⇒ this cell is a teacher target
+    /// for the current step (apply LTP), `false` ⇒ this cell is a
+    /// non-target (apply LTD scaled by
+    /// `non_target_depression_strength`). The host is responsible
+    /// for setting this mask immediately before each teacher
+    /// Phase 4 drive and clearing it after.
+    #[serde(skip, default)]
+    pub btsp_target_post: Vec<bool>,
+    /// Iter-67-γ.4: diagnostic counter — total per-synapse
+    /// depression events (LTD applied at a non-target plateau-arm
+    /// transition). Cleared by `Network::reset_state`.
+    #[serde(skip, default)]
+    pub btsp_depression_events: u64,
 
     // ==== iter-67-β R2-recurrent partial-echo-state scale ====
     /// Iter-67-γ.1 split: per-kind multipliers applied to
@@ -312,6 +329,8 @@ impl Network {
             btsp_post_mask: Vec::new(),
             btsp_plateau_events: 0,
             btsp_potentiation_events: 0,
+            btsp_target_post: Vec::new(),
+            btsp_depression_events: 0,
             recurrent_e_scale: 1.0,
             recurrent_i_scale: 1.0,
             recurrent_scale_pre_max: u32::MAX,
@@ -651,7 +670,55 @@ impl Network {
         self.btsp_post_mask = mask;
         self.btsp_plateau_events = 0;
         self.btsp_potentiation_events = 0;
+        // Iter-67-γ.4: lazy-allocate the target-post mask only when
+        // the depression rule is actually requested. The off-path
+        // (depression_strength == 0) leaves `btsp_target_post`
+        // empty so the plateau-arm hot loop can skip the indexed
+        // read in γ.1.1 numerics-bit-identical mode.
+        if params.non_target_depression_strength > 0.0 {
+            if self.btsp_target_post.len() != n {
+                self.btsp_target_post = vec![false; n];
+            }
+        } else {
+            self.btsp_target_post.clear();
+        }
+        self.btsp_depression_events = 0;
         self.btsp = Some(params);
+    }
+
+    /// Iter-67-γ.4: mark the supplied post-cell indices as targets
+    /// for the upcoming plateau-arm events (LTP path); all other
+    /// cells default to non-target (LTD path, scaled by
+    /// `BtspParams::non_target_depression_strength`).
+    ///
+    /// Indices outside `[0, neurons.len())` are silently ignored
+    /// (matches `enable_btsp`'s post-filter semantics). The mask is
+    /// allocated lazily on first use; calling this method when BTSP
+    /// is disabled OR when `non_target_depression_strength == 0` is
+    /// a permitted no-op (host-side gate is preserved by inspecting
+    /// `self.btsp.map(|p| p.non_target_depression_strength)`).
+    pub fn set_btsp_target_post(&mut self, target_indices: &[usize]) {
+        let n = self.neurons.len();
+        if self.btsp_target_post.len() != n {
+            self.btsp_target_post = vec![false; n];
+        }
+        for x in self.btsp_target_post.iter_mut() {
+            *x = false;
+        }
+        for &idx in target_indices {
+            if idx < n {
+                self.btsp_target_post[idx] = true;
+            }
+        }
+    }
+
+    /// Iter-67-γ.4: clear the per-step target-post mask so all
+    /// subsequent plateau-arm events fall through to the non-target
+    /// branch (LTD).
+    pub fn clear_btsp_target_post(&mut self) {
+        for x in self.btsp_target_post.iter_mut() {
+            *x = false;
+        }
     }
 
     /// Iter-67: switch off BTSP. Leaves the per-synapse / per-post
@@ -1201,6 +1268,17 @@ impl Network {
                     self.btsp_post_armed_until[src] = t + bp.post_plateau_decay_ms;
                     if !was_armed {
                         self.btsp_plateau_events = self.btsp_plateau_events.wrapping_add(1);
+                        // Iter-67-γ.4: per-post target-gating with non-target
+                        // depression. When `non_target_depression_strength > 0`
+                        // AND the host populated `btsp_target_post`, branch on
+                        // the firing cell's target status: target ⇒ LTP (existing
+                        // path), non-target ⇒ LTD with `dw = -depression × tag`.
+                        // Off path: depression_strength == 0 OR target_post mask
+                        // empty ⇒ skip the indexed read; γ.1.1 numerics
+                        // bit-identical (every plateau-arm potentiates).
+                        let gamma4_active = bp.non_target_depression_strength > 0.0
+                            && !self.btsp_target_post.is_empty();
+                        let is_target_post = !gamma4_active || self.btsp_target_post[src];
                         if bp.target_gated {
                             // Per-post-cell credit assignment: scan
                             // only this cell's incoming.
@@ -1211,16 +1289,30 @@ impl Network {
                                 if tag <= 0.0 {
                                     continue;
                                 }
-                                let dw = bp.potentiation_strength * tag;
-                                if dw == 0.0 {
-                                    continue;
+                                if is_target_post {
+                                    let dw = bp.potentiation_strength * tag;
+                                    if dw == 0.0 {
+                                        continue;
+                                    }
+                                    let w = self.synapses[eid].weight;
+                                    let new_w = (w + dw).clamp(bp.w_min, bp.w_max);
+                                    self.synapses[eid].weight = new_w;
+                                    self.btsp_synapse_tag[eid] = 0.0;
+                                    self.btsp_potentiation_events =
+                                        self.btsp_potentiation_events.wrapping_add(1);
+                                } else {
+                                    // γ.4 LTD branch.
+                                    let dw = -bp.non_target_depression_strength * tag;
+                                    if dw == 0.0 {
+                                        continue;
+                                    }
+                                    let w = self.synapses[eid].weight;
+                                    let new_w = (w + dw).clamp(bp.w_min, bp.w_max);
+                                    self.synapses[eid].weight = new_w;
+                                    self.btsp_synapse_tag[eid] = 0.0;
+                                    self.btsp_depression_events =
+                                        self.btsp_depression_events.wrapping_add(1);
                                 }
-                                let w = self.synapses[eid].weight;
-                                let new_w = (w + dw).clamp(bp.w_min, bp.w_max);
-                                self.synapses[eid].weight = new_w;
-                                self.btsp_synapse_tag[eid] = 0.0;
-                                self.btsp_potentiation_events =
-                                    self.btsp_potentiation_events.wrapping_add(1);
                             }
                         } else {
                             // Ablation: any-cell-plateau → network-wide
