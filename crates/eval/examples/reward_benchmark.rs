@@ -174,11 +174,8 @@ fn main() {
     // `w_max = 0.8` toward `w_min = 0.0`.  When set > 0, the eval
     // harness populates `Network::btsp_target_post` from
     // `c1_target_sdr` per teacher Phase 4 trial.
-    let c1_btsp_non_target_depression_strength: f32 = parse_arg(
-        &args,
-        "--c1-btsp-non-target-depression-strength",
-        0.0_f32,
-    );
+    let c1_btsp_non_target_depression_strength: f32 =
+        parse_arg(&args, "--c1-btsp-non-target-depression-strength", 0.0_f32);
     // iter-67-β legacy uniform-scale flag — accepted for
     // backward-compat but applies the same value to BOTH E and
     // I if explicitly passed.  Loud-no semantics: if both
