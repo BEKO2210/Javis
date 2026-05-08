@@ -543,6 +543,21 @@ pub struct C1Config {
     /// cue-engram E-cells fire under reduced inhibition.  CLI flag
     /// `--c1-btsp-no-r2-isolation`.
     pub btsp_no_r2_isolation: bool,
+
+    /// Iter-67-γ.4: per-post target-gating with non-target
+    /// depression. Magnitude of LTD applied at a non-target C1
+    /// cell's plateau-arm transition (`Δw = −strength × tag`).
+    /// Default `0.0` ⇒ disabled, behavior is bit-identical to
+    /// γ.1.1. `> 0.0` activates γ.4: the eval harness populates
+    /// `Network::btsp_target_post` from `c1_target_sdr` before
+    /// each teacher Phase 4 drive, so plateau-arm events on target
+    /// C1 cells receive LTP (existing rule) and plateau-arm events
+    /// on non-target C1 cells receive LTD scaled by this value.
+    /// Recommended starting value: 0.2 (= 0.5 × `btsp_strength`),
+    /// so a single tagged pre-spike on a non-target post-cell
+    /// drops the synapse by 0.2 from `w_max = 0.8`. CLI flag
+    /// `--c1-btsp-non-target-depression-strength`.
+    pub btsp_non_target_depression_strength: f32,
 }
 
 impl Default for C1Config {
@@ -563,6 +578,7 @@ impl Default for C1Config {
             btsp_teacher_recurrent_e_scale: 1.0,
             btsp_teacher_recurrent_i_scale: 0.3,
             btsp_no_r2_isolation: false,
+            btsp_non_target_depression_strength: 0.0,
         }
     }
 }
@@ -796,6 +812,7 @@ impl Default for TeacherForcingConfig {
                 btsp_teacher_recurrent_e_scale: 1.0,
                 btsp_teacher_recurrent_i_scale: 0.3,
                 btsp_no_r2_isolation: false,
+                btsp_non_target_depression_strength: 0.0,
             },
         }
     }
@@ -857,6 +874,7 @@ impl TeacherForcingConfig {
                 btsp_teacher_recurrent_e_scale: 1.0,
                 btsp_teacher_recurrent_i_scale: 0.3,
                 btsp_no_r2_isolation: false,
+                btsp_non_target_depression_strength: 0.0,
             },
         }
     }
@@ -2452,6 +2470,24 @@ fn run_teacher_trial(
     } else {
         dg_strength
     };
+    // Iter-67-γ.4: per-post target-gating with non-target depression.
+    // When `c1.btsp_non_target_depression_strength > 0`, populate
+    // the network's per-post target mask from `c1_target_sdr` so the
+    // BTSP plateau-arm event branches LTP (target post) vs LTD
+    // (non-target post). When the strength is 0 (γ.1.1 default),
+    // skip the call ⇒ the target_post mask stays empty ⇒ plateau-arm
+    // hot loop is bit-identical to γ.1.1.
+    let gamma4_active = c1_active
+        && cfg.c1.btsp
+        && cfg.c1.btsp_non_target_depression_strength > 0.0;
+    if gamma4_active {
+        let target_indices: Vec<usize> =
+            c1_target_sdr.iter().map(|&i| i as usize).collect();
+        brain
+            .regions[1]
+            .network
+            .set_btsp_target_post(&target_indices);
+    }
     let teacher_counts = if dg_active {
         drive_with_r2_clamp_dg(
             brain,
@@ -2477,6 +2513,12 @@ fn run_teacher_trial(
     };
     if c1_active {
         brain.set_neuromodulator(prior_modulator);
+    }
+    // Iter-67-γ.4: clear the per-step target-post mask so subsequent
+    // (non-teacher) post-spikes that happen to cross plateau threshold
+    // do NOT trigger the LTD branch. No-op when γ.4 was inactive.
+    if gamma4_active {
+        brain.regions[1].network.clear_btsp_target_post();
     }
     // Iter-67-α: restore homeostasis state to whatever it was
     // before the clamp window. When `cfg.c1.btsp = false` this is
@@ -5298,6 +5340,8 @@ fn run_target_overlap_one_seed(
                     w_min: 0.0,
                     w_max: 0.8,
                     target_gated: cfg.teacher.c1.btsp_target_gated,
+                    non_target_depression_strength:
+                        cfg.teacher.c1.btsp_non_target_depression_strength,
                 };
                 let post_filter: Vec<usize> = c1_e_set.iter().copied().collect();
                 brain.regions[1].network.enable_btsp(bp, Some(&post_filter));

@@ -130,6 +130,22 @@ pub struct BtspParams {
     /// Use the ablation only to verify that per-post-cell locality
     /// is what makes the rule work.
     pub target_gated: bool,
+
+    /// Iter-67-γ.4: per-post target-gating with non-target depression.
+    /// Magnitude of LTD applied to a non-target post-cell's tagged
+    /// incoming synapses at its plateau-arm transition
+    /// (`Δw = −non_target_depression_strength × tag`).
+    /// Default `0.0` ⇒ disabled, behavior is bit-identical to γ.1.1
+    /// (every plateau-arm potentiates regardless of target status).
+    /// `> 0.0` activates the γ.4 rule: the host code must populate
+    /// `Network::btsp_target_post` to mark which post-cells are
+    /// targets for the current step; on plateau-arm, target cells
+    /// receive LTP (existing path) and non-target cells receive LTD
+    /// scaled by this value. Recommended starting magnitude:
+    /// 0.5 × `potentiation_strength` (= 0.2 with the default
+    /// strength), so a non-target one-pre-spike-tag drops the
+    /// synapse 0.2 from `w_max = 0.8` toward `w_min = 0.0`.
+    pub non_target_depression_strength: f32,
 }
 
 impl Default for BtspParams {
@@ -143,6 +159,7 @@ impl Default for BtspParams {
             w_min: 0.0,
             w_max: 0.8,
             target_gated: true,
+            non_target_depression_strength: 0.0,
         }
     }
 }

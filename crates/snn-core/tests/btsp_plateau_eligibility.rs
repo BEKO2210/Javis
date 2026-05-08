@@ -82,6 +82,7 @@ fn plateau_arms_after_threshold_post_spikes_within_window() {
         w_min: 0.0,
         w_max: 0.8,
         target_gated: true,
+        non_target_depression_strength: 0.0,
     };
     net.enable_btsp(bp, None);
     // Fire 8 post-spikes — well above the threshold of 5 to clear
@@ -250,6 +251,7 @@ fn weight_capped_at_w_max() {
         w_min: 0.0,
         w_max: 0.8,
         target_gated: true,
+        non_target_depression_strength: 0.0,
     };
     net.enable_btsp(bp, None);
     // Accumulate a huge tag.
