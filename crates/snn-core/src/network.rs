@@ -237,6 +237,15 @@ pub struct Network {
     /// transition). Cleared by `Network::reset_state`.
     #[serde(skip, default)]
     pub btsp_depression_events: u64,
+    /// Iter-67-γ.5: diagnostic counter — total heterosynaptic-LTD
+    /// events (LTD applied to a non-target post-cell's synapse as
+    /// part of a target-cell LTP event's coupled competition).
+    /// Cleared by `Network::reset_state`. The expected ratio
+    /// `btsp_heterosynaptic_ltd_events / btsp_potentiation_events`
+    /// converges near `(R2-E → C1 fanout) − 1` (locked default 29)
+    /// when γ.5 is active and tags are saturated.
+    #[serde(skip, default)]
+    pub btsp_heterosynaptic_ltd_events: u64,
 
     // ==== iter-67-β R2-recurrent partial-echo-state scale ====
     /// Iter-67-γ.1 split: per-kind multipliers applied to
@@ -331,6 +340,7 @@ impl Network {
             btsp_potentiation_events: 0,
             btsp_target_post: Vec::new(),
             btsp_depression_events: 0,
+            btsp_heterosynaptic_ltd_events: 0,
             recurrent_e_scale: 1.0,
             recurrent_i_scale: 1.0,
             recurrent_scale_pre_max: u32::MAX,
@@ -675,7 +685,7 @@ impl Network {
         // (depression_strength == 0) leaves `btsp_target_post`
         // empty so the plateau-arm hot loop can skip the indexed
         // read in γ.1.1 numerics-bit-identical mode.
-        if params.non_target_depression_strength > 0.0 {
+        if params.non_target_depression_strength > 0.0 || params.heterosynaptic_strength > 0.0 {
             if self.btsp_target_post.len() != n {
                 self.btsp_target_post = vec![false; n];
             }
@@ -683,6 +693,7 @@ impl Network {
             self.btsp_target_post.clear();
         }
         self.btsp_depression_events = 0;
+        self.btsp_heterosynaptic_ltd_events = 0;
         self.btsp = Some(params);
     }
 
@@ -1268,17 +1279,22 @@ impl Network {
                     self.btsp_post_armed_until[src] = t + bp.post_plateau_decay_ms;
                     if !was_armed {
                         self.btsp_plateau_events = self.btsp_plateau_events.wrapping_add(1);
-                        // Iter-67-γ.4: per-post target-gating with non-target
-                        // depression. When `non_target_depression_strength > 0`
-                        // AND the host populated `btsp_target_post`, branch on
-                        // the firing cell's target status: target ⇒ LTP (existing
-                        // path), non-target ⇒ LTD with `dw = -depression × tag`.
-                        // Off path: depression_strength == 0 OR target_post mask
-                        // empty ⇒ skip the indexed read; γ.1.1 numerics
-                        // bit-identical (every plateau-arm potentiates).
+                        // Iter-67-γ.4 / γ.5: per-post target-gating.
+                        // γ.4 (non_target_depression_strength > 0): non-target
+                        // plateau ⇒ LTD on its tagged incoming.
+                        // γ.5 (heterosynaptic_strength > 0): target-cell LTP
+                        // additionally triggers LTD on non-target post-cells
+                        // receiving the same tagged pre-cell (heterosynaptic
+                        // competition, 1:1 LTP/LTD coupling, fixes γ.4's
+                        // multiplicity asymmetry at the design level).
+                        // Off path (both strengths = 0): every plateau-arm
+                        // potentiates; γ.1.1 numerics bit-identical.
                         let gamma4_active = bp.non_target_depression_strength > 0.0
                             && !self.btsp_target_post.is_empty();
-                        let is_target_post = !gamma4_active || self.btsp_target_post[src];
+                        let gamma5_active =
+                            bp.heterosynaptic_strength > 0.0 && !self.btsp_target_post.is_empty();
+                        let needs_target_check = gamma4_active || gamma5_active;
+                        let is_target_post = !needs_target_check || self.btsp_target_post[src];
                         if bp.target_gated {
                             // Per-post-cell credit assignment: scan
                             // only this cell's incoming.
@@ -1300,6 +1316,50 @@ impl Network {
                                     self.btsp_synapse_tag[eid] = 0.0;
                                     self.btsp_potentiation_events =
                                         self.btsp_potentiation_events.wrapping_add(1);
+
+                                    // Iter-67-γ.5: heterosynaptic competition.
+                                    // For the pre-cell whose tag was just
+                                    // consumed by this LTP, scan its outgoing
+                                    // fanout and apply LTD to non-target
+                                    // post-cells that (a) are within the BTSP
+                                    // mask, (b) are not the target cell itself,
+                                    // (c) have a non-zero tag on their synapse
+                                    // from this pre-cell. Tags on heterosynaptic
+                                    // synapses are NOT consumed (natural decay
+                                    // handles cleanup; consumption would
+                                    // deplete the field across simultaneous
+                                    // target plateaus).
+                                    if gamma5_active {
+                                        let pre = self.synapses[eid].pre;
+                                        let n_out = self.outgoing[pre].len();
+                                        for j in 0..n_out {
+                                            let eid_h = self.outgoing[pre][j] as usize;
+                                            let post_h = self.synapses[eid_h].post;
+                                            if post_h == src {
+                                                continue;
+                                            }
+                                            if !self.btsp_post_mask[post_h] {
+                                                continue;
+                                            }
+                                            if self.btsp_target_post[post_h] {
+                                                continue;
+                                            }
+                                            let tag_h = self.btsp_synapse_tag[eid_h];
+                                            if tag_h <= 0.0 {
+                                                continue;
+                                            }
+                                            let dw_h = -bp.heterosynaptic_strength * tag_h;
+                                            if dw_h == 0.0 {
+                                                continue;
+                                            }
+                                            let w_h = self.synapses[eid_h].weight;
+                                            let new_w_h = (w_h + dw_h).clamp(bp.w_min, bp.w_max);
+                                            self.synapses[eid_h].weight = new_w_h;
+                                            // tag NOT consumed
+                                            self.btsp_heterosynaptic_ltd_events =
+                                                self.btsp_heterosynaptic_ltd_events.wrapping_add(1);
+                                        }
+                                    }
                                 } else {
                                     // γ.4 LTD branch.
                                     let dw = -bp.non_target_depression_strength * tag;

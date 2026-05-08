@@ -558,6 +558,20 @@ pub struct C1Config {
     /// drops the synapse by 0.2 from `w_max = 0.8`. CLI flag
     /// `--c1-btsp-non-target-depression-strength`.
     pub btsp_non_target_depression_strength: f32,
+
+    /// Iter-67-γ.5: heterosynaptic competition. Magnitude of LTD
+    /// applied to non-target C1 post-cells receiving the same
+    /// pre-cell whose tag was just consumed by a target-cell LTP
+    /// event. Default `0.0` ⇒ disabled, behavior is bit-identical
+    /// to γ.1.1 (verified by `gamma5_off_path_is_bit_identical`).
+    /// `> 0.0` activates γ.5: each target-cell LTP additionally
+    /// triggers a bounded LTD scan on the same pre-cell's outgoing
+    /// fanout, applying `Δw = −strength × tag_h` to non-target
+    /// post-cells in the BTSP mask. Tags on heterosynaptic
+    /// synapses are NOT consumed. γ.5 ENTRY locks 0.1 (= 0.25 ×
+    /// `--c1-btsp-strength`) as the production value. CLI flag
+    /// `--c1-btsp-heterosynaptic-strength`.
+    pub btsp_heterosynaptic_strength: f32,
 }
 
 impl Default for C1Config {
@@ -579,6 +593,7 @@ impl Default for C1Config {
             btsp_teacher_recurrent_i_scale: 0.3,
             btsp_no_r2_isolation: false,
             btsp_non_target_depression_strength: 0.0,
+            btsp_heterosynaptic_strength: 0.0,
         }
     }
 }
@@ -813,6 +828,7 @@ impl Default for TeacherForcingConfig {
                 btsp_teacher_recurrent_i_scale: 0.3,
                 btsp_no_r2_isolation: false,
                 btsp_non_target_depression_strength: 0.0,
+                btsp_heterosynaptic_strength: 0.0,
             },
         }
     }
@@ -875,6 +891,7 @@ impl TeacherForcingConfig {
                 btsp_teacher_recurrent_i_scale: 0.3,
                 btsp_no_r2_isolation: false,
                 btsp_non_target_depression_strength: 0.0,
+                btsp_heterosynaptic_strength: 0.0,
             },
         }
     }
@@ -2470,16 +2487,18 @@ fn run_teacher_trial(
     } else {
         dg_strength
     };
-    // Iter-67-γ.4: per-post target-gating with non-target depression.
-    // When `c1.btsp_non_target_depression_strength > 0`, populate
-    // the network's per-post target mask from `c1_target_sdr` so the
-    // BTSP plateau-arm event branches LTP (target post) vs LTD
-    // (non-target post). When the strength is 0 (γ.1.1 default),
-    // skip the call ⇒ the target_post mask stays empty ⇒ plateau-arm
-    // hot loop is bit-identical to γ.1.1.
+    // Iter-67-γ.4 / γ.5: per-post target-gating. When EITHER γ.4
+    // (non-target depression) OR γ.5 (heterosynaptic competition) is
+    // active, populate the network's per-post target mask from
+    // `c1_target_sdr` so the BTSP plateau-arm event can branch on
+    // target status. When BOTH strengths are 0 (γ.1.1 default), skip
+    // the call ⇒ target_post mask stays empty ⇒ plateau-arm hot loop
+    // is bit-identical to γ.1.1.
     let gamma4_active =
         c1_active && cfg.c1.btsp && cfg.c1.btsp_non_target_depression_strength > 0.0;
-    if gamma4_active {
+    let gamma5_active = c1_active && cfg.c1.btsp && cfg.c1.btsp_heterosynaptic_strength > 0.0;
+    let target_post_active = gamma4_active || gamma5_active;
+    if target_post_active {
         let target_indices: Vec<usize> = c1_target_sdr.iter().map(|&i| i as usize).collect();
         brain.regions[1]
             .network
@@ -2511,10 +2530,11 @@ fn run_teacher_trial(
     if c1_active {
         brain.set_neuromodulator(prior_modulator);
     }
-    // Iter-67-γ.4: clear the per-step target-post mask so subsequent
-    // (non-teacher) post-spikes that happen to cross plateau threshold
-    // do NOT trigger the LTD branch. No-op when γ.4 was inactive.
-    if gamma4_active {
+    // Iter-67-γ.4 / γ.5: clear the per-step target-post mask so
+    // subsequent (non-teacher) post-spikes that happen to cross the
+    // plateau threshold do NOT trigger the LTD or heterosynaptic-LTD
+    // branches. No-op when both γ.4 and γ.5 were inactive.
+    if target_post_active {
         brain.regions[1].network.clear_btsp_target_post();
     }
     // Iter-67-α: restore homeostasis state to whatever it was
@@ -5341,6 +5361,7 @@ fn run_target_overlap_one_seed(
                         .teacher
                         .c1
                         .btsp_non_target_depression_strength,
+                    heterosynaptic_strength: cfg.teacher.c1.btsp_heterosynaptic_strength,
                 };
                 let post_filter: Vec<usize> = c1_e_set.iter().copied().collect();
                 brain.regions[1].network.enable_btsp(bp, Some(&post_filter));
@@ -5421,6 +5442,7 @@ fn run_target_overlap_one_seed(
         // off) so the diff = training-only events.
         let btsp_pe_at_train_start = brain.regions[1].network.btsp_plateau_events;
         let btsp_pot_at_train_start = brain.regions[1].network.btsp_potentiation_events;
+        let btsp_hltd_at_train_start = brain.regions[1].network.btsp_heterosynaptic_ltd_events;
 
         // -- Training: cue+target presentations for this epoch --
         let mut schedule: Vec<(RewardPair, bool)> = corpus
@@ -5707,6 +5729,10 @@ fn run_target_overlap_one_seed(
                     .network
                     .btsp_potentiation_events
                     .wrapping_sub(btsp_pot_at_train_start);
+                let btsp_hltd = brain.regions[1]
+                    .network
+                    .btsp_heterosynaptic_ltd_events
+                    .wrapping_sub(btsp_hltd_at_train_start);
                 let (r2c1_target_w, r2c1_nontarget_w) = if let Some(start) = c1_synapse_start {
                     let mut tgt_sum: f64 = 0.0;
                     let mut tgt_n: u64 = 0;
@@ -5765,7 +5791,8 @@ fn run_target_overlap_one_seed(
                      spikes_mean={es:.2} top3_r2={r2:.4} top3_c1={c1:.4} mrr_c1={mrr:.4} \
                      raw_overlap={ro:.3} dict_concepts={dc} | r2c1: l2={l2:.4} nz_upd={nu} \
                      max|Δw|={mx:.4} sum|Δw|={sd:.4} tgt_w={tw:.4} non_w={nw:.4} \
-                     w_ratio={wr:.3} | btsp: plateau_events={pe} potentiation_events={pot}",
+                     w_ratio={wr:.3} | btsp: plateau_events={pe} potentiation_events={pot} \
+                     heterosynaptic_ltd_events={hltd}",
                     cfg.seed,
                     ep_total = cfg.epochs,
                     tt = diag_train_trials,
@@ -5790,6 +5817,7 @@ fn run_target_overlap_one_seed(
                     wr = r2c1_w_ratio,
                     pe = btsp_pe,
                     pot = btsp_pot,
+                    hltd = btsp_hltd,
                 );
             }
         }

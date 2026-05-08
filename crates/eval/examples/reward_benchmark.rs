@@ -176,6 +176,17 @@ fn main() {
     // `c1_target_sdr` per teacher Phase 4 trial.
     let c1_btsp_non_target_depression_strength: f32 =
         parse_arg(&args, "--c1-btsp-non-target-depression-strength", 0.0_f32);
+    // Iter-67-γ.5: heterosynaptic competition. When > 0, every
+    // target-cell LTP event simultaneously triggers bounded LTD on
+    // non-target post-cells receiving the same tagged pre-cell
+    // (`Δw = -strength × tag_h` per non-target neighbour). Tags on
+    // heterosynaptic synapses are NOT consumed (natural 200 ms
+    // decay handles cleanup). Default 0.0 = γ.1.1 numerics
+    // bit-identical. γ.5 ENTRY (reports/gate_b_gamma_5_entry.md)
+    // locks 0.1 = 0.25 × default --c1-btsp-strength as the
+    // production paired-smoke value.
+    let c1_btsp_heterosynaptic_strength: f32 =
+        parse_arg(&args, "--c1-btsp-heterosynaptic-strength", 0.0_f32);
     // iter-67-β legacy uniform-scale flag — accepted for
     // backward-compat but applies the same value to BOTH E and
     // I if explicitly passed.  Loud-no semantics: if both
@@ -278,6 +289,7 @@ fn main() {
             btsp_teacher_recurrent_i_scale: c1_btsp_teacher_recurrent_i_scale,
             btsp_no_r2_isolation: c1_btsp_no_r2_isolation,
             btsp_non_target_depression_strength: c1_btsp_non_target_depression_strength,
+            btsp_heterosynaptic_strength: c1_btsp_heterosynaptic_strength,
         },
     };
 

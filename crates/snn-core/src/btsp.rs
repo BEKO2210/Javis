@@ -146,6 +146,31 @@ pub struct BtspParams {
     /// strength), so a non-target one-pre-spike-tag drops the
     /// synapse 0.2 from `w_max = 0.8` toward `w_min = 0.0`.
     pub non_target_depression_strength: f32,
+
+    /// Iter-67-γ.5: heterosynaptic competition. Magnitude of LTD
+    /// applied to non-target post-cells receiving the same pre-cell
+    /// whose tag was just consumed by a target-cell LTP event
+    /// (`Δw = −heterosynaptic_strength × tag_h` for each tagged
+    /// synapse `pre → c_n` where `c_n ≠ target_post`,
+    /// `btsp_target_post[c_n] = false`, `btsp_post_mask[c_n] = true`).
+    /// Tags on heterosynaptic synapses are NOT consumed (natural
+    /// 200 ms decay handles cleanup; consumption would deplete the
+    /// eligibility field too fast across simultaneous target plateau
+    /// events).
+    /// Default `0.0` ⇒ disabled, behavior is bit-identical to γ.1.1
+    /// (no heterosynaptic LTD; LTP path runs verbatim).
+    /// `> 0.0` activates the γ.5 rule: the host code must populate
+    /// `Network::btsp_target_post`. Each target-cell LTP event then
+    /// triggers a bounded LTD scan over the same pre-cell's outgoing
+    /// fanout, applying LTD to non-target post-cells with non-zero
+    /// tag. Recommended starting magnitude: 0.25 × `potentiation_strength`
+    /// (= 0.1 with the default strength) so a single non-target
+    /// neighbour with a saturated tag drops 0.1 from `w_max` toward
+    /// `w_min` per coupled LTP event. The trigger count is bounded
+    /// by target plateau events (~30 cells per trial) — fixing
+    /// γ.4's multiplicity-asymmetry at the design level rather than
+    /// at the strength level.
+    pub heterosynaptic_strength: f32,
 }
 
 impl Default for BtspParams {
@@ -160,6 +185,7 @@ impl Default for BtspParams {
             w_max: 0.8,
             target_gated: true,
             non_target_depression_strength: 0.0,
+            heterosynaptic_strength: 0.0,
         }
     }
 }
