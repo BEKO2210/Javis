@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-08T20:26:47.654Z",
+  "model": "local-hash-embedding-v1",
+  "dimensions": 256,
+  "records": [],
+  "similarity_edges": []
+}

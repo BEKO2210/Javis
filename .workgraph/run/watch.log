@@ -1,0 +1,6 @@
+[2026-05-08T20:21:47.823Z] WorkGraph updated /mnt/c/Users/belki/Desktop/Experiment/Javis/.workgraph
+  source=all session=all provider=local watched=0 events=59 milestones=0 work_items=0 memories=0 failures=0 evals=0
+[2026-05-08T20:21:55.495Z] WorkGraph updated /mnt/c/Users/belki/Desktop/Experiment/Javis/.workgraph
+  source=claude session=claude:settings.local provider=local watched=0 events=1 milestones=0 work_items=0 memories=0 failures=0 evals=0
+[2026-05-08T20:22:52.240Z] WorkGraph updated /mnt/c/Users/belki/Desktop/Experiment/Javis/.workgraph
+  source=claude session=claude:settings.local provider=local watched=0 events=1 milestones=0 work_items=0 memories=0 failures=0 evals=0

@@ -1,0 +1,23 @@
+{
+  "repo": "/mnt/c/Users/belki/Desktop/Experiment/Javis",
+  "source": "claude",
+  "session": "latest",
+  "provider": "local",
+  "port": 8787,
+  "url": "http://127.0.0.1:8787",
+  "watch": {
+    "pid": 911,
+    "running": true,
+    "log": "/mnt/c/Users/belki/Desktop/Experiment/Javis/.workgraph/run/watch.log",
+    "error_log": "/mnt/c/Users/belki/Desktop/Experiment/Javis/.workgraph/run/watch.err.log",
+    "started_at": "2026-05-08T20:22:48.491Z"
+  },
+  "ui": {
+    "pid": 826,
+    "running": true,
+    "log": "/mnt/c/Users/belki/Desktop/Experiment/Javis/.workgraph/run/ui.log",
+    "error_log": "/mnt/c/Users/belki/Desktop/Experiment/Javis/.workgraph/run/ui.err.log",
+    "started_at": "2026-05-08T20:21:43.924Z"
+  },
+  "updated_at": "2026-05-08T20:22:51.810Z"
+}

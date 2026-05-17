@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-08T20:26:47.654Z",
+  "repo": "/mnt/c/Users/belki/Desktop/Experiment/Javis",
+  "summary": {
+    "work_items": 0,
+    "memories": 0,
+    "failure_patterns": 0,
+    "evals": 0,
+    "graph_nodes": 1,
+    "graph_links": 0,
+    "milestones": 0
+  },
+  "nodes": [
+    {
+      "id": "repo",
+      "type": "repo",
+      "label": "Javis",
+      "title": "Repository: Javis",
+      "weight": 12
+    }
+  ],
+  "links": [],
+  "work_items": [],
+  "failure_patterns": [],
+  "evals": [],
+  "memories": [],
+  "journey": {
+    "schema_version": 1,
+    "generated_at": "2026-05-08T20:26:47.653Z",
+    "summary": {
+      "milestones": 0,
+      "work_items": 0,
+      "files": 0,
+      "checks": 0,
+      "traps": 0
+    },
+    "milestones": []
+  },
+  "memory_index": {
+    "model": "local-hash-embedding-v1",
+    "dimensions": 256,
+    "similarity_edges": []
+  }
+}
