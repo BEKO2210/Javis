@@ -114,7 +114,7 @@ jobs:
         # `rust-version = "1.86"` in Cargo.toml is the contract;
         # this job verifies the workspace still builds and tests
         # green against exactly that toolchain.
-        uses: dtolnay/rust-toolchain@1.86
+        uses: dtolnay/rust-toolchain@1.100
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace --locked
